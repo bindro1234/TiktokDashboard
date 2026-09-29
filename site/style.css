@@ -232,9 +232,15 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 
 /* Footer: slide dots, "Bijgewerkt", progress bar, fullscreen button */
 .p-foot { display: flex; justify-content: space-between; align-items: center; margin-top: calc(var(--u) * 2); font-size: calc(var(--u) * 1.8); color: var(--text-2); }
-.p-dots { display: flex; gap: calc(var(--u) * 0.8); }
-.p-dots span { width: calc(var(--u) * 1.1); height: calc(var(--u) * 1.1); border-radius: 50%; background: var(--border); }
-.p-dots span.on { background: var(--accent); }
+/* Dots are buttons: small visible dot, larger click target via transparent padding. */
+.p-dots { display: flex; margin-left: calc(var(--u) * -0.9); }
+.p-dots button {
+  box-sizing: content-box; width: calc(var(--u) * 1.4); height: calc(var(--u) * 1.4);
+  padding: calc(var(--u) * 0.9); border: 0; border-radius: 50%;
+  background: var(--border); background-clip: content-box; cursor: pointer;
+}
+.p-dots button:hover { background-color: var(--text-2); }
+.p-dots button.on { background-color: var(--accent); }
 .p-progress { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--u) * 0.5); }
 #p-bar { width: 0; height: 100%; background: var(--accent); opacity: 0.6; }
 @keyframes p-progress { from { width: 0; } to { width: 100%; } }

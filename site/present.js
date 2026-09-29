@@ -1,7 +1,8 @@
 "use strict";
 
 // Presentation mode (?present): a full-screen slideshow for the classroom projector.
-// Handles only, no admin UI, no clickable UI except a small fullscreen button.
+// Handles only, no admin UI. The only controls: a small fullscreen button, the slide dots,
+// and the keyboard (arrows, space, PageUp/PageDown from a presentation clicker).
 // Uses the data, standings and chart helpers from app.js (loaded before this file).
 
 const Present = (() => {
@@ -11,6 +12,7 @@ const Present = (() => {
   P.graphAccounts = Math.min(P.graphAccounts, MAX_SELECTED);
 
   const MEDALS = ["🥇", "🥈", "🥉"];
+  const SLIDE_NAMES = { podium: "top 3", ranking: "stand", graph: "grafiek", risers: "stijgers van vandaag" };
   const slotOf = new Map(); // graph colours stay with the account while it stays in the top
   let data = null;
   let slides = [];
@@ -142,7 +144,10 @@ const Present = (() => {
     bar.style.animation = "none";
     void bar.offsetWidth;
     bar.style.animation = `p-progress ${P.slideSeconds}s linear forwards`;
-    document.getElementById("p-dots").innerHTML = slides.map((_, n) => `<span class="${n === index ? "on" : ""}"></span>`).join("");
+    // tabindex=-1: a clicked dot never keeps focus, so Space keeps meaning "next slide".
+    document.getElementById("p-dots").innerHTML = slides.map((sl, n) =>
+      `<button type="button" tabindex="-1" data-slide="${n}" class="${n === index ? "on" : ""}"` +
+      ` aria-label="Dia ${n + 1}: ${SLIDE_NAMES[sl.kind]}"${n === index ? ' aria-current="true"' : ""}></button>`).join("");
     clearTimeout(timer);
     timer = setTimeout(() => show(index + 1), P.slideSeconds * 1000);
   }
@@ -177,8 +182,23 @@ const Present = (() => {
     const fs = document.getElementById("p-fs");
     if (!document.fullscreenEnabled) fs.hidden = true;
     fs.addEventListener("click", () => {
+      fs.blur(); // keep Space for "next slide"
       if (document.fullscreenElement) document.exitFullscreen();
       else document.documentElement.requestFullscreen().catch(() => {});
+    });
+
+    // Manual skipping: click a dot, or use the keyboard. Every skip restarts that slide's timer.
+    document.getElementById("p-dots").addEventListener("click", (ev) => {
+      const dot = ev.target.closest("button[data-slide]");
+      if (dot && data) show(Number(dot.dataset.slide));
+    });
+    addEventListener("keydown", (ev) => {
+      if (!data || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      const next = ["ArrowRight", "PageDown"].includes(ev.key) || (ev.key === " " && !ev.shiftKey);
+      const prev = ["ArrowLeft", "PageUp"].includes(ev.key) || (ev.key === " " && ev.shiftKey);
+      if (!next && !prev) return;
+      ev.preventDefault();
+      show(index + (next ? 1 : -1));
     });
 
     // Hide the cursor (and the fullscreen button) after 3 s without mouse movement.

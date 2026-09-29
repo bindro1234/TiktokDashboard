@@ -100,7 +100,12 @@ Voor de beamer aan het begin van de les: **`https://bindro1234.github.io/TiktokD
   2. **de rest van de stand** in pagina's van 10 (plaats 4–13, 14–23, …), met ▲▼ en *sinds gisteren*;
   3. **grafiek** van de weergaven van de top 8;
   4. **Stijgers van vandaag**: de grootste groei in weergaven sinds gisteren.
-- Geen tabbladen, geen klikbare knoppen en geen beheerdersknop (ook niet met `?beheerder`); alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
+- Geen tabbladen en geen beheerdersknop (ook niet met `?beheerder`); alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
+- **Zelf doorklikken:**
+  - klik op een **bolletje** onderaan om naar die dia te springen;
+  - **→**, **spatiebalk** of **PageDown**: volgende dia;
+  - **←**, **Shift+spatie** of **PageUp**: vorige dia (een presentatieclicker werkt dus ook);
+  - na de laatste dia kom je weer bij de eerste, en andersom. Na elke sprong begint de timer van die dia opnieuw.
 - Standaard een **licht** thema (beamers maken donkere achtergronden flets). Donker: `?present&donker`.
 - Rechtsonder staat klein *Bijgewerkt: …*. De gegevens verversen vanzelf (elke 10 minuten); nieuwe cijfers komen in de volgende dia.
 - Instellen in `site/config.js` onder `present`: seconden per dia (`slideSeconds`), accounts per pagina (`pageSize`), accounts in de grafiek (`graphAccounts`, max. 8) en rijen bij de stijgers (`risers`). Tijdelijk een andere snelheid: `?present&sec=20`.

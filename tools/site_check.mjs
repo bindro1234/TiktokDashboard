@@ -87,10 +87,10 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   pp.on("console", (m) => m.type() === "error" && perrors.push(m.text()));
   await pp.goto(`${siteUrl}?present&beheerder&sec=2`, { waitUntil: "networkidle" });
   await pp.waitForSelector("#p-stage[data-kind]", { timeout: 30000 });
-  const count = await pp.$$eval("#p-dots span", (s) => s.length);
+  const count = await pp.$$eval("#p-dots button", (s) => s.length);
   const kinds = [];
   for (let i = 0; i < count; i++) {
-    await pp.waitForFunction((n) => document.querySelectorAll("#p-dots span")[n]?.classList.contains("on"), i, { timeout: 10000 });
+    await pp.waitForFunction((n) => document.querySelectorAll("#p-dots button")[n]?.classList.contains("on"), i, { timeout: 10000 });
     await pp.waitForTimeout(700); // let the enter animation finish
     const m = await pp.evaluate(() => {
       const st = document.getElementById("p-stage");
@@ -122,6 +122,35 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   if (perrors.length) fail(`present ${w}x${h}: browser errors: ${perrors.join(" | ")}`);
   await pp.close();
 }
+// Manual skipping (slow timer so auto-advance can't interfere): arrows, Space, Shift+Space,
+// PageUp/PageDown, wrap-around, and clicking a dot.
+{
+  const nav = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  await nav.goto(`${siteUrl}?present&sec=120`, { waitUntil: "networkidle" });
+  await nav.waitForSelector("#p-dots button.on", { timeout: 30000 });
+  const total = await nav.$$eval("#p-dots button", (b) => b.length);
+  const current = () => nav.$$eval("#p-dots button", (b) => b.findIndex((x) => x.classList.contains("on")));
+  const steps = [
+    ["ArrowRight", 1], ["Space", 2 % total], ["ArrowLeft", 1], ["Shift+Space", 0],
+    ["ArrowLeft", total - 1], ["PageUp", total - 2], ["PageDown", total - 1], ["ArrowRight", 0],
+  ];
+  const got = [];
+  for (const [key, want] of steps) {
+    await nav.keyboard.press(key);
+    const at = await current();
+    got.push(`${key}→${at + 1}`);
+    if (at !== want) fail(`present: ${key} went to slide ${at + 1}, expected ${want + 1}`);
+  }
+  await nav.click(`#p-dots button[data-slide="${total - 1}"]`);
+  const clicked = await current();
+  if (clicked !== total - 1) fail(`present: clicking the last dot went to slide ${clicked + 1}, expected ${total}`);
+  await nav.keyboard.press("Space"); // the clicked dot must not keep focus and swallow Space
+  const afterSpace = await current();
+  if (afterSpace !== 0) fail(`present: Space after a dot click went to slide ${afterSpace + 1}, expected 1`);
+  console.log(`present manual skip (${total} slides): ${got.join(" ")}, click dot→${clicked + 1}, Space→${afterSpace + 1}`);
+  await nav.close();
+}
+
 const dark = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 await dark.goto(`${siteUrl}?present&donker`, { waitUntil: "networkidle" });
 const darkTheme = await dark.evaluate(() => document.documentElement.dataset.theme);
