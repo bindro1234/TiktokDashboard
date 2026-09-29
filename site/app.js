@@ -15,6 +15,10 @@ const METRICS = {
 };
 const PERIODS = { day: "Per dag", week: "Per week" };
 
+// Admin mode (?beheerder): shows a link to the "Nu verversen" workflow. It is only a link;
+// GitHub itself checks that whoever starts the workflow has write access.
+const IS_ADMIN = new URLSearchParams(location.search).has("beheerder");
+
 const state = {
   data: null,
   view: "stand",
@@ -138,6 +142,9 @@ async function load() {
     if (!state.selected.length) state.data.standings.slice(0, 5).forEach((r) => select(r.handle));
     const upd = state.data.latest ? `Bijgewerkt: ${stampFmt.format(state.data.latest)}` : "Nog geen gegevens";
     document.getElementById("updated").textContent = `${upd} · ${state.data.accounts.length} accounts`;
+    if (IS_ADMIN) {
+      document.getElementById("admin-last").textContent = state.data.latest ? stampFmt.format(state.data.latest) : "nog geen";
+    }
     render();
   } catch (err) {
     const box = document.getElementById("error");
@@ -505,6 +512,12 @@ for (const id of ["board-body", "growth-body"]) {
 window.addEventListener("hashchange", route);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 
+if (IS_ADMIN && CFG.forceRefreshUrl) {
+  document.getElementById("admin-refresh").href = CFG.forceRefreshUrl;
+  document.getElementById("admin").hidden = false;
+}
+
 route();
 load();
-setInterval(load, (CFG.refreshMinutes || 10) * 60 * 1000);
+// The admin reloads every minute so new numbers show up soon after a refresh.
+setInterval(load, (IS_ADMIN ? 1 : CFG.refreshMinutes || 10) * 60 * 1000);

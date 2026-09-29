@@ -73,7 +73,7 @@ In GitHub: **Actions → Collect TikTok stats → Run workflow**. Kies een comma
 | Commando | Wat |
 |---|---|
 | `status` | verbruik deze maand, resterende runs, problemen in `accounts` |
-| `profiles` | profielen nu ophalen |
+| `profiles` | profielen nu ophalen (zonder 30-minutengrens) |
 | `refresh` | weekrefresh nu |
 | `check` | eenmalige controle nu (optioneel eigen lijst handles) |
 | `auto` | wat een geplande run ook doet |
@@ -89,6 +89,19 @@ python -m collector status
 python -m collector profiles --dry-run
 python -m unittest
 ```
+
+## Nu verversen (alleen beheerder)
+
+Extra profielrun buiten het schema, bijvoorbeeld vlak voor de les.
+
+1. Open de site met **`?beheerder`** achter het adres: `https://bindro1234.github.io/TiktokDashboard/?beheerder`. Alleen dan staat bovenaan de knop **↻ Ververs nu**, met de tijd van de laatste run.
+2. De knop opent de workflow **Nu verversen** op GitHub. Klik daar op **Run workflow**. Nieuwe cijfers staan binnen ~5–7 minuten op de site; in beheerdersmodus laadt de site elke minuut opnieuw.
+
+Beveiliging en kosten:
+
+- De site bevat **geen tokens of sleutels**; de knop is alleen een link. Alleen wie op GitHub is ingelogd met schrijfrechten op deze repo kan de workflow starten. `?beheerder` verbergt alleen de knop voor leerlingen, het is geen beveiliging.
+- Een run haalt alle actieve profielen op (1 record per account) en valt onder dezelfde **maandlimiet**.
+- **Dubbel tikken kost niets extra:** was de laatste echte profielrun (gepland of handmatig) minder dan 30 minuten geleden, dan wordt de run geweigerd en als `refused` gelogd in `run_log` (instelbaar via `force_refresh.min_minutes_between` in `config.yaml`). Loopt er net een geplande run, dan wacht de workflow daarop en wordt hij daarna geweigerd.
 
 ## Eenmalige installatie
 

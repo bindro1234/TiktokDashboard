@@ -82,6 +82,7 @@ class Config:
     check_date: dt.date | None
     check_accounts: int
     check_num_of_posts: int
+    force_min_minutes: int
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -120,4 +121,5 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         check_date=_date(check.get("date")),
         check_accounts=int(check.get("accounts", 4)),
         check_num_of_posts=int(check.get("num_of_posts", 40)),
+        force_min_minutes=int((raw.get("force_refresh") or {}).get("min_minutes_between", 30)),
     )

@@ -308,6 +308,23 @@ def window_state(run_log: list[dict]) -> tuple[set[str], dict[str, int]]:
     return done, failures
 
 
+PROFILE_RUN_TYPES = {"profiles", "force_refresh"}
+
+
+def last_profiles_run(run_log: list[dict]) -> dt.datetime | None:
+    """Time of the last profiles run that actually started a Bright Data job (so it may have cost records)."""
+    last = None
+    for row in run_log:
+        if row.get("run_type") not in PROFILE_RUN_TYPES or truthy(row.get("dry_run")):
+            continue
+        if not str(row.get("snapshot_ids", "")).strip():
+            continue
+        ts = parse_ts(row.get("timestamp"))
+        if ts and (last is None or ts > last):
+            last = ts
+    return last
+
+
 def remaining_profile_runs(cfg: Config, now_local: dt.datetime, done: set[str]) -> int:
     """Scheduled profile windows still to come in this calendar month (UTC), not yet run."""
     now_utc = now_local.astimezone(UTC)

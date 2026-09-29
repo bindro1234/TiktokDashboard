@@ -125,6 +125,21 @@ class Collector:
     def run_profiles(self, window: str) -> RunResult:
         return self.run_guarded(RunResult("profiles", window, self.dry_run), self._profiles)
 
+    def run_force_refresh(self, window: str) -> RunResult:
+        return self.run_guarded(RunResult("force_refresh", window, self.dry_run), self._force_refresh)
+
+    def _force_refresh(self, res: RunResult) -> None:
+        """On-demand profiles run; refused when a real profiles run happened too recently (double tap)."""
+        last = model.last_profiles_run(self.admin.read("run_log"))
+        if last is not None:
+            minutes = (self.now_utc - last).total_seconds() / 60
+            if minutes < self.cfg.force_min_minutes:
+                res.status = "refused"
+                res.notes.append(f"REFUSED: last profiles run was {minutes:.0f} min ago "
+                                 f"(minimum {self.cfg.force_min_minutes} min between runs)")
+                return
+        self._profiles(res)
+
     def _profiles(self, res: RunResult) -> None:
         handles, issues = self.accounts()
         res.notes.extend(issues)
