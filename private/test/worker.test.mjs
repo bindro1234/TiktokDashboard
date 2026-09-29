@@ -2,7 +2,7 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, createSign } from "node:crypto";
-import { handle } from "../src/worker.js";
+import { handle, runSchedule } from "../src/worker.js";
 import { resetCertCache } from "../src/access.js";
 import { resetTokenCache } from "../src/google.js";
 import CONFIG from "../src/config.json" with { type: "json" };
@@ -240,4 +240,36 @@ test("Nu verversen respects the cooldown and a running refresh, then dispatches"
   assert.ok(dispatch);
   assert.deepEqual(JSON.parse(dispatch.body), { ref: "main" });
   assert.ok(sheets.activity_log.some((r) => r[2] === "nu verversen"));
+});
+
+// ---------- backup timer (Cloudflare Cron Trigger) ----------
+
+test("backup timer starts the collector only when a window is open and not done", async () => {
+  const at = (iso) => Date.parse(iso);
+  const dispatches = () => calls.filter((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+
+  // Outside every window: no Google or GitHub calls at all.
+  let r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T12:05:00+02:00"));
+  assert.equal(r.action, "no window open");
+  assert.equal(calls.length, 0);
+
+  // Evening window open, not done: dispatch "auto" (not a dry run) on main.
+  sheets._runs = [{ status: "completed" }];
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"));
+  assert.equal(r.action, "collector started");
+  assert.deepEqual(r.due, ["2026-10-01/avond"]);
+  assert.equal(dispatches().length, 1);
+  assert.deepEqual(JSON.parse(dispatches()[0].body), { ref: "main", inputs: { command: "auto", dry_run: "false", handles: "" } });
+
+  // A collector run is already queued or running: don't pile up.
+  sheets._runs = [{ status: "queued" }];
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:45:00+02:00"));
+  assert.equal(r.action, "collector already running");
+  assert.equal(dispatches().length, 1);
+
+  // Window done (also "skipped" right after Nu verversen): nothing to do.
+  sheets.run_log.push(["2026-10-01T16:30:00Z", "profiles", "2026-10-01/avond", false, 3, 0, 0, "skipped", "", ""]);
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T19:05:00+02:00"));
+  assert.equal(r.action, "windows already done");
+  assert.equal(dispatches().length, 1);
 });

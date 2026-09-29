@@ -29,6 +29,7 @@ def build(cfg: config.Config) -> dict:
             "skipRecentMinutes": cfg.skip_recent_minutes,
             "maxAttemptsPerWindow": cfg.max_attempts_per_window,
         },
+        "windowCheckDate": cfg.check_date.isoformat() if cfg.check_date else None,
         "refreshNumOfPosts": cfg.refresh_num_of_posts,
         "forceMinMinutes": cfg.force_min_minutes,
         "workflows": {"force": "force-refresh.yml", "collect": "collect.yml"},

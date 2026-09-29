@@ -16,6 +16,13 @@ binding = "ASSETS"
 # Every request, also for the page and scripts, goes through the Worker's Access check first.
 run_worker_first = true
 
+# Backup timer for the collector windows (GitHub's own cron in collect.yml stays and can skip
+# firings). UTC, covering summer and winter time: mornings and evenings every day, Friday
+# mornings for the weekly refresh. The Worker only starts the collector when a window from
+# config.yaml is open and still needs its run (see runSchedule in src/worker.js).
+[triggers]
+crons = ["5,25,45 4-8,16-18 * * *"]
+
 [vars]
 GITHUB_REPO = "bindro1234/TiktokDashboard"
 
