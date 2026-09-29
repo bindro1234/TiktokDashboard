@@ -10,6 +10,9 @@ window.TT_CONFIG = {
   campaignStart: "2026-09-28",
   campaignEnd: "2026-10-26",
   refreshMinutes: 10,
+  // Presentation mode (?present): seconds per slide (?present&sec=20 overrides it),
+  // accounts per ranking page, accounts in the graph (max 8) and rows in "Stijgers van vandaag".
+  present: { slideSeconds: 15, pageSize: 10, graphAccounts: 8, risers: 10 },
   // "Nu verversen" workflow page, shown to the admin via ?beheerder. Starting it
   // requires being logged in to GitHub with write access; the site holds no tokens.
   forceRefreshUrl: "https://github.com/bindro1234/TiktokDashboard/actions/workflows/force-refresh.yml",

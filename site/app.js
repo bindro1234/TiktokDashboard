@@ -15,9 +15,12 @@ const METRICS = {
 };
 const PERIODS = { day: "Per dag", week: "Per week" };
 
+const PARAMS = new URLSearchParams(location.search);
+// Presentation mode (?present): classroom slideshow, see present.js.
+const IS_PRESENT = PARAMS.has("present");
 // Admin mode (?beheerder): shows a link to the "Nu verversen" workflow. It is only a link;
-// GitHub itself checks that whoever starts the workflow has write access.
-const IS_ADMIN = new URLSearchParams(location.search).has("beheerder");
+// GitHub itself checks that whoever starts the workflow has write access. Never in presentation mode.
+const IS_ADMIN = PARAMS.has("beheerder") && !IS_PRESENT;
 
 const state = {
   data: null,
@@ -138,6 +141,10 @@ async function load() {
   try {
     const [h, hist, p] = await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")]);
     state.data = build(h, hist, p);
+    if (IS_PRESENT) {
+      Present.update(state.data);
+      return;
+    }
     document.getElementById("error").hidden = true;
     if (!state.selected.length) state.data.standings.slice(0, 5).forEach((r) => select(r.handle));
     const upd = state.data.latest ? `Bijgewerkt: ${stampFmt.format(state.data.latest)}` : "Nog geen gegevens";
@@ -147,6 +154,10 @@ async function load() {
     }
     render();
   } catch (err) {
+    if (IS_PRESENT) {
+      Present.error(err.message);
+      return;
+    }
     const box = document.getElementById("error");
     box.textContent = `Kon de gegevens niet laden: ${err.message}`;
     box.hidden = false;
@@ -517,7 +528,11 @@ if (IS_ADMIN && CFG.forceRefreshUrl) {
   document.getElementById("admin").hidden = false;
 }
 
-route();
-load();
+// Start once every script (including present.js) has run.
+document.addEventListener("DOMContentLoaded", () => {
+  if (IS_PRESENT) Present.start();
+  else route();
+  load();
+});
 // The admin reloads every minute so new numbers show up soon after a refresh.
 setInterval(load, (IS_ADMIN ? 1 : CFG.refreshMinutes || 10) * 60 * 1000);

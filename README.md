@@ -90,6 +90,21 @@ python -m collector profiles --dry-run
 python -m unittest
 ```
 
+## Presentatiemodus (voor de docent)
+
+Voor de beamer aan het begin van de les: **`https://bindro1234.github.io/TiktokDashboard/?present`**
+
+- Gemaakt voor 1920×1080 en 1280×720: grote letters, alles past op één scherm, niets scrollt.
+- Wisselt automatisch elke 15 seconden:
+  1. **Top 3** op een podium;
+  2. **de rest van de stand** in pagina's van 10 (plaats 4–13, 14–23, …), met ▲▼ en *sinds gisteren*;
+  3. **grafiek** van de weergaven van de top 8;
+  4. **Stijgers van vandaag**: de grootste groei in weergaven sinds gisteren.
+- Geen tabbladen, geen klikbare knoppen en geen beheerdersknop (ook niet met `?beheerder`); alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
+- Standaard een **licht** thema (beamers maken donkere achtergronden flets). Donker: `?present&donker`.
+- Rechtsonder staat klein *Bijgewerkt: …*. De gegevens verversen vanzelf (elke 10 minuten); nieuwe cijfers komen in de volgende dia.
+- Instellen in `site/config.js` onder `present`: seconden per dia (`slideSeconds`), accounts per pagina (`pageSize`), accounts in de grafiek (`graphAccounts`, max. 8) en rijen bij de stijgers (`risers`). Tijdelijk een andere snelheid: `?present&sec=20`.
+
 ## Nu verversen (alleen beheerder)
 
 Extra profielrun buiten het schema, bijvoorbeeld vlak voor de les.
@@ -120,4 +135,4 @@ Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `h
 - **Groei**: erbij per dag of per week, plus de grootste stijgers.
 - **Account**: klik op een account voor details en alle posts.
 
-De site leest de CSV via de "Publiceren op internet"-link: `publishedId` in `site/config.js` is het deel van die link dat met `2PACX-` begint. Publiceer je de sheet opnieuw en verandert de link, pas het dan daar aan. De workflow *Check website* controleert na elke deploy of de links en de site werken.
+De site leest de CSV via de "Publiceren op internet"-link: `publishedId` in `site/config.js` is het deel van die link dat met `2PACX-` begint. Publiceer je de sheet opnieuw en verandert de link, pas het dan daar aan. De workflow *Check website* controleert na elke deploy of de links en de site werken, ook de presentatiemodus op 1920×1080 en 1280×720.
