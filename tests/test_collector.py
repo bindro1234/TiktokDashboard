@@ -44,6 +44,12 @@ class HandleTests(unittest.TestCase):
         self.assertFalse(any(name in " ".join(issues) for name in ["'A'", "'B'", "'C'", "'E'"]))
 
 
+class SheetTests(unittest.TestCase):
+    def test_column_letters(self):
+        from collector.sheets import _col
+        self.assertEqual([_col(1), _col(13), _col(26), _col(27), _col(52)], ["A", "M", "Z", "AA", "AZ"])
+
+
 class WindowTests(unittest.TestCase):
     def test_windows_across_dst(self):
         morning = CFG.profile_windows[0]
@@ -113,7 +119,7 @@ def profile_record(handle, videos, pinned=(), reposts=(), videos_count=None):
         "input": {"url": f"https://www.tiktok.com/@{handle}"},
         "pinned_posts": [{"url": f"https://www.tiktok.com/@{handle}/video/{v}"} for v in pinned],
         "top_posts_data": [{"post_id": vid, "post_url": f"https://www.tiktok.com/@{'other' if vid in reposts else handle}/video/{vid}",
-                            "post_type": "video"} for vid, _, _ in videos],
+                            "post_type": "video", "hashtags": ["FYP", "glu"], "description": "x"} for vid, _, _ in videos],
         "top_videos": [{"video_id": vid, "create_date": date, "playcount": views, "diggcount": 1,
                         "commentcount": 0, "share_count": 0} for vid, date, views in videos],
     }
@@ -134,6 +140,30 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(out["window"]["pinned_in_window"], 1)
         # Oldest own non-pinned video ignores the pinned one and the repost.
         self.assertEqual(out["window"]["window_oldest_nonpinned"], "2026-09-27T21:59:00Z")
+        self.assertEqual(out["videos"][0]["hashtags"], "fyp glu")
+        self.assertEqual(out["seen_ids"], {"100", "101", "90", "102", "103"})
+
+    def test_parse_hashtags(self):
+        self.assertEqual(model.parse_hashtags(["#FYP", "glu", "fyp", None, "undefined"]), "fyp glu")
+        self.assertEqual(model.parse_hashtags(None, "Kijk dit! #Glu #schoolproject, #fyp."), "glu schoolproject fyp")
+        self.assertEqual(model.parse_hashtags([], ""), "")
+
+    def test_mark_missing(self):
+        posts = [
+            {"video_id": "1", "handle": "a", "created_at": "2026-10-01T10:00:00Z", "missing_since": ""},
+            {"video_id": "2", "handle": "a", "created_at": "2026-10-03T10:00:00Z", "missing_since": ""},
+            {"video_id": "3", "handle": "a", "created_at": "2026-10-04T10:00:00Z", "missing_since": "t0"},
+            {"video_id": "4", "handle": "b", "created_at": "2026-10-04T10:00:00Z", "missing_since": ""},
+        ]
+        # Window of @a reaches back to 2 Oct and holds only video 5: video 1 simply aged out,
+        # video 2 disappeared, video 3 was already flagged. @b was not in this run.
+        flagged = model.mark_missing(posts, {"a": ({"5"}, "2026-10-02T00:00:00Z")}, "t1")
+        self.assertEqual(flagged, ["2"])
+        self.assertEqual([p["missing_since"] for p in posts], ["", "t1", "t0", ""])
+        # Seen again: the flag is cleared.
+        merged = model.upsert_posts(posts, [{"video_id": "2", "handle": "a", "created_at": "2026-10-03T10:00:00Z",
+                                             "views": 1, "pinned": False, "hashtags": ""}], "t2", "profile")
+        self.assertEqual({r["video_id"]: r["missing_since"] for r in merged}["2"], "")
 
     def test_upsert_keeps_views_monotonic_and_old_videos(self):
         existing = [{"video_id": "1", "handle": "a", "created_at": "2026-09-29T10:00:00Z", "views": 500,
@@ -159,6 +189,7 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(model.parse_post({**base, "account_id": "other"}, "stu", CAMP)[1], "repost")
         self.assertEqual(model.parse_post({**base, "create_time": "2026-09-01T10:00:00Z"}, "stu", CAMP)[1],
                          "outside campaign")
+        self.assertEqual(model.parse_post({**base, "hashtags": ["Glu"]}, "stu", CAMP)[0]["hashtags"], "glu")
 
 
 class RefreshPlanTests(unittest.TestCase):
@@ -226,6 +257,28 @@ class ForceRefreshTests(unittest.TestCase):
                                "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
         self.assertEqual((row["run_type"], row["status"], row["actual_records"]), ("force_refresh", "refused", 0))
         self.assertIn("20 min ago", row["notes"])
+
+    def run_scheduled(self, run_log):
+        admin = FakeSheet({"run_log": run_log, "accounts": []})
+        col = Collector(CFG, admin, FakeSheet({}), bd=None, now=self.NOW)
+        col.run_scheduled_profiles("2026-10-01/avond")
+        return admin.tabs["run_log"][-1]
+
+    def test_scheduled_run_skipped_right_after_a_refresh(self):
+        self.assertEqual(CFG.skip_recent_minutes, 60)
+        row = self.run_scheduled([{"timestamp": "2026-10-01T09:05:00Z", "run_type": "force_refresh",
+                                   "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
+        self.assertEqual((row["run_type"], row["status"], row["actual_records"]), ("profiles", "skipped", 0))
+        self.assertIn("SKIPPED: last profiles run was 55 min ago", row["notes"])
+        # A skipped window counts as done, so later cron firings don't run it again.
+        done, _ = model.window_state([row])
+        self.assertIn("2026-10-01/avond", done)
+
+    def test_scheduled_run_goes_ahead_after_an_hour(self):
+        row = self.run_scheduled([{"timestamp": "2026-10-01T08:55:00Z", "run_type": "force_refresh",
+                                   "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
+        self.assertNotIn("SKIPPED", row["notes"])
+        self.assertIn("no active valid handles", row["notes"])
 
     def test_allowed_after_cooldown(self):
         row = self.run_force([{"timestamp": "2026-10-01T09:25:00Z", "run_type": "force_refresh",

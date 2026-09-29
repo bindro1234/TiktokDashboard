@@ -10,6 +10,8 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 - **Weekrefresh** op vrijdag vanaf 08:30: haalt alleen campagneposts op die ouder zijn dan dat venster van ~16 video's, zodat late weergaven op oudere video's ook meetellen. Accounts waarbij het venster al teruggaat tot vóór de campagnestart worden overgeslagen (0 records).
 - Alleen video's die zijn geplaatst **vanaf 28 september** tellen mee. Foto-/carrouselposts tellen mee, reposts niet.
 - Weergaven van een video kunnen nooit omlaag: valt een video uit het venster, dan blijven de laatst bekende cijfers staan.
+- Per post worden ook de **hashtags** bewaard (kolom `hashtags` in `posts_latest`, zonder `#`, gescheiden door spaties).
+- **Verdwenen video's:** staat een video niet meer in het venster terwijl hij daar nog wel in hoort (hij is nieuwer dan de oudste video in het venster), dan krijgt hij in `posts_latest` de kolom `missing_since` (tijd van de run waarin hij voor het eerst ontbrak). Waarschijnlijk verwijderd of verborgen. De laatst bekende cijfers blijven meetellen. Duikt de video weer op, dan wordt `missing_since` weer leeg.
 
 ## Privacy
 
@@ -28,7 +30,7 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | openbaar | `handles` | actieve handles, privé ja/nee, laatste status |
 | openbaar | `profile_snapshots` | volgers, volgend, likes, aantal video's per run |
-| openbaar | `posts_latest` | één rij per video (`video_id`), steeds bijgewerkt met de nieuwste cijfers |
+| openbaar | `posts_latest` | één rij per video (`video_id`), steeds bijgewerkt met de nieuwste cijfers, plus `hashtags` en `missing_since` |
 | openbaar | `history` | per run per account: totaal weergaven, volgers, likes en posts in de campagne (voor de grafieken) |
 
 ### Accounts toevoegen
@@ -40,8 +42,10 @@ Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `na
 - Bright Data rekent per record: 1 profiel = 1 record, 1 post = 1 record. 5.000 records per kalendermaand zijn gratis, daarna ca. $1,50 per 1.000.
 - **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu 4.500). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen.
 - Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen, zodat de hoofdbron nooit zonder budget komt te zitten.
-- De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu 20). Dat is ook de bovengrens die de dry-run gebruikt.
-- Schatting bij 45 accounts: proefweek ≈ 700 records; oktober ≈ 2.950 (realistisch) tot ≈ 4.140 (als iedereen heel veel post).
+- De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu **40**). Dat is ook de bovengrens die de dry-run gebruikt en die wordt gereserveerd. Met 40 worden ook bij iemand die drie weken lang twee keer per dag post de oudste campagnedagen niet afgekapt (met 20 wel).
+- Schatting bij 45 accounts in oktober: profielruns ≈ 2.700; weekrefreshes ≈ 675 (iedereen 1 post per dag) tot ≈ 1.300 (2 per dag). Samen ≈ 3.100–3.300 van de 4.500. Een weekrefresh reserveert vooraf (aantal accounts dat oudere posts nodig heeft) × 40, maximaal 45 × 40 = 1.800 records. Er wordt alleen verbruikt wat er echt is.
+- Let op 23 oktober: bij ± 1 post per dag past die refresh net (≈ 2.300 verbruikt + 1.800 gereserveerd + 315 voor de laatste profielruns ≈ 4.415). Posten veel leerlingen twee keer per dag, dan wordt die refresh **geweigerd** (status `refused` in `run_log`) en moet je `budget.monthly_cap` verhogen om hem toch te draaien.
+- Wordt het toch krap, dan kun je `budget.monthly_cap` verhogen (Bright Data rekent daarboven ca. $1,50 per 1.000 records).
 
 ## Schema
 
@@ -53,6 +57,8 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 | Profielen avond | 18:00 – 19:59 |
 | Weekrefresh | vrijdag 08:30 – 10:00 |
 | Eenmalige controle | 5 okt, direct na de avondrun |
+
+**Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun was, bijvoorbeeld via *Nu verversen* om 17:30. Posts die daarna nog komen, worden bij de volgende run (de ochtendrun) meegenomen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`.
 
 Alles staat in **`config.yaml`**. Pas je tijden aan, controleer dan ook de `cron`-regels in `.github/workflows/collect.yml` (de test `test_cron_covers_windows` controleert dat).
 
@@ -92,7 +98,7 @@ python -m unittest
 
 ## Presentatiemodus (voor de docent)
 
-Voor de beamer aan het begin van de les: **`https://bindro1234.github.io/TiktokDashboard/?present`**
+Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**, of ga naar **`https://bindro1234.github.io/TiktokDashboard/?present`**
 
 - Gemaakt voor 1920×1080 en 1280×720: grote letters, alles past op één scherm, niets scrollt.
 - Wisselt automatisch elke 15 seconden:
@@ -135,9 +141,11 @@ Beveiliging en kosten:
 
 Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history` en `posts_latest`, en ververst zichzelf elke 10 minuten.
 
-- **Stand**: ranglijst op totaal weergaven, met `+ sinds gisteren`, stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan.
+- **Stand**: ranglijst op totaal weergaven, met `+ sinds gisteren`, stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
 - **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen weergaven, volgers, posts en likes. Overige accounts kunnen grijs erbij.
 - **Groei**: erbij per dag of per week, plus de grootste stijgers.
-- **Account**: klik op een account voor details en alle posts.
+- **Hashtags**: de meest gebruikte hashtags en de hashtags met de meeste weergaven (van campagneposts), met het aantal accounts. Klik op een hashtag om te zien welke accounts hem gebruiken.
+- **Account**: klik op een account voor details, de eigen hashtags en alle posts.
+- Knop **▶ Presentatie** rechtsboven: opent de presentatiemodus in een nieuw tabblad.
 
 De site leest de CSV via de "Publiceren op internet"-link: `publishedId` in `site/config.js` is het deel van die link dat met `2PACX-` begint. Publiceer je de sheet opnieuw en verandert de link, pas het dan daar aan. De workflow *Check website* controleert na elke deploy of de links en de site werken, ook de presentatiemodus op 1920×1080 en 1280×720.

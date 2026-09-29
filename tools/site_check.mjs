@@ -36,7 +36,8 @@ for (const [tab, cols] of Object.entries(expected)) {
   const header = (lines[0] || "").split(",").map((h) => h.trim());
   const cors = res.headers.get("access-control-allow-origin");
   const type = res.headers.get("content-type");
-  console.log(`${tab}: HTTP ${res.status}, type=${type}, CORS=${cors}, data rows=${Math.max(0, lines.length - 1)}`);
+  console.log(`${tab}: HTTP ${res.status}, type=${type}, CORS=${cors}, data rows=${Math.max(0, lines.length - 1)}`
+    + (tab === "posts" ? `, hashtags column=${header.includes("hashtags")}` : ""));
   if (!res.ok) fail(`${tab}: HTTP ${res.status}`);
   else if (text.trimStart().startsWith("<")) fail(`${tab}: got HTML instead of CSV (not published?)`);
   else if (!cols.every((c) => header.includes(c))) fail(`${tab}: header is [${header.join(", ")}]`);
@@ -60,6 +61,38 @@ for (const hash of ["#stand", "#grafiek", "#groei"]) {
   console.log(`site ${hash}: board rows=${rows}, charts=${canvases}, updated="${await page.textContent("#updated")}"`);
   if (error) fail(`site ${hash}: shows error "${error}"`);
   if (hash === "#stand" && rows === 0) fail("site: leaderboard is empty");
+}
+// Hashtags tab renders (it may be empty until the collector has stored hashtags).
+{
+  await page.goto(siteUrl + "#hashtags", { waitUntil: "networkidle" });
+  await page.waitForSelector("#tags-body tr", { timeout: 15000 }).catch(() => {});
+  const tagRows = await page.$$eval("#tags-body tr[data-tag]", (r) => r.length);
+  const visible = await page.isVisible("#view-hashtags");
+  console.log(`site #hashtags: visible=${visible}, hashtag rows=${tagRows}, "${await page.textContent("#tags-meta")}"`);
+  if (!visible) fail("site: hashtags view does not open");
+}
+// Sortable leaderboard: a header click sorts high to low, a second click reverses it.
+{
+  await page.goto(siteUrl + "#stand", { waitUntil: "networkidle" });
+  await page.waitForSelector("#board-body tr[data-handle]", { timeout: 30000 });
+  const values = (col) => page.$$eval(`#board-body td.${col}`, (tds) =>
+    tds.map((td) => td.textContent.trim()).filter((t) => t !== "–").map((t) => Number(t.replace(/\./g, ""))));
+  const sorted = (list, dir) => list.every((v, i) => i === 0 || (v - list[i - 1]) * dir <= 0);
+  for (const col of ["followers", "posts", "likes", "views"]) {
+    const btn = `#view-stand th[data-sort="${col}"] button`;
+    await page.click(btn);
+    const desc = await values(`c-${col}`);
+    const ariaDesc = await page.getAttribute(`#view-stand th[data-sort="${col}"]`, "aria-sort");
+    await page.click(btn);
+    const asc = await values(`c-${col}`);
+    const ariaAsc = await page.getAttribute(`#view-stand th[data-sort="${col}"]`, "aria-sort");
+    const ok = sorted(desc, 1) && sorted(asc, -1) && ariaDesc === "descending" && ariaAsc === "ascending";
+    console.log(`site sort ${col}: ${ok ? "ok" : "WRONG"} (${desc.length} values)`);
+    if (!ok) fail(`site: sorting on ${col} is wrong (aria ${ariaDesc}/${ariaAsc})`);
+  }
+  const link = await page.getAttribute("#present-link", "href");
+  console.log(`site presentatie button: href=${link}, visible=${await page.isVisible("#present-link")}`);
+  if (link !== "?present" || !(await page.isVisible("#present-link"))) fail("site: Presentatie button missing");
 }
 const first = await page.$eval("#board-body tr[data-handle]", (r) => r.dataset.handle).catch(() => null);
 if (first) {

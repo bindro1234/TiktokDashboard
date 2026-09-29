@@ -31,6 +31,10 @@ budget:
 schedule:
   # A window that failed is retried by the next cron firing, at most this many times.
   max_attempts_per_window: 2
+  # A scheduled profiles run is skipped (window done, 0 records) when a real profiles run,
+  # e.g. "Nu verversen", happened less than this many minutes ago. Posts after that come
+  # in with the next run.
+  skip_if_profiles_ran_within_minutes: 60
   profile_runs:
     - name: ochtend
       start: "06:30"
@@ -46,7 +50,10 @@ schedule:
 
 posts_refresh:
   # Max posts fetched per account in the weekly refresh (also the dry-run upper bound).
-  num_of_posts: 20
+  # 40 covers an account that posts twice a day for three weeks, so older campaign days
+  # are never cut off. Budget: 45 accounts x 40 = 1,800 reserved per refresh; really used
+  # is only the posts that exist (≈1,300 in all of October if everyone posts daily).
+  num_of_posts: 40
 
 window_check:
   # One-time check (trial week): full campaign pull for the accounts with the most

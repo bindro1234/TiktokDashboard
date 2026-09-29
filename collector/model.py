@@ -11,6 +11,7 @@ from .handles import normalize_handle
 
 VIDEO_ID_RE = re.compile(r"/(?:video|photo)/(\d+)")
 URL_AUTHOR_RE = re.compile(r"tiktok\.com/@([^/?#]+)", re.IGNORECASE)
+HASHTAG_RE = re.compile(r"#([^\s#.,!?;:()\[\]{}\"'@]+)")
 NO_POSTS_MESSAGE = "no public posts in the profile for the specified period"
 
 SCHEMA_ADMIN = {
@@ -24,7 +25,7 @@ SCHEMA_DATA = {
     "handles": ["handle", "is_private", "followers", "last_scraped", "last_status"],
     "profile_snapshots": ["timestamp", "handle", "followers", "following", "likes", "video_count", "is_private"],
     "posts_latest": ["video_id", "handle", "created_at", "views", "likes", "comments", "shares", "post_type",
-                     "pinned", "first_seen", "last_seen", "source"],
+                     "pinned", "first_seen", "last_seen", "source", "hashtags", "missing_since"],
     "history": ["timestamp", "handle", "total_views", "followers", "campaign_likes", "campaign_posts"],
 }
 
@@ -71,6 +72,23 @@ def bd_date(day: dt.date) -> str:
     return text
 
 
+def parse_hashtags(tags, description=None) -> str:
+    """Hashtags as one lowercase, space separated string without '#', e.g. "fyp glu".
+
+    Bright Data gives a list of strings; when it is missing, fall back to #words in the description.
+    """
+    if isinstance(tags, str):
+        tags = re.split(r"[\s,]+", tags)
+    if not tags:
+        tags = HASHTAG_RE.findall(str(description or ""))
+    out: list[str] = []
+    for tag in tags:
+        tag = str(tag or "").strip().lstrip("#").lower()
+        if tag and tag not in ("undefined", "null") and tag not in out:
+            out.append(tag)
+    return " ".join(out)
+
+
 def is_error(rec: dict) -> bool:
     return bool(rec.get("error") or rec.get("error_code")) and not (rec.get("post_id") or rec.get("account_id"))
 
@@ -106,17 +124,20 @@ def parse_profile(rec: dict, handle: str, campaign: Campaign, now: str) -> dict:
     for post in rec.get("top_posts_data") or []:
         match = URL_AUTHOR_RE.search(str(post.get("post_url") or ""))
         post_info[str(post.get("post_id") or "")] = (
-            match.group(1).lower() if match else None, post.get("post_type"))
+            match.group(1).lower() if match else None, post.get("post_type"),
+            parse_hashtags(post.get("hashtags"), post.get("description")))
 
     videos, reposts = [], 0
     all_dates, own_nonpinned_dates = [], []
+    seen_ids = set()
     for item in rec.get("top_videos") or []:
         vid = str(item.get("video_id") or "")
         if not vid.isdigit():
             continue
+        seen_ids.add(vid)
         created = parse_ts(item.get("create_date"))
         pinned = vid in pinned_ids
-        author, post_type = post_info.get(vid, (None, None))
+        author, post_type, hashtags = post_info.get(vid, (None, None, ""))
         is_repost = bool(author and author != handle)
         if created:
             all_dates.append(created)
@@ -131,7 +152,7 @@ def parse_profile(rec: dict, handle: str, campaign: Campaign, now: str) -> dict:
             "video_id": vid, "handle": handle, "created_at": iso(created),
             "views": num(item.get("playcount")), "likes": num(item.get("diggcount")),
             "comments": num(item.get("commentcount")), "shares": num(item.get("share_count")),
-            "post_type": post_type or "", "pinned": pinned,
+            "post_type": post_type or "", "pinned": pinned, "hashtags": hashtags,
         })
 
     snapshot = {
@@ -146,7 +167,7 @@ def parse_profile(rec: dict, handle: str, campaign: Campaign, now: str) -> dict:
         "window_oldest": iso(min(all_dates)) if all_dates else "",
         "window_oldest_nonpinned": iso(min(own_nonpinned_dates)) if own_nonpinned_dates else "",
     }
-    return {"snapshot": snapshot, "videos": videos, "window": window, "reposts": reposts}
+    return {"snapshot": snapshot, "videos": videos, "window": window, "reposts": reposts, "seen_ids": seen_ids}
 
 
 # ---------- posts records ----------
@@ -173,6 +194,7 @@ def parse_post(rec: dict, handle: str, campaign: Campaign) -> tuple[dict | None,
         "views": num(rec.get("play_count")), "likes": num(rec.get("digg_count")),
         "comments": num(rec.get("comment_count")), "shares": shares,
         "post_type": rec.get("post_type") or "", "pinned": None,
+        "hashtags": parse_hashtags(rec.get("hashtags"), rec.get("description")),
     }, None
 
 
@@ -186,7 +208,8 @@ def upsert_posts(existing: list[dict], incoming: list[dict], now: str, source: s
         old = by_id.get(vid)
         if old is None:
             row = {k: video.get(k) for k in SCHEMA_DATA["posts_latest"] if k in video}
-            row.update(pinned=bool(video.get("pinned")), first_seen=now, last_seen=now, source=source)
+            row.update(pinned=bool(video.get("pinned")), first_seen=now, last_seen=now, source=source,
+                       missing_since="")
             by_id[vid] = row
             continue
         old_views, new_views = num(old.get("views")), video.get("views")
@@ -198,8 +221,32 @@ def upsert_posts(existing: list[dict], incoming: list[dict], now: str, source: s
         if video.get("pinned") is not None:
             old["pinned"] = bool(video["pinned"])
         old["post_type"] = video.get("post_type") or old.get("post_type", "")
-        old.update(handle=video["handle"], created_at=video["created_at"], last_seen=now, source=source)
+        old["hashtags"] = video.get("hashtags") or old.get("hashtags", "")
+        old.update(handle=video["handle"], created_at=video["created_at"], last_seen=now, source=source,
+                   missing_since="")
     return sorted(by_id.values(), key=lambda r: (str(r.get("handle")), str(r.get("created_at"))))
+
+
+def mark_missing(posts: list[dict], seen: dict[str, tuple[set[str], str]], now: str) -> list[str]:
+    """Flag videos that should be in an account's top_videos window but weren't (deleted, made
+    private, or dropped by the scraper). seen maps handle -> (video ids in the window, oldest own
+    non-pinned date in the window). Videos keep their last stats; missing_since is cleared as soon as
+    a run sees the video again. Returns the video ids newly flagged in this run.
+    """
+    flagged = []
+    for row in posts:
+        entry = seen.get(str(row.get("handle")))
+        if not entry:
+            continue
+        ids, oldest = entry
+        oldest_ts, created = parse_ts(oldest), parse_ts(row.get("created_at"))
+        vid = str(row.get("video_id"))
+        if vid in ids or oldest_ts is None or created is None or created < oldest_ts:
+            continue
+        if not str(row.get("missing_since") or "").strip():
+            row["missing_since"] = now
+            flagged.append(vid)
+    return flagged
 
 
 def campaign_totals(posts: list[dict], campaign: Campaign) -> dict[str, dict]:

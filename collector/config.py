@@ -83,6 +83,7 @@ class Config:
     check_accounts: int
     check_num_of_posts: int
     force_min_minutes: int
+    skip_recent_minutes: int
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -122,4 +123,5 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         check_accounts=int(check.get("accounts", 4)),
         check_num_of_posts=int(check.get("num_of_posts", 40)),
         force_min_minutes=int((raw.get("force_refresh") or {}).get("min_minutes_between", 30)),
+        skip_recent_minutes=int(sched.get("skip_if_profiles_ran_within_minutes", 0)),
     )
