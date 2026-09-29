@@ -4,9 +4,9 @@ window.TT_CONFIG = {
   sheetId: "1syVgGLY2t8XnllGAkWSVvGXmElDJW7ng2pLVQKSXWjA",
   // Tab ids (gid) inside the public sheet.
   gids: { handles: 0, history: 127434821, posts: 2114443715 },
-  // Optional: paste the "Publish to web" link id (the part after /d/e/, starting with 2PACX-)
-  // if the default URL below does not work.
-  publishedId: "",
+  // "Publish to web" link id (the part after /d/e/, starting with 2PACX-). Required: a sheet
+  // that is published but not shared by link is only served through this id.
+  publishedId: "2PACX-1vTcErigCeOR2PncRcPTm11YH09aUMkoOq6uS_yKQVeBWBNn4ZQIYJ1g69kW6NmWKFlOR9_-pIAKOiks",
   campaignStart: "2026-09-28",
   campaignEnd: "2026-10-26",
   refreshMinutes: 10,
