@@ -29,6 +29,11 @@ const Present = (() => {
 
   const title = (text, sub = "") => `<h2 class="p-title">${text}${sub ? ` <span class="p-sub">${sub}</span>` : ""}</h2>`;
   const badge = (r) => (r.isPrivate ? privateBadge() : "");
+  // The private dashboard passes first names as labels; the public site only has handles.
+  const who = (handle) => {
+    const label = data.labels && data.labels[handle];
+    return label ? `${esc(label)} <span class="p-at">@${esc(handle)}</span>` : `@${esc(handle)}`;
+  };
 
   function podium() {
     const top = data.standings.slice(0, 3);
@@ -37,7 +42,7 @@ const Present = (() => {
       if (!r) return `<div class="p-pod p-pod-${i + 1} p-pod-empty"><div class="p-pod-block"></div></div>`;
       return `<div class="p-pod p-pod-${i + 1}">
         <div class="p-pod-medal">${MEDALS[i]}</div>
-        <div class="p-pod-handle">@${esc(r.handle)}${badge(r)}</div>
+        <div class="p-pod-handle">${who(r.handle)}${badge(r)}</div>
         <div class="p-pod-views">${fmt(r.views)}</div>
         <div class="p-pod-label">weergaven</div>
         <div class="p-pod-gain">${r.gain == null ? "&nbsp;" : `${signed(r.gain)} sinds gisteren`}</div>
@@ -58,7 +63,7 @@ const Present = (() => {
           <div class="p-row">
             <span class="p-rank">${r.rank}</span>
             <span class="p-chg">${changeCell(r)}</span>
-            <span class="p-handle">@${esc(r.handle)}${badge(r)}</span>
+            <span class="p-handle">${who(r.handle)}${badge(r)}</span>
             <span class="p-views">${fmt(r.views)}</span>
             <span class="p-gain">${r.gain == null ? "" : signed(r.gain)}</span>
           </div>`).join("")}
@@ -85,7 +90,7 @@ const Present = (() => {
       <div class="p-graph">
         <div class="p-chart"><canvas id="p-chart" aria-label="Weergaven over tijd, top ${top.length}"></canvas></div>
         <ol class="p-legend">${top.map((h, i) => `
-          <li><span class="p-dot" style="background:${color(h)}"></span><span class="p-legend-rank">${i + 1}</span>@${esc(h)}</li>`).join("")}
+          <li><span class="p-dot" style="background:${color(h)}"></span><span class="p-legend-rank">${i + 1}</span><span class="p-legend-name">${who(h)}</span></li>`).join("")}
         </ol>
       </div>`;
   }
@@ -115,7 +120,7 @@ const Present = (() => {
         ${rows.map((r, i) => `
           <div class="p-row">
             <span class="p-rank">${i + 1}</span>
-            <span class="p-handle">@${esc(r.handle)}${badge(r)}</span>
+            <span class="p-handle">${who(r.handle)}${badge(r)}</span>
             <span class="p-track"><span class="p-bar" style="width:${(Math.max(0, r.gain) / max) * 100}%"></span></span>
             <span class="p-views">${signed(r.gain)}</span>
           </div>`).join("")}

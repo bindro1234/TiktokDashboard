@@ -1,0 +1,17 @@
+[
+  {"raw": "chessifity", "handle": "chessifity"},
+  {"raw": "@chessifity", "handle": "chessifity"},
+  {"raw": " @Chessifity ", "handle": "chessifity"},
+  {"raw": "CHESS IFITY", "handle": "chessifity"},
+  {"raw": "https://www.tiktok.com/@chessifity", "handle": "chessifity"},
+  {"raw": "tiktok.com/@Chessifity?lang=nl", "handle": "chessifity"},
+  {"raw": "https://www.tiktok.com/@chessifity/video/123", "handle": "chessifity"},
+  {"raw": "a.b_c.9", "handle": "a.b_c.9"},
+  {"raw": "", "handle": null},
+  {"raw": "   ", "handle": null},
+  {"raw": "https://vm.tiktok.com/ZMabc/", "handle": null},
+  {"raw": "http://example.com/x", "handle": null},
+  {"raw": "naam met €", "handle": null},
+  {"raw": "aaaaaaaaaaaaaaaaaaaaaaaaa", "handle": null},
+  {"raw": "ends.with.dot.", "handle": null}
+]

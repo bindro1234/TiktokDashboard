@@ -1,6 +1,8 @@
 """Unit tests with synthetic data only (no real scraped data in the repo). Run: python -m unittest"""
 
 import datetime as dt
+import json
+import pathlib
 import unittest
 
 from collector import config, model
@@ -22,6 +24,12 @@ class HandleTests(unittest.TestCase):
         for raw in ["chessifity", "@chessifity", " @Chessifity ", "CHESS IFITY", "https://www.tiktok.com/@chessifity",
                     "tiktok.com/@Chessifity?lang=nl", "https://www.tiktok.com/@chessifity/video/123"]:
             self.assertEqual(normalize_handle(raw)[0], "chessifity", raw)
+
+    def test_shared_cases(self):
+        """Same cases as the private site's JavaScript port (private/test)."""
+        cases = json.loads((pathlib.Path(__file__).parent / "handle_cases.json").read_text(encoding="utf-8"))
+        for case in cases:
+            self.assertEqual(normalize_handle(case["raw"])[0], case["handle"], case["raw"])
 
     def test_invalid(self):
         for raw in ["", "https://vm.tiktok.com/ZMabc/", "naam met €", "a" * 25, "ends.with.dot."]:

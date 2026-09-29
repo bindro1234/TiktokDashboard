@@ -20,6 +20,8 @@ SCHEMA_ADMIN = {
                 "errors", "status", "snapshot_ids", "notes"],
     "profile_window": ["handle", "checked_at", "videos_count", "window_count", "pinned_in_window",
                        "window_oldest", "window_oldest_nonpinned"],
+    # Written by the private dashboard (private/): who did what, and when.
+    "activity_log": ["timestamp", "email", "action", "details"],
 }
 SCHEMA_DATA = {
     "handles": ["handle", "is_private", "followers", "last_scraped", "last_status"],

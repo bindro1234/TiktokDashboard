@@ -1,0 +1,105 @@
+name: Deploy private dashboard
+
+# Tests the private dashboard (private/) on every PR that touches it, and deploys it to
+# Cloudflare Workers on main. Deploying needs the repository secrets CLOUDFLARE_API_TOKEN
+# and CLOUDFLARE_ACCOUNT_ID; without them the deploy is skipped with a notice. The Worker
+# secrets (Google key, GitHub token, Access settings) are copied from GitHub secrets on
+# every deploy and never printed.
+on:
+  push:
+    branches: [main]
+    paths: ["private/**", "site/**", "config.yaml", "collector/config.py", "collector/worker_config.py",
+            "tests/handle_cases.json", "tools/private_check.mjs", ".github/workflows/private-deploy.yml"]
+  pull_request:
+    paths: ["private/**", "site/**", "config.yaml", "collector/config.py", "collector/worker_config.py",
+            "tests/handle_cases.json", "tools/private_check.mjs", ".github/workflows/private-deploy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: private-deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install PyYAML
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Build (settings from config.yaml, presentation copied from site/)
+        run: bash private/build.sh
+      - name: Unit tests (logic, Access JWT, API with mocked Google/GitHub)
+        run: node --test "private/test/*.test.mjs"
+      - name: Browser check with synthetic data
+        run: |
+          npm install --no-save playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tools/private_check.mjs
+
+  deploy:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install PyYAML
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: bash private/build.sh
+      - name: Check Cloudflare secrets
+        id: cf
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set: private dashboard not deployed (see README)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Deploy Worker
+        if: steps.cf.outputs.ready == 'true'
+        working-directory: private
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 deploy
+      - name: Set Worker secrets
+        if: steps.cf.outputs.ready == 'true'
+        working-directory: private
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
+          GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          ACCESS_TEAM_DOMAIN: ${{ secrets.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ secrets.ACCESS_AUD }}
+        run: |
+          # Only secrets that are filled in; the file is private to this runner and removed right after.
+          umask 077
+          file="$RUNNER_TEMP/worker-secrets.json"
+          node -e '
+            const names = ["GOOGLE_SERVICE_ACCOUNT_B64", "GH_DISPATCH_TOKEN", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD"];
+            const out = {};
+            for (const n of names) if (process.env[n]) out[n] = process.env[n];
+            const missing = names.filter((n) => !out[n]);
+            if (missing.length) console.log(`::warning::Not set yet (the dashboard stays locked or partly off until they are): ${missing.join(", ")}`);
+            require("fs").writeFileSync(process.argv[1], JSON.stringify(out));
+          ' "$file"
+          npx --yes wrangler@4 secret bulk "$file"
+          rm -f "$file"

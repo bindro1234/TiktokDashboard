@@ -83,10 +83,13 @@ async function fetchCsv(tab) {
   return Papa.parse(text, { header: true, skipEmptyLines: true }).data;
 }
 
-function build(handleRows, historyRows, postRows) {
+function build(handleRows, historyRows, postRows, labels = {}) {
   const accounts = handleRows
     .filter((r) => r.handle)
-    .map((r) => ({ handle: String(r.handle).trim(), isPrivate: isTrue(r.is_private), status: r.last_status || "" }));
+    .map((r) => {
+      const handle = String(r.handle).trim();
+      return { handle, label: labels[handle] || null, isPrivate: isTrue(r.is_private), status: r.last_status || "" };
+    });
   const known = new Set(accounts.map((a) => a.handle));
   const series = new Map(accounts.map((a) => [a.handle, []]));
   let latest = 0;
@@ -115,7 +118,7 @@ function build(handleRows, historyRows, postRows) {
       tags: String(r.hashtags || "").toLowerCase().split(/\s+/).filter(Boolean),
     });
   }
-  return { accounts, series, posts, latest, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
+  return { accounts, series, posts, latest, labels, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
 }
 
 // Per hashtag: campaign posts using it, accounts, and total views/likes of those posts.
@@ -164,8 +167,12 @@ function standings(accounts, series, latest) {
 
 async function load() {
   try {
-    const [h, hist, p] = await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")]);
-    state.data = build(h, hist, p);
+    // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
+    const src = CFG.source
+      ? await CFG.source()
+      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")])
+        .then(([handles, history, posts]) => ({ handles, history, posts }));
+    state.data = build(src.handles, src.history, src.posts, src.labels);
     if (IS_PRESENT) {
       Present.update(state.data);
       return;
