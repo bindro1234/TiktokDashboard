@@ -70,7 +70,14 @@ h2 { font-size: 1.15rem; margin: 28px 0 8px; }
 .admin-btn:hover, .admin-btn:focus-visible { filter: brightness(1.1); }
 .admin-note { color: var(--text-2); font-size: 0.85rem; }
 
-.tabs { display: flex; gap: 4px; }
+.nav-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.present-btn {
+  display: inline-flex; align-items: center; min-height: 36px; padding: 5px 14px; margin-bottom: 6px;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+  color: var(--text); font-weight: 700; font-size: 0.9rem; text-decoration: none; white-space: nowrap;
+}
+.present-btn:hover, .present-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; }
 .tabs a {
   padding: 10px 16px; border-radius: 8px 8px 0 0; text-decoration: none;
   color: var(--text-2); font-weight: 600; border-bottom: 3px solid transparent;
@@ -91,6 +98,29 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
   color: var(--text-2); padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--border);
 }
 .board td { padding: 10px 14px; border-bottom: 1px solid var(--grid); }
+/* Sortable column headers: the whole header is the button. */
+.board th[data-sort] { padding: 0; }
+.board th .sort {
+  width: 100%; padding: 10px 14px; border: 0; background: none; cursor: pointer;
+  font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; text-align: inherit;
+}
+.board th .sort { white-space: nowrap; }
+.board th .sort::after { content: attr(data-arrow); display: inline-block; min-width: 1.1em; margin-left: 3px; text-align: left; }
+.board th .sort:hover, .board th[aria-sort] .sort { color: var(--text); }
+.board th .sort:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* Hashtags: a small bar behind the number that the table is sorted on. */
+.bar-cell { position: relative; }
+.cell-bar {
+  position: absolute; right: 0; top: 18%; bottom: 18%; width: var(--w); max-width: 100%;
+  background: var(--s1); opacity: 0.16; border-radius: 4px 0 0 4px;
+}
+.tag-detail td { background: var(--surface-2); }
+.tag-detail .chip { margin: 2px 4px 2px 0; text-decoration: none; font-size: 0.85rem; }
+.board tbody tr.tag-detail { cursor: default; }
+.chip-n { color: var(--muted); font-weight: 500; font-size: 0.85em; }
+.chip.static { cursor: default; }
+.more { margin: 10px 0 0; }
+.link-btn { border: 0; background: none; padding: 4px 0; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
 .board tbody tr:last-child td { border-bottom: 0; }
 .board tbody tr { cursor: pointer; }
 .board tbody tr:hover, .board tbody tr:focus-visible { background: var(--surface-2); outline: none; }
@@ -150,8 +180,18 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .grid2 h3 { margin: 0 0 8px; font-size: 1rem; }
 
+.sort-mobile { display: none; }
 @media (max-width: 860px) {
   .opt2 { display: none; }
+  /* Sorted on another column: that column takes the place of Weergaven. */
+  .board[data-sorted="followers"] .c-followers, .board[data-sorted="posts"] .c-posts,
+  .board[data-sorted="likes"] .c-likes { display: table-cell; font-weight: 800; }
+  .board:not([data-sorted="views"]) .c-views { display: none; }
+  .sort-mobile { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--text-2); font-size: 0.95rem; }
+  .sort-mobile select {
+    min-height: 38px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--text); font: inherit;
+  }
   .grid2 { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
@@ -163,7 +203,8 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
   .chg { width: 3em; }
   .board td.handle { font-size: 0.92rem; }
   .chart-card { height: 340px; padding: 10px; }
-  .tabs a { padding: 8px 10px; }
+  .tabs a { padding: 8px 9px; }
+  .board th .sort { padding: 8px 6px; }
 }
 
 /* ---------- Presentation mode (?present) ----------
@@ -228,6 +269,9 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 .p-legend { display: flex; flex-direction: column; justify-content: center; gap: calc(var(--u) * 1.6); min-width: 0; margin: 0; padding: 0; list-style: none; font-size: calc(var(--u) * 3); font-weight: 700; }
 .p-legend li { display: flex; align-items: center; gap: calc(var(--u) * 1.2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-dot { flex: none; width: calc(var(--u) * 2.2); height: calc(var(--u) * 2.2); border-radius: 50%; }
+.p-at { margin-left: 0.3em; font-size: 0.62em; font-weight: 600; color: var(--text-2); }
+.p-pod-handle .p-at { display: block; margin: 0; }
+.p-legend-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .p-legend-rank { min-width: 1.4em; color: var(--text-2); text-align: right; }
 
 /* Footer: slide dots, "Bijgewerkt", progress bar, fullscreen button */

@@ -29,11 +29,15 @@
           <span class="admin-note">Laatste run: <strong id="admin-last">–</strong>. Klik op GitHub op <em>Run workflow</em>; nieuwe cijfers verschijnen binnen ~5–7 minuten.</span>
         </div>
       </div>
-      <nav class="tabs" aria-label="Weergave">
-        <a href="#stand" data-view="stand">Stand</a>
-        <a href="#grafiek" data-view="grafiek">Grafiek</a>
-        <a href="#groei" data-view="groei">Groei</a>
-      </nav>
+      <div class="nav-row">
+        <nav class="tabs" aria-label="Weergave">
+          <a href="#stand" data-view="stand">Stand</a>
+          <a href="#grafiek" data-view="grafiek">Grafiek</a>
+          <a href="#groei" data-view="groei">Groei</a>
+          <a href="#hashtags" data-view="hashtags">Hashtags</a>
+        </nav>
+        <a class="present-btn" id="present-link" href="?present" target="_blank" rel="noopener" title="Presentatie voor de beamer (opent in een nieuw tabblad)">▶ Presentatie</a>
+      </div>
     </div>
   </header>
 
@@ -41,24 +45,32 @@
     <p class="notice" id="error" hidden></p>
 
     <section id="view-stand" class="view" hidden>
+      <label class="sort-mobile">Sorteer op
+        <select id="sort-select">
+          <option value="views">Weergaven</option>
+          <option value="followers">Volgers</option>
+          <option value="posts">Posts</option>
+          <option value="likes">Likes</option>
+        </select>
+      </label>
       <div class="board-wrap">
-        <table class="board">
+        <table class="board" id="board">
           <thead>
             <tr>
               <th class="num">#</th>
               <th class="chg" title="Verandering in positie sinds gisteren">±</th>
               <th>Account</th>
-              <th class="num">Weergaven</th>
+              <th class="num c-views" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
               <th class="num opt">+ sinds gisteren</th>
-              <th class="num opt2">Volgers</th>
-              <th class="num opt2">Posts</th>
-              <th class="num opt2">Likes</th>
+              <th class="num opt2 c-followers" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+              <th class="num opt2 c-posts" data-sort="posts"><button type="button" class="sort">Posts</button></th>
+              <th class="num opt2 c-likes" data-sort="likes"><button type="button" class="sort">Likes</button></th>
             </tr>
           </thead>
           <tbody id="board-body"></tbody>
         </table>
       </div>
-      <p class="hint">Klik op een account voor details. Alleen video's vanaf de start van de campagne tellen mee.</p>
+      <p class="hint">Klik op een account voor details, of op een kolomkop om te sorteren (nog een keer klikken draait de volgorde om). Het nummer blijft de plaats in de stand. Alleen video's vanaf de start van de campagne tellen mee.</p>
     </section>
 
     <section id="view-grafiek" class="view" hidden>
@@ -88,6 +100,30 @@
           <tbody id="growth-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="view-hashtags" class="view" hidden>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sorteren op" data-bind="tagSort"></div>
+        <span class="meta" id="tags-meta"></span>
+      </div>
+      <div class="board-wrap">
+        <table class="board small tags">
+          <thead>
+            <tr>
+              <th class="num">#</th>
+              <th>Hashtag</th>
+              <th class="num">Posts</th>
+              <th class="num opt">Accounts</th>
+              <th class="num">Weergaven</th>
+              <th class="num opt2">Gem. per post</th>
+            </tr>
+          </thead>
+          <tbody id="tags-body"></tbody>
+        </table>
+      </div>
+      <p class="more"><button type="button" class="link-btn" id="tags-more" hidden></button></p>
+      <p class="hint">Hashtags uit de beschrijving van campagneposts. Een post met drie hashtags telt bij alle drie mee. Klik op een hashtag om te zien welke accounts hem gebruiken.</p>
     </section>
 
     <section id="view-account" class="view" hidden></section>

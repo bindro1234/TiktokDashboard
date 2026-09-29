@@ -14,6 +14,8 @@ const METRICS = {
   likes: { label: "Likes", key: "campaign_likes" },
 };
 const PERIODS = { day: "Per dag", week: "Per week" };
+const TAG_SORTS = { posts: "Meest gebruikt", views: "Meeste weergaven" };
+const TAGS_SHOWN = 30; // rows before "Toon alle"
 
 const PARAMS = new URLSearchParams(location.search);
 // Presentation mode (?present): classroom slideshow, see present.js.
@@ -32,6 +34,10 @@ const state = {
   selected: [],          // handles, in the order they were picked
   slotOf: new Map(),     // handle -> colour slot 1..8; colour follows the account, not its rank
   showOthers: false,
+  sort: { key: "views", dir: -1 }, // leaderboard sort; -1 = high to low
+  tagSort: "posts",
+  tagsAll: false,
+  tagOpen: null,         // hashtag whose accounts are shown
   charts: {},
 };
 
@@ -77,10 +83,13 @@ async function fetchCsv(tab) {
   return Papa.parse(text, { header: true, skipEmptyLines: true }).data;
 }
 
-function build(handleRows, historyRows, postRows) {
+function build(handleRows, historyRows, postRows, labels = {}) {
   const accounts = handleRows
     .filter((r) => r.handle)
-    .map((r) => ({ handle: String(r.handle).trim(), isPrivate: isTrue(r.is_private), status: r.last_status || "" }));
+    .map((r) => {
+      const handle = String(r.handle).trim();
+      return { handle, label: labels[handle] || null, isPrivate: isTrue(r.is_private), status: r.last_status || "" };
+    });
   const known = new Set(accounts.map((a) => a.handle));
   const series = new Map(accounts.map((a) => [a.handle, []]));
   let latest = 0;
@@ -106,9 +115,28 @@ function build(handleRows, historyRows, postRows) {
     posts.get(h).push({
       id: String(r.video_id), created: Date.parse(r.created_at), views: toNum(r.views), likes: toNum(r.likes),
       comments: toNum(r.comments), shares: toNum(r.shares), type: r.post_type || "", pinned: isTrue(r.pinned),
+      tags: String(r.hashtags || "").toLowerCase().split(/\s+/).filter(Boolean),
     });
   }
-  return { accounts, series, posts, latest, standings: standings(accounts, series, latest) };
+  return { accounts, series, posts, latest, labels, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
+}
+
+// Per hashtag: campaign posts using it, accounts, and total views/likes of those posts.
+function hashtagStats(posts) {
+  const tags = new Map();
+  for (const [handle, list] of posts) {
+    for (const p of list) {
+      for (const tag of new Set(p.tags)) {
+        let t = tags.get(tag);
+        if (!t) tags.set(tag, (t = { tag, posts: 0, views: 0, likes: 0, accounts: new Map() }));
+        t.posts++;
+        t.views += p.views || 0;
+        t.likes += p.likes || 0;
+        t.accounts.set(handle, (t.accounts.get(handle) || 0) + 1);
+      }
+    }
+  }
+  return [...tags.values()];
 }
 
 // Rank by total views; "+ since yesterday" compares with the last run of an earlier day.
@@ -139,8 +167,12 @@ function standings(accounts, series, latest) {
 
 async function load() {
   try {
-    const [h, hist, p] = await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")]);
-    state.data = build(h, hist, p);
+    // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
+    const src = CFG.source
+      ? await CFG.source()
+      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")])
+        .then(([handles, history, posts]) => ({ handles, history, posts }));
+    state.data = build(src.handles, src.history, src.posts, src.labels);
     if (IS_PRESENT) {
       Present.update(state.data);
       return;
@@ -392,20 +424,85 @@ function changeCell(r) {
   return `<span class="same" aria-label="gelijk gebleven">–</span>`;
 }
 
+// Sortable columns of the leaderboard; the # column always keeps the real position.
+const SORT_VALUE = {
+  views: (r) => r.views,
+  followers: (r) => (r.cur ? r.cur.followers : null),
+  posts: (r) => (r.cur ? r.cur.campaign_posts : null),
+  likes: (r) => (r.cur ? r.cur.campaign_likes : null),
+};
+
+function sortedStandings() {
+  const { key, dir } = state.sort;
+  const value = SORT_VALUE[key];
+  return [...state.data.standings].sort((a, b) => {
+    const va = value(a), vb = value(b);
+    if (va == null || vb == null) return (va == null) - (vb == null) || a.rank - b.rank; // unknown always last
+    return (va - vb) * dir || a.rank - b.rank;
+  });
+}
+
+function renderSortHeaders() {
+  // On a phone the extra columns are hidden; the column being sorted on stays visible.
+  document.getElementById("board").dataset.sorted = state.sort.key;
+  document.getElementById("sort-select").value = state.sort.key;
+  for (const th of document.querySelectorAll("#view-stand th[data-sort]")) {
+    const on = th.dataset.sort === state.sort.key;
+    if (on) th.setAttribute("aria-sort", state.sort.dir < 0 ? "descending" : "ascending");
+    else th.removeAttribute("aria-sort");
+    const btn = th.querySelector("button");
+    btn.dataset.arrow = on ? (state.sort.dir < 0 ? "▼" : "▲") : "";
+    btn.title = on ? "Klik om de volgorde om te draaien" : "Klik om hierop te sorteren";
+  }
+}
+
 function renderBoard() {
+  renderSortHeaders();
   const body = document.getElementById("board-body");
   const medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
-  body.innerHTML = state.data.standings.map((r) => `
+  body.innerHTML = sortedStandings().map((r) => `
     <tr tabindex="0" data-handle="${esc(r.handle)}" class="${r.rank <= 3 && r.views > 0 ? "top3" : ""}">
       <td class="rank num">${r.rank <= 3 && r.views > 0 ? medal[r.rank] : r.rank}</td>
       <td class="chg">${changeCell(r)}</td>
       <td class="handle">@${esc(r.handle)}${r.isPrivate ? privateBadge() : ""}</td>
-      <td class="num views">${fmt(r.views)}</td>
+      <td class="num views c-views">${fmt(r.views)}</td>
       <td class="num opt gain">${r.gain == null ? "–" : signed(r.gain)}</td>
-      <td class="num opt2">${fmt(r.cur ? r.cur.followers : null)}</td>
-      <td class="num opt2">${fmt(r.cur ? r.cur.campaign_posts : null)}</td>
-      <td class="num opt2">${fmt(r.cur ? r.cur.campaign_likes : null)}</td>
+      <td class="num opt2 c-followers">${fmt(r.cur ? r.cur.followers : null)}</td>
+      <td class="num opt2 c-posts">${fmt(r.cur ? r.cur.campaign_posts : null)}</td>
+      <td class="num opt2 c-likes">${fmt(r.cur ? r.cur.campaign_likes : null)}</td>
     </tr>`).join("") || `<tr><td colspan="8">Nog geen accounts.</td></tr>`;
+}
+
+function renderHashtags() {
+  renderSeg("tagSort", TAG_SORTS);
+  const by = state.tagSort;
+  const rows = [...state.data.tags].sort((a, b) =>
+    b[by] - a[by] || (by === "posts" ? b.views - a.views : b.posts - a.posts) || a.tag.localeCompare(b.tag));
+  const shown = state.tagsAll ? rows : rows.slice(0, TAGS_SHOWN);
+  const max = Math.max(1, ...rows.map((t) => t[by]));
+  const totalPosts = [...state.data.posts.values()].reduce((n, list) => n + list.length, 0);
+  const tagged = [...state.data.posts.values()].reduce((n, list) => n + list.filter((p) => p.tags.length).length, 0);
+  document.getElementById("tags-meta").textContent =
+    `${rows.length} verschillende hashtags · ${tagged} van ${totalPosts} campagneposts hebben er één of meer`;
+  const bar = (v) => `<span class="cell-bar" style="--w:${(v / max) * 100}%"></span>`;
+  document.getElementById("tags-body").innerHTML = shown.map((t, i) => {
+    const open = state.tagOpen === t.tag;
+    const accounts = [...t.accounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    return `
+    <tr tabindex="0" data-tag="${esc(t.tag)}" aria-expanded="${open}">
+      <td class="rank num">${i + 1}</td>
+      <td class="handle">#${esc(t.tag)}</td>
+      <td class="num${by === "posts" ? " views bar-cell" : ""}">${by === "posts" ? bar(t.posts) : ""}${fmt(t.posts)}</td>
+      <td class="num opt">${fmt(t.accounts.size)}</td>
+      <td class="num${by === "views" ? " views bar-cell" : ""}">${by === "views" ? bar(t.views) : ""}${fmt(t.views)}</td>
+      <td class="num opt2">${fmt(Math.round(t.views / t.posts))}</td>
+    </tr>${open ? `
+    <tr class="tag-detail"><td></td><td colspan="5">${accounts.map(([h, n]) =>
+      `<a class="chip" href="#account/${encodeURIComponent(h)}">@${esc(h)}<span class="chip-n">${n}×</span></a>`).join("")}</td></tr>` : ""}`;
+  }).join("") || `<tr><td colspan="6">Nog geen hashtags gevonden.</td></tr>`;
+  const more = document.getElementById("tags-more");
+  more.hidden = rows.length <= TAGS_SHOWN;
+  more.textContent = state.tagsAll ? `Toon alleen de top ${TAGS_SHOWN}` : `Toon alle ${rows.length} hashtags`;
 }
 
 function renderAccount(handle) {
@@ -437,6 +534,7 @@ function renderAccount(handle) {
       <div><h3>Weergaven over tijd</h3><div class="chart-card short"><canvas id="chart-acc-views"></canvas></div></div>
       <div><h3>Volgers over tijd</h3><div class="chart-card short"><canvas id="chart-acc-followers"></canvas></div></div>
     </div>
+    ${accountTags(posts)}
     <h3 style="margin:18px 0 8px">Weergaven erbij per dag</h3>
     <div class="chart-card short"><canvas id="chart-acc-daily"></canvas></div>
     <h2>Posts in de campagne (${posts.length})</h2>
@@ -475,6 +573,16 @@ function renderAccount(handle) {
   });
 }
 
+// The account's own hashtags, most used first.
+function accountTags(posts) {
+  const count = new Map();
+  for (const p of posts) for (const t of new Set(p.tags)) count.set(t, (count.get(t) || 0) + 1);
+  if (!count.size) return "";
+  const list = [...count].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return `<h3 style="margin:18px 0 8px">Hashtags</h3><div class="chips">${list.map(([t, n]) =>
+    `<span class="chip static">#${esc(t)}<span class="chip-n">${n}×</span></span>`).join("")}</div>`;
+}
+
 function render() {
   if (!state.data) return;
   for (const a of document.querySelectorAll(".tabs a")) {
@@ -494,6 +602,7 @@ function render() {
     renderChips("chips-groei");
     renderGrowth();
   }
+  if (state.view === "hashtags") renderHashtags();
   if (state.view === "account") renderAccount(state.account);
 }
 
@@ -504,7 +613,7 @@ function route() {
     state.account = hash.slice(8);
     window.scrollTo(0, 0);
   } else {
-    state.view = ["stand", "grafiek", "groei"].includes(hash) ? hash : "stand";
+    state.view = ["stand", "grafiek", "groei", "hashtags"].includes(hash) ? hash : "stand";
   }
   render();
 }
@@ -520,6 +629,28 @@ for (const id of ["board-body", "growth-body"]) {
   document.getElementById(id).addEventListener("click", openAccount);
   document.getElementById(id).addEventListener("keydown", openAccount);
 }
+document.querySelector("#view-stand thead").addEventListener("click", (ev) => {
+  const th = ev.target.closest("th[data-sort]");
+  if (!th) return;
+  const key = th.dataset.sort;
+  state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : -1 };
+  renderBoard();
+});
+document.getElementById("sort-select").addEventListener("change", (ev) => {
+  state.sort = { key: ev.target.value, dir: -1 };
+  renderBoard();
+});
+function toggleTag(ev) {
+  if (ev.type === "keydown" && ev.key !== "Enter") return;
+  const tr = ev.target.closest("tr[data-tag]");
+  if (!tr) return;
+  state.tagOpen = state.tagOpen === tr.dataset.tag ? null : tr.dataset.tag;
+  renderHashtags();
+  document.querySelector(`#tags-body tr[data-tag="${CSS.escape(tr.dataset.tag)}"]`)?.focus();
+}
+document.getElementById("tags-body").addEventListener("click", toggleTag);
+document.getElementById("tags-body").addEventListener("keydown", toggleTag);
+document.getElementById("tags-more").addEventListener("click", () => { state.tagsAll = !state.tagsAll; renderHashtags(); });
 window.addEventListener("hashchange", route);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 

@@ -1,0 +1,20 @@
+# Private dashboard (Cloudflare Worker + static assets), behind Cloudflare Access.
+# Deployed by .github/workflows/private-deploy.yml. Secrets are set by that workflow
+# from GitHub secrets; nothing secret belongs in this file.
+name = "tiktok-beheer"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# Reachable on <name>.<subdomain>.workers.dev; protect it with Cloudflare Access (see README).
+# Preview URLs are off so there is no second, unprotected address.
+workers_dev = true
+preview_urls = false
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# Every request, also for the page and scripts, goes through the Worker's Access check first.
+run_worker_first = true
+
+[vars]
+GITHUB_REPO = "bindro1234/TiktokDashboard"

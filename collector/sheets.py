@@ -33,6 +33,15 @@ def _a1(tab: str, cells: str = "") -> str:
     return f"{quoted}!{cells}" if cells else quoted
 
 
+def _col(n: int) -> str:
+    """1 -> A, 27 -> AA."""
+    out = ""
+    while n:
+        n, rem = divmod(n - 1, 26)
+        out = chr(65 + rem) + out
+    return out
+
+
 class Spreadsheet:
     def __init__(self, session: AuthorizedSession, spreadsheet_id: str):
         self.session = session
@@ -79,14 +88,23 @@ class Spreadsheet:
                            json={"values": [header]})
                 self._headers[tab] = list(header)
             else:
-                absent = [h for h in header if h not in current]
-                if absent:
-                    raise SheetsError(f"Tab '{tab}' is missing columns {absent}; fix the header row")
+                self.ensure_columns(tab, header)
             freeze.append({"updateSheetProperties": {
                 "properties": {"sheetId": existing[tab], "gridProperties": {"frozenRowCount": 1}},
                 "fields": "gridProperties.frozenRowCount"}})
         self._call("POST", ":batchUpdate", json={"requests": freeze})
         return existing
+
+    def ensure_columns(self, tab: str, columns: list[str]) -> None:
+        """Add columns that are new in the schema to the end of an existing header row."""
+        header = self.header(tab)
+        absent = [c for c in columns if c not in header]
+        if not header or not absent:
+            return
+        start = _col(len(header) + 1)
+        self._call("PUT", f"/values/{_a1(tab, f'{start}1')}", params={"valueInputOption": "RAW"},
+                   json={"values": [absent]})
+        self._headers[tab] = header + absent
 
     def batch_update(self, requests_: list[dict]) -> None:
         self._call("POST", ":batchUpdate", json={"requests": requests_})

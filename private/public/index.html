@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>TikTok-campagne Beheer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔒</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div>
+        <h1>TikTok-campagne <span class="tag-private">Beheer</span></h1>
+        <p class="meta"><span id="updated">Gegevens laden…</span> · <span id="me"></span></p>
+      </div>
+      <nav class="tabs" aria-label="Onderdelen">
+        <a href="#overzicht" data-view="overzicht">Overzicht</a>
+        <a href="#leerlingen" data-view="leerlingen">Leerlingen</a>
+        <a href="#hashtags" data-view="hashtags">Hashtags</a>
+        <a href="#presentatie" data-view="presentatie">Presentatie</a>
+        <a href="#beheer" data-view="beheer">Beheer</a>
+        <a href="#export" data-view="export">Export</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <p class="notice" id="error" hidden></p>
+
+    <section id="view-overzicht" class="view" hidden>
+      <div class="tiles" id="ov-tiles"></div>
+      <div class="controls">
+        <input type="search" id="ov-search" placeholder="Zoek op naam of handle" aria-label="Zoeken">
+        <label class="check"><input type="checkbox" id="ov-warn"> Alleen met waarschuwing</label>
+      </div>
+      <div class="table-wrap">
+        <table class="board" id="ov-table">
+          <thead>
+            <tr>
+              <th class="num" data-sort="rank"><button type="button" class="sort">#</button></th>
+              <th data-sort="name"><button type="button" class="sort">Naam</button></th>
+              <th class="wide-only" data-sort="handle"><button type="button" class="sort">Handle</button></th>
+              <th class="num" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
+              <th class="num opt" data-sort="gain"><button type="button" class="sort">+ gisteren</button></th>
+              <th class="num opt" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+              <th class="num" data-sort="posts"><button type="button" class="sort">Posts</button></th>
+              <th class="num opt" data-sort="likes"><button type="button" class="sort">Likes</button></th>
+              <th class="opt" data-sort="last"><button type="button" class="sort">Laatste post</button></th>
+              <th class="wide-only" data-sort="warnings"><button type="button" class="sort">Let op</button></th>
+            </tr>
+          </thead>
+          <tbody id="ov-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Klik op een kolomkop om te sorteren (nog een keer: omgekeerd), of op een leerling voor alle details. <mark class="unknown">onbekend</mark> = geen naam ingevuld in de sheet.</p>
+    </section>
+
+    <section id="view-leerlingen" class="view" hidden>
+      <div id="ll-content"></div>
+    </section>
+
+    <section id="view-hashtags" class="view" hidden>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Sorteren op" id="tag-sort">
+          <button type="button" data-v="posts">Meest gebruikt</button>
+          <button type="button" data-v="views">Meeste weergaven</button>
+        </div>
+        <span class="meta" id="tags-meta"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="board">
+          <thead><tr><th class="num">#</th><th>Hashtag</th><th class="num">Posts</th><th class="num">Leerlingen</th><th class="num">Weergaven</th><th class="num opt">Gem. per post</th></tr></thead>
+          <tbody id="tags-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Klik op een hashtag om te zien wie hem gebruikt.</p>
+    </section>
+
+    <section id="view-presentatie" class="view" hidden>
+      <div class="card">
+        <h2>Presentatie met namen</h2>
+        <p>Dezelfde presentatie als op de openbare site (podium, stand, grafiek, stijgers), maar met de <strong>voornaam</strong> van de leerling erbij. Alleen hier te openen, achter de inlog.</p>
+        <p class="buttons">
+          <a class="btn primary" href="present/index.html?present" target="_blank" rel="noopener">▶ Start (licht)</a>
+          <a class="btn" href="present/index.html?present&amp;donker" target="_blank" rel="noopener">▶ Start (donker)</a>
+        </p>
+        <p class="hint">Doorklikken met de pijltjes, spatiebalk of de bolletjes; volledig scherm met het knopje rechtsboven. Zonder namen: de knop <em>Presentatie</em> op de openbare site.</p>
+      </div>
+    </section>
+
+    <section id="view-beheer" class="view" hidden>
+      <div class="grid2">
+        <div class="card">
+          <h2>Nu verversen</h2>
+          <p>Haalt nu alle actieve profielen op (1 record per account). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun.</p>
+          <p><button type="button" class="btn primary" id="bh-refresh">↻ Nu verversen</button></p>
+          <p class="status" id="bh-refresh-msg" role="status"></p>
+          <p class="meta">Laatste profielrun: <strong id="bh-last"></strong></p>
+          <h3>Laatste GitHub-runs</h3>
+          <ul class="runs" id="bh-runs"><li class="meta">Laden…</li></ul>
+        </div>
+        <div class="card">
+          <h2>Budget deze maand</h2>
+          <div id="bh-budget"></div>
+          <h3>Schema</h3>
+          <div id="bh-schedule"></div>
+          <p class="hint">Limiet en schema staan alleen in <code>config.yaml</code> in de repository.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Leerling toevoegen</h2>
+        <form id="add-form" class="add-form" autocomplete="off">
+          <label>Naam <input name="name" required maxlength="80"></label>
+          <label>TikTok-handle <input name="handle" required placeholder="@naam of tiktok.com/@naam"></label>
+          <label class="check"><input type="checkbox" name="active" checked> Actief</label>
+          <button type="submit" class="btn primary">Toevoegen</button>
+        </form>
+        <p class="status" id="add-preview" aria-live="polite"></p>
+      </div>
+
+      <div class="card">
+        <h2>Alle leerlingen <span class="meta" id="acc-count"></span></h2>
+        <p class="hint">Verwijderen kan niet: zet een leerling op inactief (active = nee). De rij blijft in de sheet staan en kan altijd weer aan.</p>
+        <div class="controls"><input type="search" id="acc-search" placeholder="Zoek" aria-label="Zoek leerling"></div>
+        <div class="table-wrap">
+          <table class="board small">
+            <thead><tr><th class="num">Rij</th><th>Naam</th><th>Handle</th><th>Status</th><th></th></tr></thead>
+            <tbody id="acc-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Problemen in <code>accounts</code></h2>
+        <ul class="issues" id="acc-issues"></ul>
+      </div>
+
+      <div class="card">
+        <h2>Laatste runs</h2>
+        <div class="table-wrap">
+          <table class="board small">
+            <thead><tr><th>Tijd</th><th>Type</th><th class="opt">Tijdvak</th><th>Status</th><th class="num">Records</th><th class="num opt">Fouten</th><th>Notities</th></tr></thead>
+            <tbody id="run-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Activiteit</h2>
+        <div class="table-wrap">
+          <table class="board small">
+            <thead><tr><th>Tijd</th><th>Wie</th><th>Wat</th><th>Details</th></tr></thead>
+            <tbody id="act-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-export" class="view" hidden>
+      <div class="card">
+        <h2>Cijfers exporteren (CSV)</h2>
+        <p>Eén rij per actieve leerling met de cijfers voor de beoordeling: weergaven, posts, gemiste dagen, reeksen, engagement, beste video en meer.</p>
+        <div class="controls">
+          <div class="seg" role="group" aria-label="Formaat" id="exp-format">
+            <button type="button" data-v="nl">Excel (NL)</button>
+            <button type="button" data-v="std">Standaard CSV</button>
+          </div>
+          <button type="button" class="btn primary" id="exp-download">⬇ Download CSV</button>
+        </div>
+        <p class="hint" id="exp-hint"></p>
+        <div class="table-wrap"><table class="board small" id="exp-preview"></table></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">Privé: alleen voor docenten op de lijst in Cloudflare Access. Namen staan alleen hier, nooit op de openbare site.</footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

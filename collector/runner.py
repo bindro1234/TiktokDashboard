@@ -94,10 +94,14 @@ class Collector:
             return None
         return self.bd.download(snapshot)
 
-    def save_posts(self, videos: list[dict], source: str) -> list[dict]:
+    def save_posts(self, videos: list[dict], source: str,
+                   seen: dict[str, tuple[set[str], str]] | None = None) -> tuple[list[dict], list[str]]:
+        """Upsert into posts_latest; with seen (profile runs) also flag videos missing from the window."""
+        self.data.ensure_columns("posts_latest", model.SCHEMA_DATA["posts_latest"])
         merged = model.upsert_posts(self.data.read("posts_latest"), videos, self.stamp, source)
+        missing = model.mark_missing(merged, seen, self.stamp) if seen else []
         self.data.rewrite("posts_latest", merged)
-        return merged
+        return merged, missing
 
     def append_history(self, handles: list[str], posts: list[dict]) -> None:
         followers = {r["handle"]: r.get("followers") for r in self.data.read("handles")}
@@ -128,16 +132,32 @@ class Collector:
     def run_force_refresh(self, window: str) -> RunResult:
         return self.run_guarded(RunResult("force_refresh", window, self.dry_run), self._force_refresh)
 
+    def minutes_since_profiles(self) -> float | None:
+        last = model.last_profiles_run(self.admin.read("run_log"))
+        return None if last is None else (self.now_utc - last).total_seconds() / 60
+
     def _force_refresh(self, res: RunResult) -> None:
         """On-demand profiles run; refused when a real profiles run happened too recently (double tap)."""
-        last = model.last_profiles_run(self.admin.read("run_log"))
-        if last is not None:
-            minutes = (self.now_utc - last).total_seconds() / 60
-            if minutes < self.cfg.force_min_minutes:
-                res.status = "refused"
-                res.notes.append(f"REFUSED: last profiles run was {minutes:.0f} min ago "
-                                 f"(minimum {self.cfg.force_min_minutes} min between runs)")
-                return
+        minutes = self.minutes_since_profiles()
+        if minutes is not None and minutes < self.cfg.force_min_minutes:
+            res.status = "refused"
+            res.notes.append(f"REFUSED: last profiles run was {minutes:.0f} min ago "
+                             f"(minimum {self.cfg.force_min_minutes} min between runs)")
+            return
+        self._profiles(res)
+
+    def run_scheduled_profiles(self, window: str) -> RunResult:
+        return self.run_guarded(RunResult("profiles", window, self.dry_run), self._scheduled_profiles)
+
+    def _scheduled_profiles(self, res: RunResult) -> None:
+        """Scheduled profiles run; skipped (window done, 0 records) right after a real profiles run,
+        e.g. a "Nu verversen" shortly before the evening window. Later posts come in the next run."""
+        minutes = self.minutes_since_profiles()
+        if minutes is not None and minutes < self.cfg.skip_recent_minutes:
+            res.status = "skipped"
+            res.notes.append(f"SKIPPED: last profiles run was {minutes:.0f} min ago "
+                             f"(scheduled runs skip within {self.cfg.skip_recent_minutes} min)")
+            return
         self._profiles(res)
 
     def _profiles(self, res: RunResult) -> None:
@@ -173,7 +193,9 @@ class Collector:
         res.errors = len(failed)
 
         videos = [v for p in parsed.values() for v in p["videos"]]
-        posts = self.save_posts(videos, "profile")
+        seen = {h: (p["seen_ids"], p["window"]["window_oldest_nonpinned"]) for h, p in parsed.items()
+                if not p["snapshot"]["is_private"]}
+        posts, missing = self.save_posts(videos, "profile", seen)
         self.data.append("profile_snapshots", [p["snapshot"] for p in parsed.values()])
 
         old_windows = {r["handle"]: r for r in self.admin.read("profile_window")}
@@ -204,6 +226,9 @@ class Collector:
                          f"{pinned} pinned in window, {reposts} reposts skipped")
         if private:
             res.notes.append("PRIVATE accounts: " + ", ".join("@" + h for h in private))
+        if missing:
+            res.notes.append(f"{len(missing)} video(s) no longer in their account's window (deleted or hidden?): "
+                             + ", ".join(missing[:20]))
         for handle, reason in sorted(failed.items()):
             res.notes.append(f"@{handle} failed: {reason}")
         res.status = "partial" if failed else "ok"
@@ -268,7 +293,7 @@ class Collector:
             else:
                 dropped[reason] = dropped.get(reason, 0) + 1
         videos = [v for vs in found.values() for v in vs]
-        posts = self.save_posts(videos, source)
+        posts, _ = self.save_posts(videos, source)
         all_handles, _ = self.accounts()
         self.append_history(all_handles, posts)
         res.notes.append(f"{len(videos)} campaign posts upserted"
@@ -338,7 +363,7 @@ class Collector:
         ran = False
         for window in self.cfg.profile_windows:
             if window.contains(self.now_local):
-                ran |= self._maybe(window.key(today), self.run_profiles)
+                ran |= self._maybe(window.key(today), self.run_scheduled_profiles)
         if self.cfg.refresh_window.contains(self.now_local):
             ran |= self._maybe(self.cfg.refresh_window.key(today), self.run_refresh)
         if self.cfg.check_date == today:
