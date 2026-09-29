@@ -22,13 +22,21 @@ SCHEMA_ADMIN = {
                        "window_oldest", "window_oldest_nonpinned"],
     # Written by the private dashboard (private/): who did what, and when.
     "activity_log": ["timestamp", "email", "action", "details"],
+    # Finale started by hand on the private site; one row per finale, the last row counts.
+    # status: active | stopped (ended early, Eindstand) | cancelled (no Eindstand).
+    "finale": ["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"],
 }
 SCHEMA_DATA = {
     "handles": ["handle", "is_private", "followers", "last_scraped", "last_status"],
     "profile_snapshots": ["timestamp", "handle", "followers", "following", "likes", "video_count", "is_private"],
     "posts_latest": ["video_id", "handle", "created_at", "views", "likes", "comments", "shares", "post_type",
-                     "pinned", "first_seen", "last_seen", "source", "hashtags", "missing_since"],
+                     "pinned", "first_seen", "last_seen", "source", "hashtags", "missing_since",
+                     "hist_at", "hist_views", "hist_likes"],  # last post_history row of this video
     "history": ["timestamp", "handle", "total_views", "followers", "campaign_likes", "campaign_posts"],
+    # Per campaign video over time (spikes, fastest risers). Kept light: see post_history_rows.
+    "post_history": ["video_id", "handle", "timestamp", "views", "likes"],
+    # Public copy of the current finale (no names/emails), written by the private site.
+    "finale": ["started_at", "deadline", "status", "ended_at"],
 }
 
 # run_log statuses that mean "this window is handled, don't run it again".
@@ -251,6 +259,37 @@ def mark_missing(posts: list[dict], seen: dict[str, tuple[set[str], str]], now: 
     return flagged
 
 
+# post_history stays light: every run while a video is young, then at most every 6 hours.
+HISTORY_YOUNG = dt.timedelta(hours=72)
+HISTORY_EVERY = dt.timedelta(hours=6) - dt.timedelta(minutes=15)  # runs start a few minutes apart
+
+
+def post_history_rows(posts: list[dict], now: str, campaign: Campaign) -> list[dict]:
+    """post_history rows for this run, and mark them in posts_latest (hist_at/hist_views/hist_likes).
+
+    A campaign video gets a row when its views or likes differ from its last post_history row
+    (or it has none yet) and it is younger than 72 hours, or its last row is 6+ hours old.
+    posts is the merged posts_latest; the hist_* columns are updated in place.
+    """
+    now_ts = parse_ts(now)
+    rows = []
+    for row in posts:
+        created = parse_ts(row.get("created_at"))
+        if not campaign.counts(created):
+            continue
+        numbers = (num(row.get("views")), num(row.get("likes")))
+        last = parse_ts(row.get("hist_at"))
+        if last is not None:
+            if numbers == (num(row.get("hist_views")), num(row.get("hist_likes"))):
+                continue
+            if now_ts - created >= HISTORY_YOUNG and now_ts - last < HISTORY_EVERY:
+                continue
+        rows.append({"video_id": str(row.get("video_id")), "handle": row.get("handle"), "timestamp": now,
+                     "views": numbers[0], "likes": numbers[1]})
+        row.update(hist_at=now, hist_views=numbers[0], hist_likes=numbers[1])
+    return rows
+
+
 def campaign_totals(posts: list[dict], campaign: Campaign) -> dict[str, dict]:
     totals: dict[str, dict] = defaultdict(lambda: {"total_views": 0, "campaign_likes": 0, "campaign_posts": 0})
     for row in posts:
@@ -329,6 +368,34 @@ def compare_window(handle: str, full: list[dict], known_ids: set[str], known_vie
         "only_ours": len(known_ids - full_ids),  # deleted videos, reposts, or pull capped
         "max_views_lag_pct": round(100 * max(lags), 1) if lags else 0.0,
     }
+
+
+# ---------- finale ----------
+
+def finale_state(rows: list[dict], now: dt.datetime, max_hours: int) -> dict | None:
+    """The current finale from the private finale tab (last row), or None.
+
+    phase: "live" while it runs, "ended" after the deadline or a stop (Eindstand), None when cancelled.
+    end: when it ends/ended - the deadline, never later than start + max_hours, or the stop time.
+    """
+    if not rows:
+        return None
+    row = rows[-1]
+    start, deadline = parse_ts(row.get("started_at")), parse_ts(row.get("deadline"))
+    status = str(row.get("status", "")).strip()
+    if start is None or deadline is None or status not in {"active", "stopped"}:
+        return None
+    end = min(deadline, start + dt.timedelta(hours=max_hours))
+    if status == "stopped":
+        end = min(end, parse_ts(row.get("ended_at")) or end)
+    phase = "live" if start <= now < end else "ended" if now >= end else None
+    return {"start": start, "end": end, "phase": phase}
+
+
+def finale_window_key(now_local: dt.datetime, every_minutes: int) -> str:
+    """Window key of the finale run due now: local time floored to every_minutes, e.g. 2026-10-26/finale-1615."""
+    minute = now_local.minute - now_local.minute % every_minutes
+    return f"{now_local:%Y-%m-%d}/finale-{now_local.hour:02d}{minute:02d}"
 
 
 # ---------- run_log / budget ----------

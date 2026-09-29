@@ -10,5 +10,6 @@ window.TT_CONFIG.source = async function () {
   const d = await res.json();
   const labels = {};
   for (const a of d.accounts) if (a.tracked && a.name) labels[a.handle] = a.name.split(" ")[0];
-  return { handles: d.handles, history: d.history, posts: d.posts, labels };
+  // The finale state (start/end in ms, or null) comes from the private sheet via the Worker.
+  return { handles: d.handles, history: d.history, posts: d.posts, labels, finale: d.finale || null };
 };

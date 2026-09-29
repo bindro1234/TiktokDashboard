@@ -14,6 +14,12 @@ const METRICS = {
   likes: { label: "Likes", key: "campaign_likes" },
 };
 const PERIODS = { day: "Per dag", week: "Per week" };
+const RANGES = { all: "Alles", "7d": "7 dagen", "48h": "48 uur" };
+const RANGE_MS = { all: null, "7d": 7 * 864e5, "48h": 2 * 864e5 };
+const VIDEO_RANGES = { 2: "2 uur", 6: "6 uur", 24: "24 uur" };
+const VIDEOS_SHOWN = 25;
+const DAY_MS = 864e5;
+const BASE_SLACK_MS = 45 * 60 * 1000; // runs start a few minutes apart; "24 h ago" may be 23:15-24:45 ago
 const TAG_SORTS = { posts: "Meest gebruikt", views: "Meeste weergaven" };
 const TAGS_SHOWN = 30; // rows before "Toon alle"
 
@@ -23,6 +29,14 @@ const IS_PRESENT = PARAMS.has("present");
 // Admin mode (?beheerder): shows a link to the "Nu verversen" workflow. It is only a link;
 // GitHub itself checks that whoever starts the workflow has write access. Never in presentation mode.
 const IS_ADMIN = PARAMS.has("beheerder") && !IS_PRESENT;
+// ?nu=2026-10-26T19:30 (Amsterdam time) pretends it is that moment, to check the finale and the
+// Eindstand before the day. Only changes what this browser shows.
+const CLOCK_OFFSET = (() => {
+  const v = PARAMS.get("nu");
+  const m = v && v.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/);
+  return m ? amsMs(m[1], m[2]) - Date.now() : 0;
+})();
+const now = () => Date.now() + CLOCK_OFFSET;
 
 const state = {
   data: null,
@@ -38,6 +52,9 @@ const state = {
   tagSort: "posts",
   tagsAll: false,
   tagOpen: null,         // hashtag whose accounts are shown
+  range: "all",          // Grafiek: time range
+  videoRange: "24",      // Video's: gain over the last 2/6/24 hours
+  postHistory: null,     // lazily loaded post_history: { at, byVideo: Map(id -> [{t, views}]) }
   charts: {},
 };
 
@@ -62,6 +79,40 @@ const toNum = (v) => {
 };
 const isTrue = (v) => ["true", "waar", "1", "ja"].includes(String(v ?? "").trim().toLowerCase());
 
+// Epoch ms of an Amsterdam wall-clock time ("2026-10-26", "20:00"), summer or winter time.
+function amsMs(day, hhmm) {
+  for (const off of [2, 1, 0]) {
+    const t = Date.parse(`${day}T${hhmm}:00Z`) - off * 3600e3;
+    const parts = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(t);
+    if (parts === hhmm && new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam" }).format(t) === day) return t;
+  }
+  return Date.parse(`${day}T${hhmm}:00Z`);
+}
+
+// Finale, started by hand on the private site. The public sheet's `finale` tab holds the current
+// one (started_at, deadline, status, ended_at); the private site passes it in directly.
+// { start, end } in ms; end = deadline, or the stop time when it was stopped early. null = none.
+let FINALE = null;
+function finaleFromRows(rows) {
+  const r = rows && rows.filter((x) => x.started_at).at(-1);
+  if (!r) return null;
+  const start = Date.parse(r.started_at), deadline = Date.parse(r.deadline);
+  const status = String(r.status || "").trim();
+  if (!Number.isFinite(start) || !Number.isFinite(deadline) || !["active", "stopped"].includes(status)) return null;
+  const stopped = status === "stopped" && Number.isFinite(Date.parse(r.ended_at)) ? Date.parse(r.ended_at) : Infinity;
+  return { start, end: Math.min(deadline, stopped) };
+}
+// "none" | "before" | "live" | "after" (Eindstand)
+function finalePhase(t = now()) {
+  if (!FINALE) return "none";
+  return t >= FINALE.end ? "after" : t >= FINALE.start ? "live" : "before";
+}
+function countdown(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const two = (n) => String(n).padStart(2, "0");
+  return `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+}
+
 function weekOf(dayKey) {
   const idx = Math.floor((dayMs(dayKey) - dayMs(CFG.campaignStart)) / 864e5 / 7);
   return Math.max(0, idx) + 1;
@@ -83,7 +134,20 @@ async function fetchCsv(tab) {
   return Papa.parse(text, { header: true, skipEmptyLines: true }).data;
 }
 
+// The small public finale tab; missing (not linked yet, or never started) means no finale.
+async function fetchFinale() {
+  if (!(CFG.csvUrls && CFG.csvUrls.finale) && !(CFG.gids && CFG.gids.finale != null)) return [];
+  try {
+    return await fetchCsv("finale");
+  } catch {
+    return [];
+  }
+}
+
 function build(handleRows, historyRows, postRows, labels = {}) {
+  // After the deadline everything is frozen at the last run before it (Eindstand).
+  const final = finalePhase() === "after";
+  const cutoff = final ? FINALE.end : Infinity;
   const accounts = handleRows
     .filter((r) => r.handle)
     .map((r) => {
@@ -96,7 +160,7 @@ function build(handleRows, historyRows, postRows, labels = {}) {
   for (const r of historyRows) {
     const s = series.get(String(r.handle).trim());
     const t = Date.parse(r.timestamp);
-    if (!s || !Number.isFinite(t)) continue;
+    if (!s || !Number.isFinite(t) || t > cutoff) continue;
     s.push({
       t,
       total_views: toNum(r.total_views) ?? 0,
@@ -118,7 +182,7 @@ function build(handleRows, historyRows, postRows, labels = {}) {
       tags: String(r.hashtags || "").toLowerCase().split(/\s+/).filter(Boolean),
     });
   }
-  return { accounts, series, posts, latest, labels, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
+  return { accounts, series, posts, latest, labels, final, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
 }
 
 // Per hashtag: campaign posts using it, accounts, and total views/likes of those posts.
@@ -139,14 +203,20 @@ function hashtagStats(posts) {
   return [...tags.values()];
 }
 
-// Rank by total views; "+ since yesterday" compares with the last run of an earlier day.
+// The last point of a series at least ~24 hours before `latest` (the rolling "+ 24 uur" baseline).
+function baseline(s, latest) {
+  const target = latest - DAY_MS + BASE_SLACK_MS;
+  for (let i = s.length - 1; i >= 0; i--) if (s[i].t <= target) return s[i];
+  return null;
+}
+
+// Rank by total views; "+ 24 uur" and the rank change compare with the run of ~24 hours earlier
+// (rolling, so it doesn't reset at midnight now that there are runs every 2 hours).
 function standings(accounts, series, latest) {
-  const refDay = latest ? localDay(latest) : null;
   const rows = accounts.map((a) => {
     const s = series.get(a.handle);
     const cur = s.at(-1) || null;
-    let base = null;
-    for (let i = s.length - 1; i >= 0; i--) if (localDay(s[i].t) < refDay) { base = s[i]; break; }
+    const base = latest ? baseline(s, latest) : null;
     return { ...a, cur, base, views: cur ? cur.total_views : 0 };
   });
   const rankBy = (list, value) => {
@@ -170,8 +240,10 @@ async function load() {
     // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
     const src = CFG.source
       ? await CFG.source()
-      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts")])
-        .then(([handles, history, posts]) => ({ handles, history, posts }));
+      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale()])
+        .then(([handles, history, posts, finaleRows]) => ({ handles, history, posts, finaleRows }));
+    FINALE = "finale" in src ? (src.finale ? { start: src.finale.start, end: src.finale.end } : null)
+      : finaleFromRows(src.finaleRows);
     state.data = build(src.handles, src.history, src.posts, src.labels);
     if (IS_PRESENT) {
       Present.update(state.data);
@@ -194,6 +266,126 @@ async function load() {
     box.textContent = `Kon de gegevens niet laden: ${err.message}`;
     box.hidden = false;
   }
+}
+
+// ---------- per-video history (post_history, loaded only when needed) ----------
+
+const hasPostHistory = () => Boolean(CFG.postHistorySource || (CFG.csvUrls && CFG.csvUrls.post_history)
+  || (CFG.gids && CFG.gids.post_history != null));
+
+// post_history can grow to a few MB, so it is fetched only for the Video's tab and account pages,
+// and at most once per refresh interval.
+function loadPostHistory() {
+  const maxAge = (CFG.refreshMinutes || 10) * 60 * 1000;
+  if (state.postHistory && Date.now() - state.postHistory.fetched < maxAge) return Promise.resolve(state.postHistory);
+  if (state.postHistoryLoading) return state.postHistoryLoading;
+  state.postHistoryLoading = (async () => {
+    const t0 = performance.now();
+    const rows = CFG.postHistorySource ? await CFG.postHistorySource() : await fetchCsv("post_history");
+    const cutoff = state.data && state.data.final ? FINALE.end : Infinity;
+    const byVideo = new Map();
+    for (const r of rows) {
+      const t = Date.parse(r.timestamp);
+      if (!Number.isFinite(t) || t > cutoff) continue;
+      const id = String(r.video_id);
+      if (!byVideo.has(id)) byVideo.set(id, []);
+      byVideo.get(id).push({ t, views: toNum(r.views) ?? 0 });
+    }
+    for (const list of byVideo.values()) list.sort((a, b) => a.t - b.t);
+    state.postHistory = { fetched: Date.now(), byVideo, rows: rows.length, ms: Math.round(performance.now() - t0) };
+    return state.postHistory;
+  })().finally(() => { state.postHistoryLoading = null; });
+  return state.postHistoryLoading;
+}
+
+// Views a video gained in the `hours` before `ref` (the last run). A video posted inside that
+// period counts from 0; otherwise from its last post_history row at or before the start.
+function videoGain(post, hist, hours, ref) {
+  const from = ref - hours * 3600e3;
+  const pts = (hist || []).filter((p) => p.t <= ref);
+  const current = Math.max(post.views || 0, pts.length ? pts.at(-1).views : 0);
+  if (Number.isFinite(post.created) && post.created >= from) return current;
+  let base = null;
+  for (let i = pts.length - 1; i >= 0; i--) if (pts[i].t <= from + 15 * 60 * 1000) { base = pts[i]; break; }
+  if (!base) base = pts[0];
+  return base ? Math.max(0, current - base.views) : 0;
+}
+
+// Every campaign video with its gain over the last `hours`, fastest first.
+function fastestVideos(hours) {
+  const ph = state.postHistory;
+  const ref = state.data.latest || now();
+  const list = [];
+  for (const [handle, posts] of state.data.posts) {
+    for (const p of posts) list.push({ handle, post: p, gain: videoGain(p, ph.byVideo.get(p.id), hours, ref) });
+  }
+  return list.sort((a, b) => b.gain - a.gain || (b.post.views || 0) - (a.post.views || 0));
+}
+
+function renderVideos() {
+  renderSeg("videoRange", VIDEO_RANGES);
+  const body = document.getElementById("videos-body");
+  const meta = document.getElementById("videos-meta");
+  if (!hasPostHistory()) {
+    body.innerHTML = `<tr><td colspan="6">De geschiedenis per video is nog niet gekoppeld aan de site.</td></tr>`;
+    meta.textContent = "";
+    return;
+  }
+  if (!state.postHistory) {
+    body.innerHTML = `<tr><td colspan="6">Geschiedenis per video laden…</td></tr>`;
+    loadPostHistory().then(() => state.view === "videos" && renderVideos()).catch((err) => {
+      body.innerHTML = `<tr><td colspan="6">Kon de geschiedenis per video niet laden: ${esc(err.message)}</td></tr>`;
+    });
+    return;
+  }
+  const hours = Number(state.videoRange);
+  const rows = fastestVideos(hours).filter((x) => x.gain > 0).slice(0, VIDEOS_SHOWN);
+  const max = Math.max(1, ...rows.map((x) => x.gain));
+  meta.textContent = `Weergaven erbij in de laatste ${VIDEO_RANGES[hours]} tot ${state.data.latest ? stampFmt.format(state.data.latest) : "nu"}`;
+  body.innerHTML = rows.map((x, i) => `
+    <tr tabindex="0" data-handle="${esc(x.handle)}">
+      <td class="rank num">${i + 1}</td>
+      <td class="handle">@${esc(x.handle)}${x.post.type && x.post.type !== "video" ? ` <span class="badge pinned">${esc(x.post.type)}</span>` : ""}</td>
+      <td class="num views bar-cell"><span class="cell-bar" style="--w:${(x.gain / max) * 100}%"></span>${signed(x.gain)}</td>
+      <td class="num opt">${fmt(x.post.views)}</td>
+      <td class="opt2">${Number.isFinite(x.post.created) ? postDateFmt.format(x.post.created) : "–"}</td>
+      <td><a href="https://www.tiktok.com/@${encodeURIComponent(x.handle)}/video/${esc(x.post.id)}" target="_blank" rel="noopener">open ↗</a></td>
+    </tr>`).join("") || `<tr><td colspan="6">Geen video's met nieuwe weergaven in deze periode.</td></tr>`;
+}
+
+// Account page: views over time per video, the fastest riser (24 h) highlighted.
+function renderVideoChart(handle) {
+  const box = document.getElementById("acc-videos");
+  if (!box) return;
+  if (!hasPostHistory()) { box.hidden = true; return; }
+  if (!state.postHistory) {
+    loadPostHistory().then(() => state.view === "account" && state.account === handle && renderVideoChart(handle))
+      .catch(() => { box.hidden = true; });
+    return;
+  }
+  const ref = state.data.latest || now();
+  const posts = state.data.posts.get(handle) || [];
+  const series = posts.map((p) => ({ p, pts: (state.postHistory.byVideo.get(p.id) || []).filter((x) => x.t <= ref) }))
+    .filter((x) => x.pts.length);
+  if (!series.length) { box.hidden = true; return; }
+  const ranked = posts.map((p) => ({ p, gain: videoGain(p, state.postHistory.byVideo.get(p.id), 24, ref) }))
+    .sort((a, b) => b.gain - a.gain);
+  const top = ranked[0] && ranked[0].gain > 0 ? ranked[0] : null;
+  box.hidden = false;
+  document.getElementById("acc-videos-note").innerHTML = top
+    ? `🚀 Snelste stijger (24 uur): video van ${postDateFmt.format(top.p.created)}, <strong>${signed(top.gain)}</strong> weergaven. <a href="https://www.tiktok.com/@${encodeURIComponent(handle)}/video/${esc(top.p.id)}" target="_blank" rel="noopener">open ↗</a>`
+    : "Geen nieuwe weergaven in de laatste 24 uur.";
+  const other = cssVar("--other"), hot = cssVar("--s2");
+  const isTop = (p) => Boolean(top && p.id === top.p.id);
+  const datasets = series
+    .sort((a, b) => isTop(a.p) - isTop(b.p)) // highlighted one drawn last, on top
+    .map(({ p, pts }) => {
+      const ds = lineDataset(`Video ${Number.isFinite(p.created) ? postDateFmt.format(p.created) : p.id}`,
+        pts.map((x) => ({ x: x.t, y: x.views })), isTop(p) ? hot : other, false);
+      ds.borderWidth = isTop(p) ? 3.5 : 1.5;
+      return ds;
+    });
+  drawChart("chart-acc-videos", { type: "line", data: { datasets }, options: timeAxis(baseOptions("Weergaven")) });
 }
 
 // ---------- selection with stable colours ----------
@@ -295,9 +487,30 @@ function baseOptions(yTitle) {
   };
 }
 
-function timeAxis(opts) {
-  opts.scales.x.type = "linear";
-  opts.scales.x.ticks.callback = (v) => shortDayFmt.format(dayMs(localDay(v)));
+const hourFmt = new Intl.DateTimeFormat("nl-NL", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+
+// Linear time axis with ticks on Amsterdam midnights (day labels); over short spans (up to 4 days)
+// also every 6 hours, so the 2-hourly detail can be read. min/max limit the visible range.
+function timeAxis(opts, min = null, max = null) {
+  const x = opts.scales.x;
+  x.type = "linear";
+  if (min != null) x.min = min;
+  if (max != null) x.max = max;
+  x.afterBuildTicks = (axis) => {
+    const lo = axis.min, hi = axis.max;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return;
+    const short = hi - lo <= 4 * DAY_MS;
+    const ticks = [];
+    for (let d = localDay(lo); d <= localDay(hi); d = new Date(dayMs(d) + DAY_MS).toISOString().slice(0, 10)) {
+      for (const h of short ? ["00:00", "06:00", "12:00", "18:00"] : ["00:00"]) {
+        const t = amsMs(d, h);
+        if (t >= lo && t <= hi) ticks.push({ value: t });
+      }
+    }
+    axis.ticks = ticks;
+  };
+  x.ticks.callback = (v) => (hourFmt.format(v) === "00:00" ? shortDayFmt.format(dayMs(localDay(v))) : hourFmt.format(v));
+  x.ticks.autoSkip = true;
   opts.plugins.tooltip.callbacks.title = (items) => (items.length ? stampFmt.format(items[0].parsed.x) : "");
   return opts;
 }
@@ -340,22 +553,30 @@ function lineDataset(label, points, color, endLabel) {
 
 function renderMainChart() {
   const m = METRICS[state.metric];
+  const span = RANGE_MS[state.range];
+  const min = span && state.data.latest ? state.data.latest - span : null;
   const datasets = [];
   if (state.showOthers) {
     for (const r of state.data.standings) {
       if (state.selected.includes(r.handle)) continue;
-      const ds = lineDataset("@" + r.handle, points(r.handle, m.key), cssVar("--other"), false);
+      const ds = lineDataset("@" + r.handle, points(r.handle, m.key, min), cssVar("--other"), false);
       ds.borderWidth = 1;
       ds.pointHoverRadius = 0;
       datasets.push(ds);
     }
   }
-  for (const h of state.selected) datasets.push(lineDataset("@" + h, points(h, m.key), colorOf(h), true));
-  drawChart("chart-main", { type: "line", data: { datasets }, options: timeAxis(baseOptions(m.label)), plugins: [endLabels] });
+  for (const h of state.selected) datasets.push(lineDataset("@" + h, points(h, m.key, min), colorOf(h), true));
+  const opts = timeAxis(baseOptions(m.label), min, state.data.latest || null);
+  if (min != null) opts.scales.y.beginAtZero = false; // zoomed in: show the change, not the zero line
+  drawChart("chart-main", { type: "line", data: { datasets }, options: opts, plugins: [endLabels] });
 }
 
-function points(handle, key) {
-  return state.data.series.get(handle).filter((p) => p[key] != null).map((p) => ({ x: p.t, y: p[key] }));
+// Points of one account; with `from`, only those in range (plus one before it, so the line starts at the edge).
+function points(handle, key, from = null) {
+  const list = state.data.series.get(handle).filter((p) => p[key] != null);
+  const i = from == null ? 0 : list.findIndex((p) => p.t >= from);
+  const start = i === -1 ? list.length - 1 : Math.max(0, i - 1);
+  return list.slice(Math.max(0, start)).map((p) => ({ x: p.t, y: p[key] }));
 }
 
 // Gain per period: closing value of each period minus the previous close.
@@ -419,8 +640,8 @@ const privateBadge = () => `<span class="badge private" title="Dit account staat
 
 function changeCell(r) {
   if (r.rankChange == null) return `<span class="new">nieuw</span>`;
-  if (r.rankChange > 0) return `<span class="up" aria-label="${r.rankChange} plaatsen gestegen">▲ ${r.rankChange}</span>`;
-  if (r.rankChange < 0) return `<span class="down" aria-label="${-r.rankChange} plaatsen gedaald">▼ ${-r.rankChange}</span>`;
+  if (r.rankChange > 0) return `<span class="up" aria-label="${r.rankChange} plaatsen gestegen in 24 uur">▲ ${r.rankChange}</span>`;
+  if (r.rankChange < 0) return `<span class="down" aria-label="${-r.rankChange} plaatsen gedaald in 24 uur">▼ ${-r.rankChange}</span>`;
   return `<span class="same" aria-label="gelijk gebleven">–</span>`;
 }
 
@@ -524,7 +745,7 @@ function renderAccount(handle) {
     ${r.isPrivate ? `<p class="notice">Dit account staat op privé. Zet het op openbaar, anders tellen nieuwe weergaven niet mee.</p>` : ""}
     <div class="tiles">
       ${tile("Positie", r.rank, changeCell(r))}
-      ${tile("Weergaven", fmt(r.views), r.gain == null ? "" : `${signed(r.gain)} sinds gisteren`)}
+      ${tile("Weergaven", fmt(r.views), r.gain == null ? "" : `${signed(r.gain)} in 24 uur`)}
       ${tile("Volgers", fmt(c.followers))}
       ${tile("Posts", fmt(c.campaign_posts), "sinds start campagne")}
       ${tile("Likes", fmt(c.campaign_likes), "op campagneposts")}
@@ -535,6 +756,11 @@ function renderAccount(handle) {
       <div><h3>Volgers over tijd</h3><div class="chart-card short"><canvas id="chart-acc-followers"></canvas></div></div>
     </div>
     ${accountTags(posts)}
+    <div id="acc-videos" hidden>
+      <h3 style="margin:18px 0 4px">Weergaven per video</h3>
+      <p class="hint" id="acc-videos-note" style="margin:0 0 8px"></p>
+      <div class="chart-card short"><canvas id="chart-acc-videos" aria-label="Weergaven per video over tijd"></canvas></div>
+    </div>
     <h3 style="margin:18px 0 8px">Weergaven erbij per dag</h3>
     <div class="chart-card short"><canvas id="chart-acc-daily"></canvas></div>
     <h2>Posts in de campagne (${posts.length})</h2>
@@ -571,6 +797,7 @@ function renderAccount(handle) {
     },
     options: opts,
   });
+  renderVideoChart(handle);
 }
 
 // The account's own hashtags, most used first.
@@ -583,6 +810,28 @@ function accountTags(posts) {
     `<span class="chip static">#${esc(t)}<span class="chip-n">${n}×</span></span>`).join("")}</div>`;
 }
 
+// Finale banner (live countdown) and the Eindstand heading.
+function renderFinale() {
+  const banner = document.getElementById("finale");
+  const phase = finalePhase();
+  const title = document.getElementById("final-title");
+  const final = Boolean(state.data && state.data.final);
+  if (title) {
+    title.hidden = !final;
+    if (final) {
+      title.textContent = `🏁 Eindstand · ${stampFmt.format(FINALE.end)}`
+        + (state.data.latest ? ` · laatste meting ${hourFmt.format(state.data.latest)}` : "");
+    }
+  }
+  if (!banner) return;
+  if (phase === "live") {
+    banner.innerHTML = `<span class="live">LIVE</span> Finale · nog <strong>${countdown(FINALE.end - now())}</strong> tot de deadline (${hourFmt.format(FINALE.end)})`;
+  } else if (phase === "after") {
+    banner.innerHTML = `🏁 <strong>Eindstand</strong> · de finale is afgelopen (${stampFmt.format(FINALE.end)})`;
+  }
+  banner.hidden = !(phase === "live" || phase === "after");
+}
+
 function render() {
   if (!state.data) return;
   for (const a of document.querySelectorAll(".tabs a")) {
@@ -593,6 +842,7 @@ function render() {
   if (state.view === "stand") renderBoard();
   if (state.view === "grafiek") {
     renderSeg("metric", METRICS);
+    renderSeg("range", RANGES);
     renderChips("chips-grafiek");
     renderMainChart();
   }
@@ -603,7 +853,9 @@ function render() {
     renderGrowth();
   }
   if (state.view === "hashtags") renderHashtags();
+  if (state.view === "videos") renderVideos();
   if (state.view === "account") renderAccount(state.account);
+  renderFinale();
 }
 
 function route() {
@@ -613,7 +865,7 @@ function route() {
     state.account = hash.slice(8);
     window.scrollTo(0, 0);
   } else {
-    state.view = ["stand", "grafiek", "groei", "hashtags"].includes(hash) ? hash : "stand";
+    state.view = ["stand", "grafiek", "groei", "videos", "hashtags"].includes(hash) ? hash : "stand";
   }
   render();
 }
@@ -625,7 +877,7 @@ function openAccount(ev) {
 }
 
 document.getElementById("show-others").addEventListener("change", (e) => { state.showOthers = e.target.checked; render(); });
-for (const id of ["board-body", "growth-body"]) {
+for (const id of ["board-body", "growth-body", "videos-body"]) {
   document.getElementById(id).addEventListener("click", openAccount);
   document.getElementById(id).addEventListener("keydown", openAccount);
 }
@@ -664,6 +916,24 @@ document.addEventListener("DOMContentLoaded", () => {
   if (IS_PRESENT) Present.start();
   else route();
   load();
+  scheduleLoad();
 });
-// The admin reloads every minute so new numbers show up soon after a refresh.
-setInterval(load, (IS_ADMIN ? 1 : CFG.refreshMinutes || 10) * 60 * 1000);
+
+// Reload every refreshMinutes; every minute for the admin; every 2 minutes during the finale.
+function scheduleLoad() {
+  const minutes = IS_ADMIN ? 1 : finalePhase() === "live" ? 2 : CFG.refreshMinutes || 10;
+  setTimeout(() => { load(); scheduleLoad(); }, minutes * 60 * 1000);
+}
+
+// Finale: tick the countdown every second; at the deadline switch to the Eindstand.
+if (!IS_PRESENT) {
+  let phase = finalePhase();
+  setInterval(() => {
+    if (!state.data) return;
+    const next = finalePhase();
+    if (next !== phase) {
+      phase = next;
+      if (next === "after") load(); else renderFinale();
+    } else if (next === "live") renderFinale();
+  }, 1000);
+}

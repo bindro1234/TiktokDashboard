@@ -197,3 +197,18 @@ details summary { cursor: pointer; color: var(--accent); }
   .opt { display: none; }
   input[type="search"] { min-width: 0; width: 100%; }
 }
+
+/* Finale: banners, LIVE label, Eindstand title */
+.banner { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: 0 0 10px; padding: 6px 12px;
+  border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.banner[hidden] { display: none; }
+.banner.reminder { display: flex; background: var(--warn-bg); border-color: #d4a72c; font-weight: 600; }
+.banner.reminder[hidden] { display: none; }
+.live { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--bad); color: #fff;
+  font-size: 0.75rem; font-weight: 800; letter-spacing: 0.06em; }
+.live::before { content: "● "; }
+.final-title { margin: 0 0 12px; font-size: 1.35rem; }
+.final-title[hidden] { display: none; }
+.finale-card { border-width: 2px; }
+.add-form input[type="date"], .add-form input[type="time"] { min-width: 0; }
+.chart-box { position: relative; height: 280px; }

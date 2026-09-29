@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 import pathlib
+import re
 import unittest
 
 from collector import config, model
@@ -58,38 +59,75 @@ class SheetTests(unittest.TestCase):
         self.assertEqual([_col(1), _col(13), _col(26), _col(27), _col(52)], ["A", "M", "Z", "AA", "AZ"])
 
 
+def cron_firings(expr: str, day: dt.date) -> list[dt.datetime]:
+    """UTC firings of a 5-field cron on one UTC day (lists, ranges, steps and *)."""
+    def expand(field, lo, hi):
+        out = []
+        for part in field.split(","):
+            rng, _, step = part.partition("/")
+            if rng == "*":
+                a, b = lo, hi
+            else:
+                a, _, b = rng.partition("-")
+                a, b = int(a), int(b) if b else (hi if step else int(a))
+            out.extend(range(int(a), int(b) + 1, int(step or 1)))
+        return out
+    minute, hour, dom, month, dow = expr.split()
+    if day.day not in expand(dom, 1, 31) or day.month not in expand(month, 1, 12):
+        return []
+    if dow != "*" and day.isoweekday() % 7 not in expand(dow, 0, 6):
+        return []
+    return [dt.datetime.combine(day, dt.time(h, m), UTC)
+            for h in expand(hour, 0, 23) for m in expand(minute, 0, 59)]
+
+
+def repo_crons():
+    """The GitHub cron lines in collect.yml and the Cloudflare backup cron in private/wrangler.toml."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    github = re.findall(r'cron:\s*"([^"]+)"', (root / ".github/workflows/collect.yml").read_text())
+    toml = (root / "private/wrangler.toml").read_text()
+    cloudflare = json.loads(re.search(r"^crons\s*=\s*(\[.*\])", toml, re.M).group(1))
+    return {"github": github, "cloudflare": cloudflare}
+
+
 class WindowTests(unittest.TestCase):
+    def test_twelve_two_hourly_windows(self):
+        starts = [w.start for w in CFG.profile_windows]
+        self.assertEqual(starts, [dt.time(h, 0) for h in range(0, 24, 2)])
+        for w in CFG.profile_windows:
+            self.assertEqual((w.end.hour, w.end.minute), (w.start.hour, 59), w.name)
+
     def test_windows_across_dst(self):
-        morning = CFG.profile_windows[0]
+        w06 = next(w for w in CFG.profile_windows if w.name == "06u")
         # Summer time (UTC+2) and winter time (UTC+1, from 25 Oct 2026): same local window.
         cases = [
-            (dt.datetime(2026, 10, 1, 4, 10, tzinfo=UTC), False),   # 06:10 CEST, too early
-            (dt.datetime(2026, 10, 1, 4, 30, tzinfo=UTC), True),    # 06:30 CEST
-            (dt.datetime(2026, 10, 1, 6, 10, tzinfo=UTC), False),   # 08:10 CEST, too late
+            (dt.datetime(2026, 10, 1, 3, 50, tzinfo=UTC), False),   # 05:50 CEST, too early
+            (dt.datetime(2026, 10, 1, 4, 5, tzinfo=UTC), True),     # 06:05 CEST
+            (dt.datetime(2026, 10, 1, 4, 59, tzinfo=UTC), True),    # 06:59 CEST
+            (dt.datetime(2026, 10, 1, 5, 0, tzinfo=UTC), False),    # 07:00 CEST, too late
             (dt.datetime(2026, 10, 26, 4, 50, tzinfo=UTC), False),  # 05:50 CET, too early
-            (dt.datetime(2026, 10, 26, 5, 50, tzinfo=UTC), True),   # 06:50 CET
-            (dt.datetime(2026, 10, 26, 6, 50, tzinfo=UTC), True),   # 07:50 CET
+            (dt.datetime(2026, 10, 26, 5, 10, tzinfo=UTC), True),   # 06:10 CET
         ]
         for when, expected in cases:
-            self.assertEqual(morning.contains(when.astimezone(AMS)), expected, when)
+            self.assertEqual(w06.contains(when.astimezone(AMS)), expected, when)
 
-    def test_cron_covers_windows(self):
-        """Every cron firing minute list must hit each window several times in summer and winter time."""
-        crons = {"profiles": ([10, 30, 50], range(4, 7)), "evening": ([10, 30, 50], range(16, 19))}
-        for day in [dt.date(2026, 10, 1), dt.date(2026, 10, 26)]:
-            for window in CFG.profile_windows:
-                hits = 0
-                for minutes, hours in crons.values():
-                    for h in hours:
-                        for m in minutes:
-                            t = dt.datetime.combine(day, dt.time(h, m), UTC).astimezone(AMS)
-                            hits += window.contains(t)
-                self.assertGreaterEqual(hits, 4, (day, window.name))
-        refresh = CFG.refresh_window
-        for day in [dt.date(2026, 10, 2), dt.date(2026, 10, 30)]:  # Fridays in summer and winter time
-            hits = sum(refresh.contains(dt.datetime.combine(day, dt.time(h, m), UTC).astimezone(AMS))
-                       for h in range(6, 9) for m in [10, 30, 50])
-            self.assertGreaterEqual(hits, 4, day)
+    def test_crons_cover_every_window(self):
+        """Both GitHub cron and the Cloudflare backup must hit every window at least 3 times,
+        in summer time, on the day the clocks go back (25 Oct) and in winter time."""
+        for source, crons in repo_crons().items():
+            self.assertTrue(crons, source)
+            for day in [dt.date(2026, 10, 1), dt.date(2026, 10, 25), dt.date(2026, 10, 26)]:
+                # UTC days around it: the local 00u window starts the evening before in UTC.
+                firings = [t for c in crons for d in (-1, 0, 1)
+                           for t in cron_firings(c, day + dt.timedelta(days=d))]
+                for window in CFG.profile_windows:
+                    hits = [t for t in firings if window.contains(t.astimezone(AMS))
+                            and t.astimezone(AMS).date() == day]
+                    self.assertGreaterEqual(len(hits), 3, (source, day, window.name))
+            refresh = CFG.refresh_window
+            for day in [dt.date(2026, 10, 2), dt.date(2026, 10, 30)]:  # Fridays in summer and winter time
+                hits = sum(refresh.contains(t.astimezone(AMS)) for c in crons for t in cron_firings(c, day))
+                self.assertGreaterEqual(hits, 4, (source, day))
 
 
 class BudgetTests(unittest.TestCase):
@@ -102,10 +140,13 @@ class BudgetTests(unittest.TestCase):
         self.assertEqual(model.month_usage(rows, dt.datetime(2026, 10, 2, tzinfo=UTC)), 45)
 
     def test_remaining_profile_runs(self):
-        now = local(2026, 10, 23, 8, 45)  # Friday refresh time; this morning already ran
-        done = {"2026-10-23/ochtend"}
-        # Evening of 23rd + 24th, 25th, 26th (both) = 7 runs, collection stops after 26 Oct.
-        self.assertEqual(model.remaining_profile_runs(CFG, now, done), 7)
+        now = local(2026, 10, 23, 8, 45)  # Friday refresh time; the 08u window already ran
+        done = {"2026-10-23/08u"}
+        # 10u..22u on the 23rd (7) + 12 on each of the 24th, 25th and 26th = 43 runs;
+        # collection stops after 26 Oct.
+        self.assertEqual(model.remaining_profile_runs(CFG, now, done), 43)
+        # Without the 08u run it is still open (ends 08:59), so it counts too.
+        self.assertEqual(model.remaining_profile_runs(CFG, now, set()), 44)
 
     def test_window_state(self):
         rows = [{"window": "k1", "status": "failed", "dry_run": False},
@@ -190,6 +231,31 @@ class ProfileTests(unittest.TestCase):
         self.assertEqual(totals["a"]["total_views"], 547)
         self.assertEqual(totals["a"]["campaign_posts"], 3)
 
+    def test_post_history_is_light(self):
+        """Every run while a video is < 72 h old, then at most every 6 h; only when numbers changed."""
+        def post(vid, created, views, likes=1, **hist):
+            return {"video_id": vid, "handle": "a", "created_at": created, "views": views, "likes": likes, **hist}
+        t0 = "2026-10-05T10:00:00Z"
+        posts = [
+            post("new", "2026-10-05T08:00:00Z", 10),                                  # no row yet -> row
+            post("young", "2026-10-04T10:00:00Z", 50, hist_at="2026-10-05T08:00:00Z", hist_views=40, hist_likes=1),
+            post("same", "2026-10-04T10:00:00Z", 40, hist_at="2026-10-05T08:00:00Z", hist_views=40, hist_likes=1),
+            post("old_recent", "2026-10-01T10:00:00Z", 99, hist_at="2026-10-05T06:00:00Z", hist_views=90, hist_likes=1),
+            post("old_due", "2026-10-01T10:00:00Z", 99, hist_at="2026-10-05T04:00:00Z", hist_views=90, hist_likes=1),
+            post("likes_only", "2026-10-04T10:00:00Z", 40, likes=5, hist_at="2026-10-05T08:00:00Z", hist_views=40, hist_likes=1),
+            post("before", "2026-09-20T10:00:00Z", 5),                                # not a campaign post
+        ]
+        rows = model.post_history_rows(posts, t0, CAMP)
+        self.assertEqual([r["video_id"] for r in rows], ["new", "young", "old_due", "likes_only"])
+        self.assertEqual(set(rows[0]), {"video_id", "handle", "timestamp", "views", "likes"})
+        by = {p["video_id"]: p for p in posts}
+        self.assertEqual((by["young"]["hist_at"], by["young"]["hist_views"]), (t0, 50))  # marked in posts_latest
+        self.assertEqual(by["old_recent"]["hist_at"], "2026-10-05T06:00:00Z")            # untouched
+        # Two hours later with the same numbers: only old_recent, whose last row is now 6 h old.
+        later = model.post_history_rows(posts, "2026-10-05T12:00:00Z", CAMP)
+        self.assertEqual([r["video_id"] for r in later], ["old_recent"])
+        self.assertEqual(model.post_history_rows(posts, "2026-10-05T14:00:00Z", CAMP), [])
+
     def test_parse_post_drops_reposts_and_old(self):
         base = {"post_id": "5", "create_time": "2026-10-01T10:00:00.000Z", "play_count": 9, "digg_count": 1,
                 "comment_count": 0, "share_count": "2", "post_type": "video", "account_id": "stu"}
@@ -227,6 +293,49 @@ class RefreshPlanTests(unittest.TestCase):
         self.assertEqual(cmp["missing"], 2)
         self.assertEqual(cmp["missing_inside_window"], 1)  # video 2 was newer than the window's oldest
         self.assertEqual(cmp["max_views_lag_pct"], 10.0)
+
+
+class FinaleTests(unittest.TestCase):
+    ROW = {"started_at": "2026-10-26T13:00:00Z", "started_by": "x@y.nl", "deadline": "2026-10-26T15:00:00Z",
+           "status": "active", "ended_at": "", "ended_by": ""}
+
+    def state(self, row, when):
+        return model.finale_state([row], dt.datetime.fromisoformat(when).astimezone(UTC), CFG.finale.max_hours)
+
+    def test_phases(self):
+        self.assertIsNone(self.state(self.ROW, "2026-10-26T12:59:00+00:00")["phase"])  # not started yet
+        self.assertEqual(self.state(self.ROW, "2026-10-26T14:00:00+00:00")["phase"], "live")
+        self.assertEqual(self.state(self.ROW, "2026-10-26T15:00:00+00:00")["phase"], "ended")  # Eindstand
+        stopped = {**self.ROW, "status": "stopped", "ended_at": "2026-10-26T14:10:00Z"}
+        st = self.state(stopped, "2026-10-26T14:20:00+00:00")
+        self.assertEqual((st["phase"], model.iso(st["end"])), ("ended", "2026-10-26T14:10:00Z"))
+        self.assertIsNone(self.state({**self.ROW, "status": "cancelled"}, "2026-10-26T14:00:00+00:00"))
+        self.assertIsNone(model.finale_state([], dt.datetime(2026, 10, 26, tzinfo=UTC), 8))
+
+    def test_hard_maximum(self):
+        """A deadline further than max_hours after the start is cut off at max_hours."""
+        row = {**self.ROW, "deadline": "2026-10-27T13:00:00Z"}
+        st = self.state(row, "2026-10-26T20:59:00+00:00")
+        self.assertEqual(model.iso(st["end"]), "2026-10-26T21:00:00Z")
+        self.assertEqual(self.state(row, "2026-10-26T21:00:00+00:00")["phase"], "ended")
+
+    def test_window_key(self):
+        self.assertEqual(model.finale_window_key(local(2026, 10, 26, 16, 29), 15), "2026-10-26/finale-1615")
+        self.assertEqual(model.finale_window_key(local(2026, 10, 26, 16, 30), 15), "2026-10-26/finale-1630")
+
+    def test_auto_runs_finale_windows_without_the_60_minute_skip(self):
+        """During a finale, auto() runs the 15-minute window (never skipped for a recent run) and not the
+        2-hourly one; a second firing in the same window does nothing."""
+        now = dt.datetime(2026, 10, 26, 14, 5, tzinfo=UTC)  # 15:05 Amsterdam (winter time)
+        run_log = [{"timestamp": "2026-10-26T13:50:00Z", "run_type": "profiles", "window": "2026-10-26/finale-1445",
+                    "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}]
+        admin = FakeSheet({"run_log": run_log, "accounts": [], "finale": [self.ROW]})
+        Collector(CFG, admin, FakeSheet({}), bd=None, now=now).auto()
+        row = admin.tabs["run_log"][-1]
+        self.assertEqual(row["window"], "2026-10-26/finale-1500")
+        self.assertNotIn("SKIPPED", row["notes"])  # 15 min after the last run, but finale runs never skip
+        Collector(CFG, admin, FakeSheet({}), bd=None, now=now + dt.timedelta(minutes=5)).auto()
+        self.assertEqual(len(admin.tabs["run_log"]), 2)
 
 
 class FakeSheet:
