@@ -76,6 +76,57 @@ const adminOk = (await page.isVisible("#admin")) && href === cfg.forceRefreshUrl
 console.log(`site admin bar (?beheerder): ${adminOk ? "ok" : "MISSING"}, last run="${await page.textContent("#admin-last")}"`);
 if (!adminOk) fail(`site: admin bar missing or wrong link (${href})`);
 if (errors.length) fail(`site: browser errors: ${errors.join(" | ")}`);
+
+// Presentation mode (?present) at both projector resolutions: every slide fits without
+// scrolling, the slideshow cycles, no tabs/admin UI, light theme, "Bijgewerkt" shown.
+// ?beheerder is added on purpose: the admin button must stay hidden in presentation mode.
+for (const [w, h] of [[1920, 1080], [1280, 720]]) {
+  const pp = await browser.newPage({ viewport: { width: w, height: h } });
+  const perrors = [];
+  pp.on("pageerror", (e) => perrors.push(e.message));
+  pp.on("console", (m) => m.type() === "error" && perrors.push(m.text()));
+  await pp.goto(`${siteUrl}?present&beheerder&sec=2`, { waitUntil: "networkidle" });
+  await pp.waitForSelector("#p-stage[data-kind]", { timeout: 30000 });
+  const count = await pp.$$eval("#p-dots span", (s) => s.length);
+  const kinds = [];
+  for (let i = 0; i < count; i++) {
+    await pp.waitForFunction((n) => document.querySelectorAll("#p-dots span")[n]?.classList.contains("on"), i, { timeout: 10000 });
+    await pp.waitForTimeout(700); // let the enter animation finish
+    const m = await pp.evaluate(() => {
+      const st = document.getElementById("p-stage");
+      const doc = document.documentElement;
+      return {
+        kind: st.dataset.kind,
+        overflow: st.scrollHeight > st.clientHeight + 1 || st.scrollWidth > st.clientWidth + 1,
+        scroll: doc.scrollHeight > innerHeight + 1 || doc.scrollWidth > innerWidth + 1,
+      };
+    });
+    kinds.push(m.kind);
+    if (m.overflow || m.scroll) fail(`present ${w}x${h}: slide ${i + 1} (${m.kind}) does not fit the screen`);
+  }
+  const ui = await pp.evaluate(() => ({
+    theme: document.documentElement.dataset.theme,
+    header: getComputedStyle(document.querySelector(".top")).display,
+    admin: !document.getElementById("admin").hidden,
+    updated: document.getElementById("p-updated").textContent,
+  }));
+  await pp.waitForTimeout(3300);
+  const idle = await pp.evaluate(() => document.getElementById("present").classList.contains("p-idle"));
+  console.log(`present ${w}x${h}: slides=[${kinds.join(", ")}], theme=${ui.theme}, cursor hidden=${idle}, "${ui.updated}"`);
+  for (const k of ["podium", "graph", "risers"]) if (!kinds.includes(k)) fail(`present ${w}x${h}: no ${k} slide`);
+  if (ui.theme !== "light") fail(`present ${w}x${h}: theme is ${ui.theme}, expected light`);
+  if (ui.header !== "none") fail(`present ${w}x${h}: tabs/header are visible`);
+  if (ui.admin) fail(`present ${w}x${h}: admin button is visible`);
+  if (!ui.updated.startsWith("Bijgewerkt")) fail(`present ${w}x${h}: no "Bijgewerkt" time`);
+  if (!idle) fail(`present ${w}x${h}: cursor is not hidden after 3 s`);
+  if (perrors.length) fail(`present ${w}x${h}: browser errors: ${perrors.join(" | ")}`);
+  await pp.close();
+}
+const dark = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+await dark.goto(`${siteUrl}?present&donker`, { waitUntil: "networkidle" });
+const darkTheme = await dark.evaluate(() => document.documentElement.dataset.theme);
+console.log(`present ?donker: theme=${darkTheme}`);
+if (darkTheme !== "dark") fail("present: ?donker does not switch to the dark theme");
 await browser.close();
 
 console.log(failed ? "Site check FAILED" : "Site check passed");

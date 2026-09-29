@@ -7,6 +7,16 @@
   <title>TikTok Campagne Stand</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
   <link rel="stylesheet" href="style.css">
+  <script>
+    // Presentation mode: pick the theme and hide the normal page before the first paint.
+    // Light by default (projectors wash out dark backgrounds); ?present&donker for dark.
+    (function () {
+      var q = new URLSearchParams(location.search);
+      if (!q.has("present")) return;
+      document.documentElement.classList.add("presenting");
+      document.documentElement.setAttribute("data-theme", q.has("donker") ? "dark" : "light");
+    })();
+  </script>
 </head>
 <body>
   <header class="top">
@@ -83,11 +93,22 @@
     <section id="view-account" class="view" hidden></section>
   </main>
 
+  <div class="present" id="present" hidden>
+    <div class="p-stage" id="p-stage"><p class="p-message">Gegevens laden…</p></div>
+    <div class="p-foot">
+      <div class="p-dots" id="p-dots" aria-hidden="true"></div>
+      <div class="p-updated" id="p-updated"></div>
+    </div>
+    <div class="p-progress" aria-hidden="true"><div id="p-bar"></div></div>
+    <button class="p-fs" id="p-fs" type="button" title="Volledig scherm" aria-label="Volledig scherm">⛶</button>
+  </div>
+
   <footer class="foot">Alleen TikTok-accountnamen, geen namen van leerlingen. Gegevens worden twee keer per dag bijgewerkt.</footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <script src="config.js"></script>
   <script src="app.js"></script>
+  <script src="present.js"></script>
 </body>
 </html>

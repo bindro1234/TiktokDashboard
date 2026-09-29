@@ -165,3 +165,86 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
   .chart-card { height: 340px; padding: 10px; }
   .tabs a { padding: 8px 10px; }
 }
+
+/* ---------- Presentation mode (?present) ----------
+   One unit (--u) scales everything, so 1920x1080 and 1280x720 look identical and nothing scrolls. */
+.presenting .top, .presenting main, .presenting .foot { display: none; }
+.present[hidden] { display: none; }
+.present {
+  --u: min(1vh, 0.5625vw);
+  position: fixed; inset: 0; overflow: hidden;
+  display: flex; flex-direction: column;
+  padding: calc(var(--u) * 4) calc(var(--u) * 5) calc(var(--u) * 3);
+  background: var(--surface); color: var(--text);
+}
+.p-stage { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.p-enter { animation: p-fade 0.5s ease-out; }
+@keyframes p-fade { from { opacity: 0; transform: translateY(calc(var(--u) * 1)); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .p-enter { animation: none; } }
+.p-title { margin: 0 0 calc(var(--u) * 3); font-size: calc(var(--u) * 6); font-weight: 800; line-height: 1.1; letter-spacing: -0.01em; }
+.p-sub { margin-left: 0.4em; font-size: 0.5em; font-weight: 600; color: var(--text-2); }
+.p-message { margin: auto; font-size: calc(var(--u) * 4); color: var(--text-2); text-align: center; }
+.present .badge { font-size: 0.5em; }
+
+/* Podium */
+.p-podium { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(var(--u) * 3); align-items: end; }
+.p-pod { display: flex; flex-direction: column; align-items: center; min-width: 0; text-align: center; }
+.p-pod-medal { font-size: calc(var(--u) * 8); line-height: 1; }
+.p-pod-handle { max-width: 100%; margin-top: calc(var(--u) * 1.5); font-size: calc(var(--u) * 3.8); font-weight: 800; overflow-wrap: anywhere; }
+.p-pod-views { margin-top: calc(var(--u) * 1); font-size: calc(var(--u) * 7.5); font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.p-pod-label { font-size: calc(var(--u) * 2.4); color: var(--text-2); }
+.p-pod-gain { margin: calc(var(--u) * 1) 0 calc(var(--u) * 2); font-size: calc(var(--u) * 2.8); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.p-pod-block {
+  display: flex; justify-content: center; width: 100%; padding-top: calc(var(--u) * 1.5);
+  background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0;
+  border-radius: calc(var(--u) * 1.2) calc(var(--u) * 1.2) 0 0;
+  font-size: calc(var(--u) * 6); font-weight: 800; line-height: 1; color: var(--text-2);
+}
+.p-pod-1 .p-pod-block { height: calc(var(--u) * 23); border-top: calc(var(--u) * 0.6) solid var(--accent); }
+.p-pod-2 .p-pod-block { height: calc(var(--u) * 16); }
+.p-pod-3 .p-pod-block { height: calc(var(--u) * 10); }
+
+/* Ranking pages and risers: fixed row height, so a short last page keeps the same size. */
+.p-table { flex: 1; min-height: 0; display: grid; grid-template-rows: auto repeat(var(--rows, 10), minmax(0, 1fr)); }
+.p-risers { grid-template-rows: repeat(var(--rows, 10), minmax(0, 1fr)); }
+.p-row {
+  display: grid; align-items: center; column-gap: calc(var(--u) * 2);
+  grid-template-columns: calc(var(--u) * 7) calc(var(--u) * 9) minmax(0, 1fr) calc(var(--u) * 24) calc(var(--u) * 24);
+  border-bottom: 1px solid var(--grid); font-size: calc(var(--u) * 4.2); font-variant-numeric: tabular-nums;
+}
+.p-head { padding-bottom: calc(var(--u) * 1); font-size: calc(var(--u) * 2); font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-2); }
+.p-head span:nth-child(1), .p-head span:nth-child(n+4), .p-rank, .p-views, .p-gain { text-align: right; }
+.p-rank, .p-views { font-weight: 800; }
+.p-chg { font-size: 0.7em; font-weight: 700; }
+.p-handle { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-gain { color: var(--text-2); }
+.p-risers .p-row { grid-template-columns: calc(var(--u) * 7) minmax(0, 1.2fr) minmax(0, 1fr) calc(var(--u) * 20); }
+.p-track { height: 45%; overflow: hidden; background: var(--surface-2); border-radius: calc(var(--u) * 0.6); }
+.p-bar { display: block; height: 100%; background: var(--s1); border-radius: 0 calc(var(--u) * 0.6) calc(var(--u) * 0.6) 0; }
+
+/* Graph */
+.p-graph { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) calc(var(--u) * 42); gap: calc(var(--u) * 3); }
+.p-chart { position: relative; min-height: 0; }
+.p-legend { display: flex; flex-direction: column; justify-content: center; gap: calc(var(--u) * 1.6); min-width: 0; margin: 0; padding: 0; list-style: none; font-size: calc(var(--u) * 3); font-weight: 700; }
+.p-legend li { display: flex; align-items: center; gap: calc(var(--u) * 1.2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.p-dot { flex: none; width: calc(var(--u) * 2.2); height: calc(var(--u) * 2.2); border-radius: 50%; }
+.p-legend-rank { min-width: 1.4em; color: var(--text-2); text-align: right; }
+
+/* Footer: slide dots, "Bijgewerkt", progress bar, fullscreen button */
+.p-foot { display: flex; justify-content: space-between; align-items: center; margin-top: calc(var(--u) * 2); font-size: calc(var(--u) * 1.8); color: var(--text-2); }
+.p-dots { display: flex; gap: calc(var(--u) * 0.8); }
+.p-dots span { width: calc(var(--u) * 1.1); height: calc(var(--u) * 1.1); border-radius: 50%; background: var(--border); }
+.p-dots span.on { background: var(--accent); }
+.p-progress { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--u) * 0.5); }
+#p-bar { width: 0; height: 100%; background: var(--accent); opacity: 0.6; }
+@keyframes p-progress { from { width: 0; } to { width: 100%; } }
+.p-fs {
+  position: absolute; top: calc(var(--u) * 2); right: calc(var(--u) * 2);
+  width: max(36px, calc(var(--u) * 5)); height: max(36px, calc(var(--u) * 5));
+  border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-2);
+  font-size: calc(var(--u) * 2.8); cursor: pointer; opacity: 0.7; transition: opacity 0.3s;
+}
+.p-fs[hidden] { display: none; }
+.p-fs:hover, .p-fs:focus-visible { opacity: 1; }
+.p-idle, .p-idle * { cursor: none !important; }
+.p-idle .p-fs { opacity: 0; pointer-events: none; }
