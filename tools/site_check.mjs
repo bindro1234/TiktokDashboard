@@ -18,6 +18,8 @@ const expected = {
   handles: ["handle", "is_private", "last_status"],
   history: ["timestamp", "handle", "total_views", "followers", "campaign_likes", "campaign_posts"],
   posts: ["video_id", "handle", "created_at", "views"],
+  post_history: ["video_id", "handle", "timestamp", "views", "likes"],
+  finale: ["started_at", "deadline", "status", "ended_at"],
 };
 
 let failed = false;
