@@ -18,3 +18,10 @@ run_worker_first = true
 
 [vars]
 GITHUB_REPO = "bindro1234/TiktokDashboard"
+
+# Keep Worker logs (also each request's invocation log) so errors can be looked up afterwards
+# in the dashboard. The Worker never logs sheet contents or names.
+[observability.logs]
+enabled = true
+invocation_logs = true
+persist = true

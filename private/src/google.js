@@ -45,7 +45,9 @@ const a1 = (tab, cells = "") => `'${tab.replace(/'/g, "''")}'` + (cells ? `!${ce
 export class Sheets {
   constructor(b64, fetchImpl = fetch) {
     this.b64 = b64;
-    this.fetch = fetchImpl;
+    // Never call a stored fetch as a method: Workers' global fetch throws "Illegal invocation"
+    // when its `this` is not globalThis. The arrow function calls it unbound.
+    this.fetch = (...args) => fetchImpl(...args);
   }
 
   async call(id, method, path, { params, body } = {}) {

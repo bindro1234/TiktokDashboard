@@ -96,7 +96,7 @@ class Api {
   constructor(env, email, fetchImpl, ctx) {
     this.env = env;
     this.email = email;
-    this.fetch = fetchImpl;
+    this.fetch = (...args) => fetchImpl(...args); // unbound call, see google.js
     this.ctx = ctx;
     this.sheets = new Sheets(env.GOOGLE_SERVICE_ACCOUNT_B64, fetchImpl);
     this.admin = CONFIG.sheets.adminId;
