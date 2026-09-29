@@ -1,0 +1,54 @@
+name: Collect TikTok stats
+
+# GitHub cron is UTC and can be late or skip firings. Each window gets several
+# firings that cover both summer (UTC+2) and winter time (UTC+1); the collector
+# checks Amsterdam time and run_log so each window runs exactly once.
+on:
+  schedule:
+    - cron: "10,30,50 4-6 * * *"    # morning profiles, 06:30-07:59 Amsterdam
+    - cron: "10,30,50 16-18 * * *"  # evening profiles, 18:00-19:59 Amsterdam (+ one-time window check)
+    - cron: "10,30,50 6-8 * * 5"    # Friday posts refresh, 08:30-10:00 Amsterdam
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "What to run"
+        type: choice
+        options: [auto, profiles, refresh, check, status, setup]
+        default: status
+      dry_run:
+        description: "Dry run (no scraping, only log expected records)"
+        type: boolean
+        default: true
+      handles:
+        description: "check only: comma separated handles (empty = accounts with most videos)"
+        type: string
+        default: ""
+
+# Never run two collections at the same time; queue instead of cancelling.
+concurrency:
+  group: collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest
+      - name: Run collector
+        env:
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
+          COMMAND: ${{ github.event_name == 'schedule' && 'auto' || inputs.command }}
+          DRY_RUN: ${{ github.event_name != 'schedule' && inputs.dry_run && '--dry-run' || '' }}
+          HANDLES: ${{ inputs.handles }}
+        run: python -m collector "$COMMAND" $DRY_RUN --handles "$HANDLES"

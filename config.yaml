@@ -1,0 +1,57 @@
+# TikTok campaign tracker configuration.
+#
+# All times are Europe/Amsterdam local time. GitHub cron runs in UTC and can be
+# late or skip runs, so the workflow fires several times per window and the
+# collector decides whether a window still needs its run. Summer/winter time is
+# handled here, not in cron.
+
+timezone: Europe/Amsterdam
+
+campaign:
+  start_date: 2026-09-28     # first day a new post counts (inclusive)
+  end_date: 2026-10-26       # last day a new post counts (inclusive)
+  collect_until: 2026-10-26  # scheduled runs stop after this day
+
+sheets:
+  # Private: accounts (student names), run_log, profile_window. Never publish.
+  admin_id: 1CnX4WcJkCgKvGXIDRb_P1CTzADUc_qkkCCqQXTpu_No
+  # Public: TikTok handles only. Published as CSV for the website.
+  data_id: 1syVgGLY2t8XnllGAkWSVvGXmElDJW7ng2pLVQKSXWjA
+
+brightdata:
+  profiles_dataset: gd_l1villgoiiidt09ci   # TikTok - Profiles (1 record per profile)
+  posts_dataset: gd_lu702nij2f790tmv9h      # TikTok - Posts, discover by profile URL (1 record per post)
+  poll_seconds: 15
+  timeout_minutes: 30
+
+budget:
+  # Hard cap on Bright Data records per calendar month (free records renew on the 1st).
+  monthly_cap: 4500
+
+schedule:
+  # A window that failed is retried by the next cron firing, at most this many times.
+  max_attempts_per_window: 2
+  profile_runs:
+    - name: ochtend
+      start: "06:30"
+      end: "07:59"
+    - name: avond
+      start: "18:00"
+      end: "19:59"
+  posts_refresh:
+    name: weekrefresh
+    weekday: friday
+    start: "08:30"
+    end: "10:00"
+
+posts_refresh:
+  # Max posts fetched per account in the weekly refresh (also the dry-run upper bound).
+  num_of_posts: 20
+
+window_check:
+  # One-time check (trial week): full campaign pull for the accounts with the most
+  # videos, compared against what top_videos + posts_latest had. Runs right after
+  # the evening profile run on this date. Set date to null to disable.
+  date: 2026-10-05
+  accounts: 4
+  num_of_posts: 40

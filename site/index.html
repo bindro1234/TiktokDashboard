@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>TikTok Campagne Stand</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div>
+        <h1>TikTok-campagne</h1>
+        <p class="meta" id="updated">Gegevens laden…</p>
+      </div>
+      <nav class="tabs" aria-label="Weergave">
+        <a href="#stand" data-view="stand">Stand</a>
+        <a href="#grafiek" data-view="grafiek">Grafiek</a>
+        <a href="#groei" data-view="groei">Groei</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <p class="notice" id="error" hidden></p>
+
+    <section id="view-stand" class="view" hidden>
+      <div class="board-wrap">
+        <table class="board">
+          <thead>
+            <tr>
+              <th class="num">#</th>
+              <th class="chg" title="Verandering in positie sinds gisteren">±</th>
+              <th>Account</th>
+              <th class="num">Weergaven</th>
+              <th class="num opt">+ sinds gisteren</th>
+              <th class="num opt2">Volgers</th>
+              <th class="num opt2">Posts</th>
+              <th class="num opt2">Likes</th>
+            </tr>
+          </thead>
+          <tbody id="board-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Klik op een account voor details. Alleen video's vanaf de start van de campagne tellen mee.</p>
+    </section>
+
+    <section id="view-grafiek" class="view" hidden>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Meetwaarde" data-bind="metric"></div>
+        <label class="check"><input type="checkbox" id="show-others"> Overige accounts in grijs</label>
+      </div>
+      <div class="legend" id="legend-grafiek" aria-label="Legenda"></div>
+      <div class="chart-card"><canvas id="chart-main" aria-label="Grafiek over tijd"></canvas></div>
+      <h2>Accounts kiezen</h2>
+      <div class="chips" id="chips-grafiek" aria-label="Accounts (maximaal 8)"></div>
+    </section>
+
+    <section id="view-groei" class="view" hidden>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Meetwaarde" data-bind="growthMetric"></div>
+        <div class="seg" role="group" aria-label="Periode" data-bind="period"></div>
+      </div>
+      <div class="legend" id="legend-groei" aria-label="Legenda"></div>
+      <div class="chart-card"><canvas id="chart-growth" aria-label="Groei per periode"></canvas></div>
+      <h2>Accounts kiezen</h2>
+      <div class="chips" id="chips-groei" aria-label="Accounts (maximaal 8)"></div>
+      <h2 id="growth-title">Grootste stijgers</h2>
+      <div class="board-wrap">
+        <table class="board small">
+          <thead><tr><th class="num">#</th><th>Account</th><th class="num" id="growth-col">Groei</th><th class="num opt">Totaal</th></tr></thead>
+          <tbody id="growth-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="view-account" class="view" hidden></section>
+  </main>
+
+  <footer class="foot">Alleen TikTok-accountnamen, geen namen van leerlingen. Gegevens worden twee keer per dag bijgewerkt.</footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
