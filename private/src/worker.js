@@ -14,6 +14,10 @@ const ACTIVITY_HEADER = ["timestamp", "email", "action", "details"];
 const CSRF_HEADER = "x-requested-with";
 const CSRF_VALUE = "tiktok-beheer";
 const RUNNING = new Set(["queued", "in_progress", "waiting", "requested", "pending"]);
+const FINALE_TAB = "finale";
+const FINALE_HEADER = ["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"];
+const PUBLIC_FINALE_HEADER = ["started_at", "deadline", "status", "ended_at"]; // no emails: public sheet
+const MIN_FINALE_MINUTES = 15;
 
 const SECURITY_HEADERS = {
   "cache-control": "no-store",
@@ -46,7 +50,8 @@ export default {
   async fetch(request, env, ctx) {
     return handle(request, env, ctx, fetch);
   },
-  // Cloudflare Cron Trigger (wrangler.toml): backup for GitHub's unreliable cron.
+  // Cloudflare Cron Trigger (wrangler.toml, every 5 min): the 2-hourly windows (backup for GitHub's
+  // unreliable cron) and the 15-minute finale runs.
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runSchedule(env, fetch, controller.scheduledTime).then(
       (r) => console.log(`schedule: ${r.action}${r.due?.length ? ` (${r.due.join(", ")})` : ""}`),
@@ -60,10 +65,13 @@ export default {
  * Returns what it did; only window keys and counts, never sheet contents.
  */
 export async function runSchedule(env, fetchImpl = fetch, nowMs = Date.now()) {
-  if (!lib.openWindows(CONFIG, nowMs).length) return { action: "no window open" };
   const sheets = new Sheets(env.GOOGLE_SERVICE_ACCOUNT_B64, fetchImpl);
-  const { run_log: values } = await sheets.readTabs(CONFIG.sheets.adminId, ["run_log"]);
-  const due = lib.dueWindows(CONFIG, lib.rowsToObjects(values), nowMs);
+  // Cheap check first: outside the 2-hourly windows only a live finale can need a run.
+  const { run_log: values, [FINALE_TAB]: finaleValues } =
+    await sheets.readTabs(CONFIG.sheets.adminId, ["run_log", FINALE_TAB]);
+  const finale = lib.finaleState(lib.rowsToObjects(finaleValues), nowMs, CONFIG.finale.maxHours);
+  if (!lib.openWindows(CONFIG, nowMs, finale).length) return { action: "no window open" };
+  const due = lib.dueWindows(CONFIG, lib.rowsToObjects(values), nowMs, finale);
   if (!due.length) return { action: "windows already done", due };
   if (!env.GH_DISPATCH_TOKEN) return { action: "GH_DISPATCH_TOKEN missing", due };
   const gh = (path, init = {}) => fetchImpl(`https://api.github.com/repos/${env.GITHUB_REPO}${path}`, {
@@ -108,10 +116,14 @@ export async function handle(request, env, ctx, fetchImpl = fetch) {
     switch (route) {
       case "GET /api/data": return json(await api.data());
       case "GET /api/runs": return json(await api.runs());
+      case "GET /api/post-history": return json(await api.postHistory());
       case "POST /api/refresh": return json(await api.refresh());
       case "POST /api/accounts": return json(await api.addAccount(await request.json()));
       case "POST /api/accounts/active": return json(await api.setActive(await request.json()));
       case "POST /api/log": return json(await api.logClient(await request.json()));
+      case "POST /api/finale/start": return json(await api.finaleStart(await request.json()));
+      case "POST /api/finale/deadline": return json(await api.finaleDeadline(await request.json()));
+      case "POST /api/finale/stop": return json(await api.finaleStop(await request.json()));
       default: return json({ error: "Onbekende route" }, 404);
     }
   } catch (err) {
@@ -150,7 +162,7 @@ class Api {
 
   async data() {
     const [admin, data] = await Promise.all([
-      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB]),
+      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB]),
       this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest"]),
     ]);
     const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
@@ -170,13 +182,19 @@ class Api {
     const last = lib.lastProfilesRun(runLog);
     const tracked = accounts.filter((a) => a.tracked).length;
     const strip = ({ _row, ...rest }) => rest;
+    const finaleRows = lib.rowsToObjects(admin[FINALE_TAB]);
+    const finale = lib.finaleState(finaleRows, now, CONFIG.finale.maxHours);
     return {
       me: this.email,
       serverTime: now,
       config: {
         campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: CONFIG.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
+        finale: CONFIG.finale,
       },
+      finale: finale && { ...finale, row: undefined },
+      // Any finale that really ran (not cancelled): hides the "start the finale" reminder.
+      finaleHasRun: finaleRows.some((r) => ["active", "stopped"].includes(String(r.status))),
       accounts,
       handles: lib.rowsToObjects(data.handles).map(strip),
       history: lib.rowsToObjects(data.history).map(strip),
@@ -186,6 +204,16 @@ class Api {
       budget: lib.budget(CONFIG, runLog, tracked, now),
       lastProfilesRun: last,
     };
+  }
+
+  // Per-video history, loaded only for the Stijgers tab and student pages (it can be a few MB).
+  // Compact: [video_id, epoch ms, views] per row.
+  async postHistory() {
+    const { post_history: values } = await this.sheets.readTabs(this.dataId, ["post_history"]);
+    const rows = lib.rowsToObjects(values)
+      .map((r) => [String(r.video_id), lib.parseTs(r.timestamp), lib.toNum(r.views) ?? 0])
+      .filter((r) => r[1] !== null);
+    return { rows };
   }
 
   async github(path, init = {}) {
@@ -288,6 +316,103 @@ class Api {
     await this.log(active ? "leerling geactiveerd" : "leerling gedeactiveerd",
       `${String(target.student_name ?? "").trim() || "(geen naam)"} @${expected}, rij ${rowNo}`);
     return { ok: true, message: `@${expected} is nu ${active ? "actief" : "inactief"}.` };
+  }
+
+  // ---------- finale ----------
+
+  async finaleNow() {
+    await this.sheets.ensureTab(this.admin, FINALE_TAB, FINALE_HEADER);
+    const { [FINALE_TAB]: values, run_log: log, accounts } =
+      await this.sheets.readTabs(this.admin, [FINALE_TAB, "run_log", "accounts"]);
+    const now = Date.now();
+    return {
+      now,
+      state: lib.finaleState(lib.rowsToObjects(values), now, CONFIG.finale.maxHours),
+      runLog: lib.rowsToObjects(log),
+      active: lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.tracked).length,
+    };
+  }
+
+  // "2026-10-26T16:00" (Amsterdam) -> epoch ms, checked against [earliest, latest].
+  parseDeadline(text, earliest, latest) {
+    const m = String(text || "").match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})$/);
+    if (!m) throw new HttpError(400, "Kies een datum en tijd voor de deadline.");
+    const t = lib.amsMs(m[1], m[2]);
+    const hhmm = (ms) => `${lib.localDay(ms)} ${lib.localTime(ms)}`;
+    if (t < earliest) throw new HttpError(400, `De deadline moet na ${hhmm(earliest)} liggen.`);
+    if (t > latest) throw new HttpError(400, `Een finale duurt maximaal ${CONFIG.finale.maxHours} uur: kies uiterlijk ${hhmm(latest)}.`);
+    return t;
+  }
+
+  // The finale must fit in this month's budget, like every run (the collector checks each run again).
+  checkBudget(runLog, active, runs, now) {
+    const used = lib.monthUsage(runLog, now);
+    const need = runs * active;
+    if (used + need > CONFIG.budget.monthlyCap) {
+      throw new HttpError(409, `Past niet in het budget: al ${used} van ${CONFIG.budget.monthlyCap} records gebruikt, `
+        + `deze finale kost tot ${need} (${runs} runs × ${active} accounts). Kies een eerdere deadline of verhoog budget.monthly_cap.`);
+    }
+    return need;
+  }
+
+  async writePublicFinale(row) {
+    await this.sheets.ensureTab(this.dataId, FINALE_TAB, PUBLIC_FINALE_HEADER);
+    await this.sheets.update(this.dataId, FINALE_TAB, "A2", [row]);
+  }
+
+  async finaleStart(body) {
+    const { now, state, runLog, active } = await this.finaleNow();
+    if (state && state.phase === "live") throw new HttpError(409, "Er loopt al een finale.");
+    const deadline = this.parseDeadline(body?.deadline, now + MIN_FINALE_MINUTES * 60e3,
+      now + CONFIG.finale.maxHours * 3600e3);
+    const runs = lib.finaleRuns(now, deadline, CONFIG.finale.everyMinutes);
+    const need = this.checkBudget(runLog, active, runs, now);
+    const start = new Date(now).toISOString().replace(/\.\d+Z$/, "Z");
+    const end = new Date(deadline).toISOString().replace(/\.\d+Z$/, "Z");
+    await this.sheets.append(this.admin, FINALE_TAB, [[start, this.email, end, "active", "", ""]]);
+    await this.writePublicFinale([start, end, "active", ""]);
+    await this.log("finale gestart", `deadline ${lib.localDay(deadline)} ${lib.localTime(deadline)}, `
+      + `${runs} runs × ${active} accounts ≈ ${need} records`);
+    // Start the first run right away instead of waiting for the timer (best effort).
+    try {
+      const wf = CONFIG.workflows.collect;
+      const recent = await this.github(`/actions/workflows/${wf}/runs?per_page=5`);
+      if (!(recent.workflow_runs || []).some((r) => RUNNING.has(r.status))) {
+        await this.github(`/actions/workflows/${wf}/dispatches`, { method: "POST",
+          body: JSON.stringify({ ref: "main", inputs: { command: "auto", dry_run: "false", handles: "" } }) });
+      }
+    } catch (err) {
+      console.log(`finale: first run not started now (${err.message}); the timer starts it`);
+    }
+    return { ok: true, message: `Finale gestart tot ${lib.localTime(deadline)}. Elke ${CONFIG.finale.everyMinutes} minuten nieuwe cijfers.` };
+  }
+
+  async finaleDeadline(body) {
+    const { now, state, runLog, active } = await this.finaleNow();
+    if (!state || state.phase !== "live") throw new HttpError(409, "Er loopt geen finale.");
+    const deadline = this.parseDeadline(body?.deadline, now + 5 * 60e3, state.start + CONFIG.finale.maxHours * 3600e3);
+    if (deadline > state.end) this.checkBudget(runLog, active, lib.finaleRuns(now, deadline, CONFIG.finale.everyMinutes), now);
+    const end = new Date(deadline).toISOString().replace(/\.\d+Z$/, "Z");
+    await this.sheets.update(this.admin, FINALE_TAB, `C${state.row}`, [[end]]);
+    await this.writePublicFinale([new Date(state.start).toISOString().replace(/\.\d+Z$/, "Z"), end, "active", ""]);
+    await this.log("finale deadline gewijzigd",
+      `van ${lib.localTime(state.end)} naar ${lib.localDay(deadline)} ${lib.localTime(deadline)}`);
+    return { ok: true, message: `Nieuwe deadline: ${lib.localTime(deadline)}.` };
+  }
+
+  async finaleStop(body) {
+    const cancel = body?.mode === "cancel";
+    const { now, state } = await this.finaleNow();
+    // Stop: only while it runs. Cancel: also afterwards, e.g. to take away an Eindstand started by mistake.
+    if (!state || (!cancel && state.phase !== "live")) throw new HttpError(409, "Er loopt geen finale.");
+    const at = new Date(now).toISOString().replace(/\.\d+Z$/, "Z");
+    const status = cancel ? "cancelled" : "stopped";
+    await this.sheets.update(this.admin, FINALE_TAB, `D${state.row}:F${state.row}`, [[status, at, this.email]]);
+    await this.writePublicFinale([new Date(state.start).toISOString().replace(/\.\d+Z$/, "Z"),
+      new Date(state.end).toISOString().replace(/\.\d+Z$/, "Z"), status, at]);
+    await this.log(cancel ? "finale geannuleerd" : "finale gestopt", cancel ? "geen Eindstand" : `Eindstand vanaf ${lib.localTime(now)}`);
+    return { ok: true, message: cancel ? "Finale geannuleerd: geen Eindstand, alles loopt weer gewoon door."
+      : "Finale gestopt. De Eindstand staat vast op de laatste meting." };
   }
 
   async logClient(body) {

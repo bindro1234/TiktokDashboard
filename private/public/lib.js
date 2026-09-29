@@ -165,12 +165,59 @@ export function remainingProfileRuns(cfg, nowMs, done) {
 
 const weekdayFmt = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long" });
 
+// ---------- finale (same rules as finale_state / finale_window_key in collector/model.py) ----------
+
+/**
+ * The current finale from the finale tab rows (last row counts), or null.
+ * { start, end, deadline, status, phase: "live" | "ended" | null, startedBy? }
+ * end = the deadline, never later than start + maxHours, or the stop time for a stopped finale.
+ */
+export function finaleState(rows, nowMs, maxHours) {
+  if (!rows || !rows.length) return null;
+  const r = rows[rows.length - 1];
+  const start = parseTs(r.started_at), deadline = parseTs(r.deadline);
+  const status = String(r.status ?? "").trim();
+  if (start === null || deadline === null || !["active", "stopped"].includes(status)) return null;
+  let end = Math.min(deadline, start + maxHours * 3600e3);
+  if (status === "stopped") end = Math.min(end, parseTs(r.ended_at) ?? end);
+  const phase = start <= nowMs && nowMs < end ? "live" : nowMs >= end ? "ended" : null;
+  return { start, end, deadline, status, phase, startedBy: r.started_by || null, row: r._row || null };
+}
+
+/** Key of the finale run due now: Amsterdam time floored to everyMinutes, e.g. 2026-10-26/finale-1615. */
+export function finaleWindowKey(nowMs, everyMinutes) {
+  const [h, m] = localTime(nowMs).split(":").map(Number);
+  const mm = m - (m % everyMinutes);
+  return `${localDay(nowMs)}/finale-${String(h).padStart(2, "0")}${String(mm).padStart(2, "0")}`;
+}
+
+/** Epoch ms of an Amsterdam wall-clock time ("2026-10-26", "20:00"), summer or winter time. */
+export function amsMs(day, hhmm) {
+  for (const off of [2, 1, 0]) {
+    const t = Date.parse(`${day}T${hhmm}:00Z`) - off * 3600e3;
+    if (localTime(t) === hhmm && localDay(t) === day) return t;
+  }
+  return Date.parse(`${day}T${hhmm}:00Z`);
+}
+
+/** Records a finale costs: runs every everyMinutes until end, one record per active account. */
+export function finaleRuns(startMs, endMs, everyMinutes) {
+  return Math.max(0, Math.ceil((endMs - startMs) / (everyMinutes * 60e3)));
+}
+
 /** Window keys ("YYYY-MM-DD/name") that are open right now, Amsterdam time. */
-export function openWindows(cfg, nowMs) {
+export function openWindows(cfg, nowMs, finale = null) {
   const day = localDay(nowMs);
   const time = localTime(nowMs);
-  if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
   const inside = (w) => w.start <= time && time <= w.end;
+  // A live finale replaces the 2-hourly windows (runs every few minutes, even after campaign.end).
+  if (finale && finale.phase === "live") {
+    const open = [finaleWindowKey(nowMs, cfg.finale.everyMinutes)];
+    const r = cfg.schedule.refresh;
+    if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
+    return open;
+  }
+  if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
   const open = cfg.schedule.profileRuns.filter(inside).map((w) => `${day}/${w.name}`);
   const r = cfg.schedule.refresh;
   if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
@@ -181,7 +228,7 @@ export function openWindows(cfg, nowMs) {
  * Open windows that still need a collector run: not done, and not failed max-attempts times.
  * On the window-check date, the check is due once the evening window is done (while it is open).
  */
-export function dueWindows(cfg, runLog, nowMs) {
+export function dueWindows(cfg, runLog, nowMs, finale = null) {
   const done = doneWindows(runLog);
   const failures = new Map();
   for (const r of runLog) {
@@ -190,7 +237,7 @@ export function dueWindows(cfg, runLog, nowMs) {
     }
   }
   const pending = (key) => !done.has(key) && (failures.get(key) || 0) < cfg.schedule.maxAttemptsPerWindow;
-  const open = openWindows(cfg, nowMs);
+  const open = openWindows(cfg, nowMs, finale);
   const due = open.filter(pending);
   const day = localDay(nowMs);
   const evening = cfg.schedule.profileRuns.at(-1);

@@ -7,9 +7,12 @@ name: Collect TikTok stats
 # workflow with command=auto via workflow_dispatch when a window is open and not done.
 on:
   schedule:
-    - cron: "10,30,50 4-6 * * *"    # morning profiles, 06:30-07:59 Amsterdam
-    - cron: "10,30,50 16-18 * * *"  # evening profiles, 18:00-19:59 Amsterdam (+ one-time window check)
-    - cron: "10,30,50 6-8 * * 5"    # Friday posts refresh, 08:30-10:00 Amsterdam
+    # Every hour: profile windows are every 2 hours on even Amsterdam hours, which are odd
+    # or even UTC hours depending on summer/winter time; also covers the Friday refresh.
+    # Firings outside an open window only check the time and exit.
+    - cron: "10,30,50 * * * *"
+    # A finale (started on the private site) runs every 15 minutes; the Cloudflare timer
+    # (private/wrangler.toml) drives those runs, and these firings run them too when they land.
   workflow_dispatch:
     inputs:
       command:

@@ -56,20 +56,31 @@ tracked.forEach((h, i) => {
 const handles = tracked.map((h, i) => ({ handle: h, is_private: i === 1, followers: 50 + i * 20, last_scraped: "",
   last_status: i === 1 ? "privé" : i === 2 ? "fout: dead_page: not found" : "ok" }));
 const runLog = [
-  { timestamp: "2026-10-07T16:05:00Z", run_type: "profiles", window: "2026-10-07/avond", dry_run: false, expected_records: 11, actual_records: 11, errors: 0, status: "ok", snapshot_ids: "sd_x", notes: "11 profiles ok | budget: used 400" },
+  { timestamp: "2026-10-07T16:05:00Z", run_type: "profiles", window: "2026-10-07/18u", dry_run: false, expected_records: 11, actual_records: 11, errors: 0, status: "ok", snapshot_ids: "sd_x", notes: "11 profiles ok | budget: used 400" },
   { timestamp: "2026-10-02T06:40:00Z", run_type: "posts_refresh", window: "2026-10-02/weekrefresh", dry_run: false, expected_records: 80, actual_records: 12, errors: 0, status: "ok", snapshot_ids: "sd_y", notes: "" },
 ];
 const activity = [{ timestamp: "2026-10-07T08:00:00Z", email: "docent@school.nl", action: "geopend", details: "" }];
 
 const posted = [];
+let finale = null;       // { start, end, phase } like the Worker returns
+let finaleHasRun = false;
+// post_history rows for the fake posts: a row every 2 hours for 3 days, growing views.
+const postHistory = posts.flatMap((p) => {
+  const c = Date.parse(p.created_at);
+  return Array.from({ length: 36 }, (_, k) => [p.video_id, c + (k + 1) * 2 * 3600e3, Math.round(p.views * (1 - Math.exp(-(k + 1) / 8)))])
+    .filter((r) => r[1] <= NOW);
+});
 function api(req, body) {
   const accounts = lib.parseAccounts(accountsSheet);
   if (req.method === "GET" && req.url === "/api/data") {
     return [200, { me: "docent@school.nl", serverTime: NOW,
-      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts, forceMinMinutes: CFG.forceMinMinutes },
+      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
+        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale },
+      finale, finaleHasRun,
       accounts, handles, history, posts, runLog, activity,
       budget: lib.budget(CFG, runLog, tracked.length, NOW), lastProfilesRun: lib.lastProfilesRun(runLog) }];
   }
+  if (req.method === "GET" && req.url === "/api/post-history") return [200, { rows: postHistory }];
   if (req.method === "GET" && req.url === "/api/runs") {
     return [200, { runs: [{ workflow: "force-refresh.yml", status: "completed", conclusion: "success", event: "workflow_dispatch", created: "2026-10-07T15:00:00Z", url: "https://github.com/" }] }];
   }
@@ -88,6 +99,16 @@ function api(req, body) {
       return [200, { ok: true, message: "ok" }];
     }
     if (req.url === "/api/log") return [200, { ok: true }];
+    if (req.url === "/api/finale/start") {
+      const [d, t] = String(body.deadline).split("T");
+      finale = { start: Date.now(), end: lib.amsMs(d, t), phase: "live", startedBy: "docent@school.nl" };
+      finaleHasRun = true;
+      return [200, { ok: true, message: "Finale gestart." }];
+    }
+    if (req.url === "/api/finale/stop") {
+      finale = body.mode === "cancel" ? null : { ...finale, end: Date.now() - 1000, phase: "ended" };
+      return [200, { ok: true, message: "Finale gestopt." }];
+    }
   }
   return [404, { error: "Onbekende route" }];
 }
@@ -220,6 +241,71 @@ await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
 if (page.errors.length) fail(`browser errors: ${page.errors.join(" | ")}`);
 await page.close();
+
+// Finale from Beheer: explanation with cost per hour, start with a deadline, LIVE banner, stop.
+{
+  const fp = await open({ width: 1280, height: 900 }, "#beheer");
+  await fp.waitForSelector("#finale-start");
+  if (await fp.isVisible("#reminder")) fail("reminder banner visible outside the reminder period");
+  const card = await fp.textContent("#bh-finale");
+  if (!/records per uur/.test(card) || !/elke 15 minuten/.test(card) || !/Eindstand/.test(card)) fail("finale card: explanation or cost per hour missing");
+  const est = await fp.textContent("#finale-start-estimate");
+  if (!/runs × \d+ accounts/.test(est)) fail(`finale card: no estimate (${est})`);
+  fp.once("dialog", (d) => d.accept());
+  await fp.click('#finale-start button[type="submit"]');
+  await fp.waitForSelector("#finale-stop", { timeout: 10000 });
+  const started = posted.find((x) => x.url === "/api/finale/start");
+  if (!started || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(started.body.deadline)) fail("finale: start did not post a deadline");
+  await fp.waitForTimeout(1200);
+  const banner = await fp.textContent("#finale-banner");
+  if (!/LIVE/.test(banner) || !/\d+:\d{2}:\d{2}/.test(banner)) fail(`finale: no LIVE countdown banner (${banner})`);
+  if (process.env.SHOTS) await fp.screenshot({ path: `${process.env.SHOTS}/private-finale-live.png`, fullPage: true });
+  fp.once("dialog", (d) => d.accept());
+  await fp.click("#finale-stop");
+  await fp.waitForFunction(() => /Eindstand/.test(document.getElementById("finale-banner").textContent), null, { timeout: 10000 });
+  await fp.evaluate(() => { location.hash = "overzicht"; });
+  await fp.waitForTimeout(300);
+  const finalTitle = await fp.$eval("#ov-final", (e) => (e.hidden ? "" : e.textContent));
+  console.log(`finale: start → "${banner.trim().slice(0, 40)}…", stop → Overzicht "${finalTitle}"`);
+  if (!/Eindstand/.test(finalTitle)) fail("finale: no Eindstand on Overzicht after stopping");
+  if (fp.errors.length) fail(`finale: browser errors: ${fp.errors.join(" | ")}`);
+  await fp.close();
+}
+// Reminder: from 3 days before campaign.end, until a finale has run.
+{
+  finale = null;
+  finaleHasRun = false;
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  await ctx.clock.install({ time: new Date(`${lib.addDays(CFG.campaign.end, -2)}T10:00:00+02:00`) });
+  const rp = await ctx.newPage();
+  if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(rp);
+  await rp.goto(base + "#overzicht");
+  await rp.waitForSelector("#ov-body tr");
+  await rp.waitForTimeout(300);
+  const text = await rp.$eval("#reminder", (e) => (e.hidden ? "" : e.textContent));
+  console.log(`reminder 2 days before the end: "${text.slice(0, 70)}…"`);
+  if (!/Vergeet niet de finale te starten/.test(text)) fail("reminder banner missing before the campaign end");
+  finaleHasRun = true;
+  await rp.reload();
+  await rp.waitForSelector("#ov-body tr");
+  if (!(await rp.$eval("#reminder", (e) => e.hidden))) fail("reminder still shown after a finale has run");
+  await ctx.close();
+  finaleHasRun = false;
+}
+// Stijgers (per video) and the per-video chart on a student page.
+{
+  const sp = await open({ width: 1280, height: 900 }, "#stijgers");
+  await sp.waitForSelector("#vid-body tr[data-handle]", { timeout: 10000 });
+  const n = await sp.$$eval("#vid-body tr[data-handle]", (r) => r.length);
+  await sp.click('#vid-range button[data-v="2"]');
+  await sp.click("#vid-body tr[data-handle]");
+  await sp.waitForSelector("#st-videos:not([hidden])", { timeout: 10000 });
+  const note = await sp.textContent("#st-videos-note");
+  console.log(`stijgers: ${n} videos; student page: "${note.slice(0, 50)}…"`);
+  if (!n) fail("stijgers: no videos");
+  if (sp.errors.length) fail(`stijgers: browser errors: ${sp.errors.join(" | ")}`);
+  await sp.close();
+}
 
 // Presentation with first names (copied from the public site by build.sh).
 const pres = await open({ width: 1280, height: 720 }, "present/index.html?present&sec=60");

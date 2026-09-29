@@ -62,6 +62,18 @@ for (const hash of ["#stand", "#grafiek", "#groei"]) {
   if (error) fail(`site ${hash}: shows error "${error}"`);
   if (hash === "#stand" && rows === 0) fail("site: leaderboard is empty");
 }
+// Video's tab (Snelste stijgers) renders; post_history is only fetched here, so log its size and speed.
+{
+  const t0 = Date.now();
+  await page.goto(siteUrl + "#videos", { waitUntil: "networkidle" });
+  await page.waitForSelector("#videos-body tr", { timeout: 60000 });
+  await page.waitForFunction(() => !/laden/.test(document.getElementById("videos-body").textContent), null, { timeout: 60000 }).catch(() => {});
+  const info = await page.evaluate(() => state.postHistory && { rows: state.postHistory.rows, ms: state.postHistory.ms });
+  const rows = await page.$$eval("#videos-body tr[data-handle]", (r) => r.length);
+  console.log(`site #videos: ${rows} videos in ${Date.now() - t0} ms` + (info ? `, post_history ${info.rows} rows fetched+parsed in ${info.ms} ms` : ", post_history not linked yet"));
+  if (!(await page.isVisible("#view-videos"))) fail("site: Video's tab does not open");
+  if (info && info.ms > 15000) fail(`site: post_history is too slow (${info.ms} ms)`);
+}
 // Hashtags tab renders (it may be empty until the collector has stored hashtags).
 {
   await page.goto(siteUrl + "#hashtags", { waitUntil: "networkidle" });
@@ -182,6 +194,32 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   if (afterSpace !== 0) fail(`present: Space after a dot click went to slide ${afterSpace + 1}, expected 1`);
   console.log(`present manual skip (${total} slides): ${got.join(" ")}, click dot→${clicked + 1}, Space→${afterSpace + 1}`);
   await nav.close();
+}
+
+// Pause: P / "." / B (clicker black-screen button) / the ⏸ button; skipping keeps it paused.
+{
+  const pz = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  await pz.goto(`${siteUrl}?present&sec=2`, { waitUntil: "networkidle" });
+  await pz.waitForSelector("#p-dots button.on", { timeout: 30000 });
+  const at = () => pz.$$eval("#p-dots button", (b) => b.findIndex((x) => x.classList.contains("on")));
+  const paused = () => pz.$eval("#p-paused", (e) => !e.hidden);
+  await pz.keyboard.press("p");
+  const a = await at();
+  await pz.waitForTimeout(3000);
+  const stayed = (await at()) === a && (await paused());
+  await pz.keyboard.press("ArrowRight");
+  const skipped = (await at()) !== a && (await paused());
+  await pz.keyboard.press(".");
+  const b = await at();
+  await pz.waitForTimeout(3000);
+  const resumed = !(await paused()) && (await at()) !== b;
+  await pz.keyboard.press("b");
+  const bPauses = await paused();
+  await pz.click("#p-pause");
+  const buttonResumes = !(await paused());
+  console.log(`present pause: P stays=${stayed}, skip while paused=${skipped}, "." resumes=${resumed}, B pauses=${bPauses}, button resumes=${buttonResumes}`);
+  if (!(stayed && skipped && resumed && bPauses && buttonResumes)) fail("present: pause does not work as expected");
+  await pz.close();
 }
 
 const dark = await browser.newPage({ viewport: { width: 1280, height: 720 } });

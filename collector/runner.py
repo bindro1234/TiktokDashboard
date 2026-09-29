@@ -96,11 +96,18 @@ class Collector:
 
     def save_posts(self, videos: list[dict], source: str,
                    seen: dict[str, tuple[set[str], str]] | None = None) -> tuple[list[dict], list[str]]:
-        """Upsert into posts_latest; with seen (profile runs) also flag videos missing from the window."""
+        """Upsert into posts_latest; with seen (profile runs) also flag videos missing from the window.
+        Also appends post_history rows (see model.post_history_rows)."""
         self.data.ensure_columns("posts_latest", model.SCHEMA_DATA["posts_latest"])
         merged = model.upsert_posts(self.data.read("posts_latest"), videos, self.stamp, source)
         missing = model.mark_missing(merged, seen, self.stamp) if seen else []
+        history = model.post_history_rows(merged, self.stamp, self.cfg.campaign)
+        if history:
+            # History first: if posts_latest fails after this, the next run only repeats a row.
+            self.data.ensure_tabs({"post_history": model.SCHEMA_DATA["post_history"]})
+            self.data.append("post_history", history)
         self.data.rewrite("posts_latest", merged)
+        self.post_history_written = len(history)
         return merged, missing
 
     def append_history(self, handles: list[str], posts: list[dict]) -> None:
@@ -151,8 +158,10 @@ class Collector:
 
     def _scheduled_profiles(self, res: RunResult) -> None:
         """Scheduled profiles run; skipped (window done, 0 records) right after a real profiles run,
-        e.g. a "Nu verversen" shortly before the evening window. Later posts come in the next run."""
-        minutes = self.minutes_since_profiles()
+        e.g. a "Nu verversen" shortly before a window. Later posts come in the next run.
+        Finale windows (every 15 min on the last day) never skip."""
+        finale = "/finale-" in res.window
+        minutes = None if finale else self.minutes_since_profiles()
         if minutes is not None and minutes < self.cfg.skip_recent_minutes:
             res.status = "skipped"
             res.notes.append(f"SKIPPED: last profiles run was {minutes:.0f} min ago "
@@ -223,7 +232,8 @@ class Collector:
         reposts = sum(p["reposts"] for p in parsed.values())
         pinned = sum(num for p in parsed.values() if (num := p["window"]["pinned_in_window"]))
         res.notes.append(f"{len(parsed)} profiles ok, {len(videos)} campaign videos seen in top_videos, "
-                         f"{pinned} pinned in window, {reposts} reposts skipped")
+                         f"{pinned} pinned in window, {reposts} reposts skipped, "
+                         f"{getattr(self, 'post_history_written', 0)} post_history rows")
         if private:
             res.notes.append("PRIVATE accounts: " + ", ".join("@" + h for h in private))
         if missing:
@@ -357,13 +367,20 @@ class Collector:
         """Called by every cron firing: run whatever window is open and not yet done."""
         today = self.now_local.date()
         camp = self.cfg.campaign
-        if not (camp.start <= today <= camp.collect_until):
+        finale = self.finale()
+        ran = False
+        if finale and finale["phase"] == "live":
+            # Finale: a run every few minutes instead of the 2-hourly windows (double-checked here,
+            # whoever started this workflow). Budget cap and run-once-per-window still apply.
+            key = model.finale_window_key(self.now_local, self.cfg.finale.every_minutes)
+            ran |= self._maybe(key, self.run_scheduled_profiles)
+        elif not (camp.start <= today <= camp.collect_until):
             print(f"{self.now_local:%Y-%m-%d %H:%M} Amsterdam: outside collection period, nothing to do")
             return
-        ran = False
-        for window in self.cfg.profile_windows:
-            if window.contains(self.now_local):
-                ran |= self._maybe(window.key(today), self.run_scheduled_profiles)
+        else:
+            for window in self.cfg.profile_windows:
+                if window.contains(self.now_local):
+                    ran |= self._maybe(window.key(today), self.run_scheduled_profiles)
         if self.cfg.refresh_window.contains(self.now_local):
             ran |= self._maybe(self.cfg.refresh_window.key(today), self.run_refresh)
         if self.cfg.check_date == today:
@@ -373,6 +390,18 @@ class Collector:
                 ran |= self._maybe(f"{today.isoformat()}/window-check", self.run_window_check)
         if not ran:
             print(f"{self.now_local:%Y-%m-%d %H:%M} Amsterdam: no open window needs a run")
+
+    def finale(self) -> dict | None:
+        """Current finale from the private sheet; None when there is no finale tab or row."""
+        if "finale" not in self.admin_tabs():
+            return None
+        return model.finale_state(self.admin.read("finale"), self.now_utc, self.cfg.finale.max_hours)
+
+    def admin_tabs(self) -> set[str]:
+        tabs = getattr(self.admin, "tabs", None)
+        if callable(tabs):
+            return set(tabs())
+        return set(tabs or {})  # FakeSheet in tests
 
     def _maybe(self, key: str, fn) -> bool:
         done, failures = model.window_state(self.admin.read("run_log"))

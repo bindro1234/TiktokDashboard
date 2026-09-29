@@ -30,6 +30,8 @@ def build(cfg: config.Config) -> dict:
             "maxAttemptsPerWindow": cfg.max_attempts_per_window,
         },
         "windowCheckDate": cfg.check_date.isoformat() if cfg.check_date else None,
+        "finale": {"everyMinutes": cfg.finale.every_minutes, "maxHours": cfg.finale.max_hours,
+                   "remindDaysBeforeEnd": cfg.finale.remind_days_before_end},
         "refreshNumOfPosts": cfg.refresh_num_of_posts,
         "forceMinMinutes": cfg.force_min_minutes,
         "workflows": {"force": "force-refresh.yml", "collect": "collect.yml"},

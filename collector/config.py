@@ -65,6 +65,15 @@ class Campaign:
 
 
 @dataclass(frozen=True)
+class FinaleSettings:
+    """Manual finale (started on the private site): runs every `every_minutes` until the deadline,
+    at most `max_hours` long. The state itself lives in the private sheet (tab finale)."""
+    every_minutes: int = 15
+    max_hours: int = 8
+    remind_days_before_end: int = 3
+
+
+@dataclass(frozen=True)
 class Config:
     tz: ZoneInfo
     campaign: Campaign
@@ -84,6 +93,7 @@ class Config:
     check_num_of_posts: int
     force_min_minutes: int
     skip_recent_minutes: int
+    finale: FinaleSettings = FinaleSettings()
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -124,4 +134,9 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         check_num_of_posts=int(check.get("num_of_posts", 40)),
         force_min_minutes=int((raw.get("force_refresh") or {}).get("min_minutes_between", 30)),
         skip_recent_minutes=int(sched.get("skip_if_profiles_ran_within_minutes", 0)),
+        finale=FinaleSettings(
+            every_minutes=int((raw.get("finale") or {}).get("every_minutes", 15)),
+            max_hours=int((raw.get("finale") or {}).get("max_hours", 8)),
+            remind_days_before_end=int((raw.get("finale") or {}).get("remind_days_before_end", 3)),
+        ),
     )

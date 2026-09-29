@@ -1,9 +1,9 @@
 # TikTok campaign tracker configuration.
 #
 # All times are Europe/Amsterdam local time. GitHub cron runs in UTC and can be
-# late or skip runs, so the workflow fires several times per window and the
-# collector decides whether a window still needs its run. Summer/winter time is
-# handled here, not in cron.
+# late or skip runs, so the workflow fires several times per window (plus a backup
+# timer on Cloudflare) and the collector decides whether a window still needs its
+# run. Summer/winter time is handled here, not in cron.
 
 timezone: Europe/Amsterdam
 
@@ -25,8 +25,11 @@ brightdata:
   timeout_minutes: 30
 
 budget:
-  # Hard cap on Bright Data records per calendar month (free records renew on the 1st).
-  monthly_cap: 4500
+  # Hard cap on Bright Data records per calendar month (free records renew on the 1st;
+  # above 5,000 it is pay as you go). October at 12 runs a day: ≈13,300-13,800 records with
+  # 40 accounts, ≈15,000-15,600 with 45. With more than ~42 accounts the weekly refreshes of
+  # 16 and 23 Oct need ~17,000 here (they reserve the month's remaining profile runs first).
+  monthly_cap: 16000
 
 schedule:
   # A window that failed is retried by the next cron firing, at most this many times.
@@ -35,13 +38,23 @@ schedule:
   # e.g. "Nu verversen", happened less than this many minutes ago. Posts after that come
   # in with the next run.
   skip_if_profiles_ran_within_minutes: 60
+  # Profile runs every 2 hours, around the clock, on even hours. Each window is one hour
+  # long, so a late run can never make the next window skip itself (60-minute rule above).
+  # Both crons (collect.yml and private/wrangler.toml) fire every hour, which covers these
+  # windows in summer and winter time; tests check that.
   profile_runs:
-    - name: ochtend
-      start: "06:30"
-      end: "07:59"
-    - name: avond
-      start: "18:00"
-      end: "19:59"
+    - {name: 00u, start: "00:00", end: "00:59"}
+    - {name: 02u, start: "02:00", end: "02:59"}
+    - {name: 04u, start: "04:00", end: "04:59"}
+    - {name: 06u, start: "06:00", end: "06:59"}
+    - {name: 08u, start: "08:00", end: "08:59"}
+    - {name: 10u, start: "10:00", end: "10:59"}
+    - {name: 12u, start: "12:00", end: "12:59"}
+    - {name: 14u, start: "14:00", end: "14:59"}
+    - {name: 16u, start: "16:00", end: "16:59"}
+    - {name: 18u, start: "18:00", end: "18:59"}
+    - {name: 20u, start: "20:00", end: "20:59"}
+    - {name: 22u, start: "22:00", end: "22:59"}
   posts_refresh:
     name: weekrefresh
     weekday: friday
@@ -55,10 +68,21 @@ posts_refresh:
   # is only the posts that exist (≈1,300 in all of October if everyone posts daily).
   num_of_posts: 40
 
+finale:
+  # Finale for the last lesson, started by hand on the private site (Beheer tab), which also
+  # sets the deadline. While it runs: profile runs every `every_minutes` (instead of the
+  # 2-hourly windows), a countdown and LIVE labels on the presentation; after the deadline the
+  # sites show the "Eindstand", frozen at the last run before it. It always ends by itself at
+  # the deadline, and never lasts longer than `max_hours`. The budget cap still applies.
+  every_minutes: 15
+  max_hours: 8
+  # From this many days before campaign.end_date the private site reminds you to start it.
+  remind_days_before_end: 3
+
 window_check:
   # One-time check (trial week): full campaign pull for the accounts with the most
   # videos, compared against what top_videos + posts_latest had. Runs right after
-  # the evening profile run on this date. Set date to null to disable.
+  # the last profile run of this date (22u). Set date to null to disable.
   date: 2026-10-05
   accounts: 4
   num_of_posts: 40

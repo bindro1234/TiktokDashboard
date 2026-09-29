@@ -14,11 +14,13 @@
       <div>
         <h1>TikTok-campagne <span class="tag-private">Beheer</span></h1>
         <p class="meta"><span id="updated">Gegevens laden…</span> · <span id="me"></span></p>
+        <p class="banner" id="finale-banner" role="status" hidden></p>
       </div>
       <nav class="tabs" aria-label="Onderdelen">
         <a href="#overzicht" data-view="overzicht">Overzicht</a>
         <a href="#leerlingen" data-view="leerlingen">Leerlingen</a>
         <a href="#hashtags" data-view="hashtags">Hashtags</a>
+        <a href="#stijgers" data-view="stijgers">Stijgers</a>
         <a href="#presentatie" data-view="presentatie">Presentatie</a>
         <a href="#beheer" data-view="beheer">Beheer</a>
         <a href="#export" data-view="export">Export</a>
@@ -28,8 +30,10 @@
 
   <main>
     <p class="notice" id="error" hidden></p>
+    <p class="banner reminder" id="reminder" role="status" hidden></p>
 
     <section id="view-overzicht" class="view" hidden>
+      <h2 class="final-title" id="ov-final" hidden></h2>
       <div class="tiles" id="ov-tiles"></div>
       <div class="controls">
         <input type="search" id="ov-search" placeholder="Zoek op naam of handle" aria-label="Zoeken">
@@ -43,7 +47,7 @@
               <th data-sort="name"><button type="button" class="sort">Naam</button></th>
               <th class="wide-only" data-sort="handle"><button type="button" class="sort">Handle</button></th>
               <th class="num" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
-              <th class="num opt" data-sort="gain"><button type="button" class="sort">+ gisteren</button></th>
+              <th class="num opt" data-sort="gain"><button type="button" class="sort">+ 24 uur</button></th>
               <th class="num opt" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
               <th class="num" data-sort="posts"><button type="button" class="sort">Posts</button></th>
               <th class="num opt" data-sort="likes"><button type="button" class="sort">Likes</button></th>
@@ -78,6 +82,25 @@
       <p class="hint">Klik op een hashtag om te zien wie hem gebruikt.</p>
     </section>
 
+    <section id="view-stijgers" class="view" hidden>
+      <h2 style="margin-top:0">Snelste stijgers (per video)</h2>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Periode" id="vid-range">
+          <button type="button" data-v="2">2 uur</button>
+          <button type="button" data-v="6">6 uur</button>
+          <button type="button" data-v="24">24 uur</button>
+        </div>
+        <span class="meta" id="vid-meta"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="board">
+          <thead><tr><th class="num">#</th><th>Leerling</th><th class="num">Weergaven erbij</th><th class="num opt">Totaal</th><th class="opt">Geplaatst</th><th></th></tr></thead>
+          <tbody id="vid-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Video's met de meeste nieuwe weergaven. Klik op een rij voor de leerling.</p>
+    </section>
+
     <section id="view-presentatie" class="view" hidden>
       <div class="card">
         <h2>Presentatie met namen</h2>
@@ -91,6 +114,7 @@
     </section>
 
     <section id="view-beheer" class="view" hidden>
+      <div class="card finale-card" id="bh-finale"></div>
       <div class="grid2">
         <div class="card">
           <h2>Nu verversen</h2>
@@ -177,6 +201,7 @@
   </main>
 
   <footer class="foot">Privé: alleen voor docenten op de lijst in Cloudflare Access. Namen staan alleen hier, nooit op de openbare site.</footer>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <script type="module" src="app.js"></script>
 </body>
 </html>

@@ -20,6 +20,15 @@ const state = {
   raw: null, view: "overzicht", detail: null,
   sort: { key: "rank", dir: 1 }, search: "", onlyWarn: false,
   tagSort: "posts", tagOpen: null, accSearch: "", format: "nl",
+  videoRange: 24, postHistory: null, finaleCardKey: null,
+};
+const hourFmt = new Intl.DateTimeFormat("nl-NL", { timeZone: lib.TZ, hour: "2-digit", minute: "2-digit" });
+const longDate = new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" });
+const DAY_MS = 864e5;
+const countdown = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const two = (n) => String(n).padStart(2, "0");
+  return `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
 };
 
 // ---------- API ----------
@@ -43,12 +52,15 @@ async function api(path, body) {
 function build(raw) {
   const cfg = raw.config;
   const now = raw.serverTime;
+  // After a finale everything is frozen at the last run before its end (Eindstand).
+  const final = Boolean(raw.finale && Date.now() >= raw.finale.end);
+  const cutoff = final ? raw.finale.end : Infinity;
   const handleInfo = new Map(raw.handles.map((h) => [String(h.handle), h]));
   const history = new Map();
   let latest = 0;
   for (const r of raw.history) {
     const t = lib.parseTs(r.timestamp);
-    if (t === null) continue;
+    if (t === null || t > cutoff) continue;
     const h = String(r.handle);
     if (!history.has(h)) history.set(h, []);
     history.get(h).push({ t, views: lib.toNum(r.total_views) ?? 0, followers: lib.toNum(r.followers),
@@ -62,13 +74,14 @@ function build(raw) {
     if (!posts.has(h)) posts.set(h, []);
     posts.get(h).push(p);
   }
-  const refDay = latest ? lib.localDay(latest) : null;
+  // "+ 24 uur": compared with the run of ~24 hours earlier (rolling, runs are every 2 hours).
+  const target = latest - DAY_MS + 45 * 60 * 1000;
   const students = raw.accounts.filter((a) => a.tracked).map((a) => {
     const info = handleInfo.get(a.handle) || null;
     const series = history.get(a.handle) || [];
     const cur = series.at(-1) || null;
     let base = null;
-    for (let i = series.length - 1; i >= 0; i--) if (lib.localDay(series[i].t) < refDay) { base = series[i]; break; }
+    for (let i = series.length - 1; i >= 0; i--) if (series[i].t <= target) { base = series[i]; break; }
     const stats = lib.studentStats(posts.get(a.handle) || [], cfg, now);
     const s = {
       ...a, info, cur, stats, posts: posts.get(a.handle) || [],
@@ -81,7 +94,7 @@ function build(raw) {
   });
   const sorted = [...students].sort((x, y) => y.views - x.views || x.handle.localeCompare(y.handle));
   sorted.forEach((s, i) => { s.rank = i > 0 && sorted[i - 1].views === s.views ? sorted[i - 1].rank : i + 1; });
-  return { cfg, now, latest, students, posts, tags: lib.hashtagStats(posts), byHandle: new Map(students.map((s) => [s.handle, s])) };
+  return { cfg, now, latest, final, students, posts, tags: lib.hashtagStats(posts), byHandle: new Map(students.map((s) => [s.handle, s])) };
 }
 
 function warnings(s, cfg, now) {
@@ -227,7 +240,7 @@ function renderStudent(m, handle) {
     </div>
     <div class="tiles">
       ${tile("Positie", s.rank, `van ${m.students.length}`)}
-      ${tile("Weergaven", fmt(s.views), s.gain == null ? "" : `${signed(s.gain)} sinds gisteren`)}
+      ${tile("Weergaven", fmt(s.views), s.gain == null ? "" : `${signed(s.gain)} in 24 uur`)}
       ${tile("Posts", fmt(st.posts), `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}`)}
       ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren")}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
@@ -249,6 +262,11 @@ function renderStudent(m, handle) {
         <h3>Totaal</h3>
         <p class="meta">${fmt(st.likes)} likes · ${fmt(st.comments)} reacties · ${fmt(st.shares)} keer gedeeld</p>
       </div>
+    </div>
+    <div id="st-videos" class="card" hidden>
+      <h3 style="margin-top:0">Weergaven per video</h3>
+      <p class="hint" id="st-videos-note"></p>
+      <div class="chart-box"><canvas id="st-videos-chart" aria-label="Weergaven per video over tijd"></canvas></div>
     </div>
     <h3>Posts in de campagne (${posts.length})</h3>
     <div class="table-wrap">
@@ -300,6 +318,7 @@ function renderHashtags(m) {
 // ---------- Beheer ----------
 
 function renderAdmin(m) {
+  renderFinaleCard(m);
   const raw = state.raw;
   const b = raw.budget;
   const cfg = m.cfg;
@@ -316,8 +335,11 @@ function renderAdmin(m) {
       Verwacht totaal zonder weekrefreshes: <strong>${fmt(b.projected)}</strong> (${pct.format(b.projected / b.cap)} van de limiet).</p>
     <p class="meta">Weekrefresh: max. ${cfg.refreshNumOfPosts} posts per account (reserveert tot ${fmt(cfg.refreshNumOfPosts * m.students.length)} records vooraf).</p>`;
   const s = cfg.schedule;
+  const hours = s.profileRuns.map((w) => w.start);
   $("bh-schedule").innerHTML = `<ul class="issues">
-    ${s.profileRuns.map((w) => `<li>Profielen <strong>${esc(w.name)}</strong>: ${w.start}–${w.end}</li>`).join("")}
+    <li>Profielen: <strong>${s.profileRuns.length}× per dag</strong>, elke 2 uur, dag en nacht: ${hours.join(", ")}
+      (elk tijdvak ${s.profileRuns[0].start}–${s.profileRuns[0].end}, enz.; 1 run per tijdvak)</li>
+    <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)</li>
     <li>Weekrefresh: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
     <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun was</li>
     <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
@@ -375,6 +397,244 @@ async function loadRuns() {
   } catch (err) {
     box.innerHTML = `<li class="meta">Kon de runs niet ophalen: ${esc(err.message)}</li>`;
   }
+}
+
+// ---------- Finale (Beheer) ----------
+
+// Amsterdam date + time <input> values for a moment.
+function inputValues(ms) {
+  return { date: lib.localDay(ms), time: lib.localTime(ms) };
+}
+
+function finaleEstimate(m, endMs) {
+  const cfg = m.cfg.finale;
+  const runs = lib.finaleRuns(Date.now(), endMs, cfg.everyMinutes);
+  return { runs, records: runs * m.students.length };
+}
+
+function renderFinaleCard(m) {
+  const f = state.raw.finale;
+  const phase = f ? (Date.now() >= f.end ? "ended" : "live") : "none";
+  const key = `${phase}|${f ? f.end : ""}|${m.students.length}`;
+  if (key === state.finaleCardKey) return tickFinale();
+  state.finaleCardKey = key;
+  const cfg = m.cfg.finale;
+  const perHour = (60 / cfg.everyMinutes) * m.students.length;
+  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${m.students.length} actieve accounts), bovenop de gewone 2-uurlijkse runs die dan vervallen.`;
+  const deadlineForm = (label, defMs, id) => {
+    const v = inputValues(defMs);
+    const max = inputValues((f && phase === "live" ? f.start : Date.now()) + cfg.maxHours * 3600e3);
+    return `<form class="add-form" id="${id}">
+      <label>Deadline (datum) <input type="date" name="date" value="${v.date}" min="${lib.localDay(Date.now())}" max="${max.date}" required></label>
+      <label>Tijd <input type="time" name="time" value="${v.time}" step="300" required></label>
+      <button type="submit" class="btn primary">${label}</button>
+    </form>
+    <p class="meta" id="${id}-estimate"></p>`;
+  };
+  const quarter = (ms) => Math.ceil(ms / (15 * 60e3)) * 15 * 60e3;
+  let html = `<h2>Finale</h2>
+    <p>Voor de laatste les. Tijdens de finale worden de profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
+      in plaats van elke 2 uur. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
+      Na de deadline tonen de sites en de presentatie de <strong>Eindstand</strong>: het podium en de stand, bevroren op de laatste meting
+      vóór de deadline. De finale stopt vanzelf bij de deadline en duurt nooit langer dan ${cfg.maxHours} uur. De budgetlimiet blijft gelden.</p>
+    <p class="meta">${cost}</p>`;
+  if (phase === "live") {
+    html += `<p class="status ok"><span class="live">LIVE</span> Finale loopt · nog <strong id="finale-left"></strong> tot ${hourFmt.format(f.end)}
+        <span class="meta">(gestart ${stampFmt.format(f.start)}${f.startedBy ? ` door ${esc(f.startedBy)}` : ""})</span></p>
+      ${deadlineForm("Deadline wijzigen", f.end, "finale-change")}
+      <p class="buttons">
+        <button type="button" class="btn" id="finale-stop">⏹ Stop finale nu (Eindstand)</button>
+        <button type="button" class="btn" id="finale-cancel">✕ Annuleer finale (geen Eindstand)</button>
+      </p>`;
+  } else {
+    if (phase === "ended") {
+      html += `<p class="status">🏁 De laatste finale is afgelopen op ${stampFmt.format(f.end)}: de sites tonen de Eindstand.
+        <button type="button" class="btn small" id="finale-cancel">Eindstand weghalen</button></p>`;
+    }
+    html += deadlineForm("▶ Start finale", quarter(Date.now() + 2 * 3600e3), "finale-start");
+  }
+  html += `<p class="status" id="finale-msg" role="status"></p>`;
+  $("bh-finale").innerHTML = html;
+  for (const id of ["finale-start", "finale-change"]) {
+    const form = $(id);
+    if (!form) continue;
+    const update = () => {
+      const t = lib.amsMs(form.querySelector("[name=date]").value, form.querySelector("[name=time]").value);
+      const est = finaleEstimate(m, t);
+      $(`${id}-estimate`).textContent = Number.isFinite(t) && t > Date.now()
+        ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${m.students.length} accounts ≈ ${fmt(est.records)} records`
+          + ` (budget: ${fmt(state.raw.budget.used)} van ${fmt(state.raw.budget.cap)} gebruikt).`
+        : "Kies een moment in de toekomst.";
+    };
+    form.addEventListener("input", update);
+    update();
+    form.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      const deadline = `${form.querySelector("[name=date]").value}T${form.querySelector("[name=time]").value}`;
+      const start = id === "finale-start";
+      if (start && !confirm(`Finale starten tot ${deadline.replace("T", " ")}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers.`)) return;
+      finaleAction(start ? "/api/finale/start" : "/api/finale/deadline", { deadline });
+    });
+  }
+  $("finale-stop")?.addEventListener("click", () => {
+    if (confirm("Finale nu stoppen? De Eindstand wordt de stand van de laatste meting.")) finaleAction("/api/finale/stop", { mode: "stop" });
+  });
+  $("finale-cancel")?.addEventListener("click", () => {
+    if (confirm("Finale annuleren? Er komt geen Eindstand; alles gaat weer gewoon verder.")) finaleAction("/api/finale/stop", { mode: "cancel" });
+  });
+  tickFinale();
+}
+
+async function finaleAction(path, body) {
+  const msg = $("finale-msg");
+  for (const b of $("bh-finale").querySelectorAll("button")) b.disabled = true;
+  try {
+    const res = await api(path, body);
+    state.finaleCardKey = null;
+    await load();
+    $("finale-msg").className = "status ok";
+    $("finale-msg").textContent = res.message;
+  } catch (err) {
+    msg.className = "status err";
+    msg.textContent = err.message;
+    for (const b of $("bh-finale").querySelectorAll("button")) b.disabled = false;
+  }
+}
+
+// Banners: live finale / Eindstand in the header, and the reminder to start the finale.
+function renderBanners(m) {
+  const f = state.raw.finale;
+  const banner = $("finale-banner");
+  if (f && Date.now() < f.end) {
+    banner.innerHTML = `<span class="live">LIVE</span> Finale · nog <strong id="finale-left-top"></strong> tot ${hourFmt.format(f.end)}`;
+  } else if (f) {
+    banner.innerHTML = `🏁 <strong>Eindstand</strong> · finale afgelopen op ${stampFmt.format(f.end)}`;
+  }
+  banner.hidden = !f;
+  const end = m.cfg.campaign.end;
+  const today = lib.localDay(Date.now());
+  const remind = !state.raw.finaleHasRun && today <= end
+    && today >= lib.addDays(end, -m.cfg.finale.remindDaysBeforeEnd);
+  const r = $("reminder");
+  r.hidden = !remind;
+  if (remind) {
+    r.innerHTML = `⏰ De campagne eindigt op ${longDate.format(Date.parse(end + "T00:00:00Z"))}. `
+      + `Vergeet niet de finale te starten voor de laatste les. <a href="#beheer">Naar Beheer →</a>`;
+  }
+  const title = $("ov-final");
+  title.hidden = !m.final;
+  if (m.final) title.textContent = `🏁 Eindstand · laatste meting ${m.latest ? stampFmt.format(m.latest) : "–"}`;
+  tickFinale();
+}
+
+// Countdown texts, every second.
+function tickFinale() {
+  const f = state.raw && state.raw.finale;
+  if (!f) return;
+  const left = countdown(f.end - Date.now());
+  for (const id of ["finale-left", "finale-left-top"]) if ($(id)) $(id).textContent = left;
+  if (Date.now() >= f.end && model && !model.final) load(); // deadline passed: rebuild as Eindstand
+}
+setInterval(tickFinale, 1000);
+
+// ---------- Stijgers (per video) ----------
+
+async function loadPostHistory() {
+  if (state.postHistory && Date.now() - state.postHistory.fetched < 5 * 60 * 1000) return state.postHistory;
+  const { rows } = await api("/api/post-history");
+  const cutoff = model && model.final ? state.raw.finale.end : Infinity;
+  const byVideo = new Map();
+  for (const [id, t, views] of rows) {
+    if (t > cutoff) continue;
+    if (!byVideo.has(id)) byVideo.set(id, []);
+    byVideo.get(id).push({ t, views });
+  }
+  for (const list of byVideo.values()) list.sort((a, b) => a.t - b.t);
+  state.postHistory = { fetched: Date.now(), byVideo };
+  return state.postHistory;
+}
+
+// Views gained in the `hours` before `ref`; posted inside that period counts from 0.
+function videoGain(post, pts, hours, ref) {
+  const from = ref - hours * 3600e3;
+  pts = (pts || []).filter((p) => p.t <= ref);
+  const current = Math.max(lib.toNum(post.views) || 0, pts.length ? pts.at(-1).views : 0);
+  const created = lib.parseTs(post.created_at);
+  if (created !== null && created >= from) return current;
+  let base = null;
+  for (let i = pts.length - 1; i >= 0; i--) if (pts[i].t <= from + 15 * 60 * 1000) { base = pts[i]; break; }
+  if (!base) base = pts[0];
+  return base ? Math.max(0, current - base.views) : 0;
+}
+
+function renderRisers(m) {
+  for (const b of $("vid-range").querySelectorAll("button")) b.setAttribute("aria-pressed", String(Number(b.dataset.v) === state.videoRange));
+  const body = $("vid-body");
+  if (!state.postHistory) {
+    body.innerHTML = `<tr><td colspan="6">Geschiedenis per video laden…</td></tr>`;
+    loadPostHistory().then(() => state.view === "stijgers" && renderRisers(m))
+      .catch((err) => { body.innerHTML = `<tr><td colspan="6">Kon niet laden: ${esc(err.message)}</td></tr>`; });
+    return;
+  }
+  const ref = m.latest || Date.now();
+  const list = [];
+  for (const [h, posts] of m.posts) {
+    if (!m.byHandle.has(h)) continue;
+    for (const p of posts) list.push({ s: m.byHandle.get(h), p, gain: videoGain(p, state.postHistory.byVideo.get(String(p.video_id)), state.videoRange, ref) });
+  }
+  const rows = list.filter((x) => x.gain > 0).sort((a, b) => b.gain - a.gain).slice(0, 30);
+  $("vid-meta").textContent = `Weergaven erbij in de laatste ${state.videoRange} uur tot ${m.latest ? stampFmt.format(m.latest) : "nu"}`;
+  body.innerHTML = rows.map((x, i) => {
+    const t = lib.parseTs(x.p.created_at);
+    return `<tr class="link" tabindex="0" data-handle="${esc(x.s.handle)}">
+      <td class="num">${i + 1}</td><td>${nameCell(x.s)} <span class="meta">@${esc(x.s.handle)}</span></td>
+      <td class="num strong">${signed(x.gain)}</td><td class="num opt">${fmt(lib.toNum(x.p.views))}</td>
+      <td class="opt">${t ? stampFmt.format(t) : "–"}</td>
+      <td><a href="${tiktok(x.s.handle, x.p.video_id)}" target="_blank" rel="noopener">open ↗</a></td></tr>`;
+  }).join("") || `<tr><td colspan="6">Geen video's met nieuwe weergaven in deze periode.</td></tr>`;
+}
+
+let videoChart = null;
+function renderStudentVideos(m, s) {
+  const box = $("st-videos");
+  if (!box || typeof Chart === "undefined") return;
+  if (!state.postHistory) {
+    loadPostHistory().then(() => state.view === "leerlingen" && state.detail === s.handle && renderStudentVideos(m, s)).catch(() => {});
+    return;
+  }
+  const ref = m.latest || Date.now();
+  const series = s.posts.map((p) => ({ p, pts: (state.postHistory.byVideo.get(String(p.video_id)) || []).filter((x) => x.t <= ref) }))
+    .filter((x) => x.pts.length);
+  if (!series.length) return;
+  const gains = series.map((x) => ({ ...x, gain: videoGain(x.p, x.pts, 24, ref) })).sort((a, b) => b.gain - a.gain);
+  const top = gains[0].gain > 0 ? gains[0] : null;
+  box.hidden = false;
+  $("st-videos-note").innerHTML = top
+    ? `🚀 Snelste stijger (24 uur): video van ${stampFmt.format(lib.parseTs(top.p.created_at))}, <strong>${signed(top.gain)}</strong>. <a href="${tiktok(s.handle, top.p.video_id)}" target="_blank" rel="noopener">open ↗</a>`
+    : "Geen nieuwe weergaven in de laatste 24 uur.";
+  const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  const isTop = (x) => top && x.p.video_id === top.p.video_id;
+  const datasets = gains.slice().reverse().map((x) => ({
+    label: `Video ${stampFmt.format(lib.parseTs(x.p.created_at))}`,
+    data: x.pts.map((q) => ({ x: q.t, y: q.views })),
+    borderColor: isTop(x) ? css("--s2") : css("--other"), backgroundColor: isTop(x) ? css("--s2") : css("--other"),
+    borderWidth: isTop(x) ? 3.5 : 1.5, pointRadius: 0, pointHitRadius: 8, tension: 0.15,
+  }));
+  if (videoChart) videoChart.destroy();
+  videoChart = new Chart($("st-videos-chart"), {
+    type: "line", data: { datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { mode: "nearest", intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: {
+        title: (items) => (items.length ? stampFmt.format(items[0].parsed.x) : ""),
+        label: (c) => ` ${c.dataset.label}: ${fmt(c.parsed.y)}` } } },
+      scales: {
+        x: { type: "linear", ticks: { callback: (v) => shortDate.format(Date.parse(lib.localDay(v) + "T00:00:00Z")), maxRotation: 0, color: css("--text-2") }, grid: { color: css("--grid") } },
+        y: { beginAtZero: true, ticks: { color: css("--text-2") }, grid: { color: css("--grid") } },
+      },
+    },
+  });
 }
 
 // ---------- Export ----------
@@ -435,13 +695,18 @@ function render() {
   if (state.view === "hashtags") renderHashtags(model);
   if (state.view === "beheer") renderAdmin(model);
   if (state.view === "export") renderExport(model);
+  if (state.view === "stijgers") renderRisers(model);
+  if (state.view === "leerlingen" && state.detail && model.byHandle.has(state.detail)) {
+    renderStudentVideos(model, model.byHandle.get(state.detail));
+  }
+  renderBanners(model);
 }
 
 function route() {
   const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, arg] = hash.split("/");
   const prev = state.view;
-  state.view = ["overzicht", "leerlingen", "hashtags", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
+  state.view = ["overzicht", "leerlingen", "hashtags", "stijgers", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
   state.detail = state.view === "leerlingen" && arg ? arg : null;
   if (state.detail) window.scrollTo(0, 0);
   render();
@@ -478,6 +743,7 @@ $("ov-table").querySelector("thead").addEventListener("click", (ev) => {
 for (const [id, attr, go] of [
   ["ov-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["ll-content", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
+  ["vid-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["tags-body", "data-tag", (t) => { state.tagOpen = state.tagOpen === t ? null : t; renderHashtags(model); }],
 ]) {
   $(id).addEventListener("click", (ev) => openRow(ev, attr, go));
@@ -486,6 +752,7 @@ for (const [id, attr, go] of [
 $("ov-search").addEventListener("input", (e) => { state.search = e.target.value; renderOverview(model); });
 $("ov-warn").addEventListener("change", (e) => { state.onlyWarn = e.target.checked; renderOverview(model); });
 $("acc-search").addEventListener("input", (e) => { state.accSearch = e.target.value; renderAdmin(model); });
+$("vid-range").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.videoRange = Number(b.dataset.v); renderRisers(model); } });
 $("tag-sort").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.tagSort = b.dataset.v; renderHashtags(model); } });
 $("exp-format").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.format = b.dataset.v; renderExport(model); } });
 $("exp-download").addEventListener("click", () => model && download(model));

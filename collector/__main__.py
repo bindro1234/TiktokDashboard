@@ -8,14 +8,17 @@ import sys
 
 from . import config, model
 from .brightdata import BrightData
-from .runner import Collector
+from .runner import Collector, summary
 from .sheets import Spreadsheet, session_from_env
 
 
 def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
     """Create tabs and headers in both spreadsheets. Safe to run again."""
     tabs = admin.ensure_tabs(model.SCHEMA_ADMIN)
-    data.ensure_tabs(model.SCHEMA_DATA)
+    data_tabs = data.ensure_tabs(model.SCHEMA_DATA)
+    # The website needs the gid of each public tab (site/config.js); tab ids are not secret.
+    summary("Public sheet tab ids (gid) for site/config.js: "
+            + ", ".join(f"{name}={data_tabs[name]}" for name in model.SCHEMA_DATA))
     # ja/nee dropdown for the active column (other values still work, see handles.py).
     admin.batch_update([{"setDataValidation": {
         "range": {"sheetId": tabs["accounts"], "startRowIndex": 1, "startColumnIndex": 2, "endColumnIndex": 3},

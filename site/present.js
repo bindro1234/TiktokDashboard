@@ -2,7 +2,9 @@
 
 // Presentation mode (?present): a full-screen slideshow for the classroom projector.
 // Handles only, no admin UI. The only controls: a small fullscreen button, the slide dots,
-// and the keyboard (arrows, space, PageUp/PageDown from a presentation clicker).
+// a pause button, and the keyboard (arrows, space, PageUp/PageDown from a presentation clicker;
+// P, "." or B to pause - "." and B are what clickers send for their black-screen button).
+// Finale: a countdown and LIVE labels until the deadline, then only the Eindstand (frozen).
 // Uses the data, standings and chart helpers from app.js (loaded before this file).
 
 const Present = (() => {
@@ -12,22 +14,28 @@ const Present = (() => {
   P.graphAccounts = Math.min(P.graphAccounts, MAX_SELECTED);
 
   const MEDALS = ["🥇", "🥈", "🥉"];
-  const SLIDE_NAMES = { podium: "top 3", ranking: "stand", graph: "grafiek", risers: "stijgers van vandaag" };
+  const SLIDE_NAMES = { podium: "top 3", ranking: "stand", graph: "grafiek", risers: "stijgers laatste 24 uur" };
+  const PAUSE_KEYS = new Set(["p", "P", ".", "b", "B"]);
   const slotOf = new Map(); // graph colours stay with the account while it stays in the top
   let data = null;
   let slides = [];
   let index = 0;
   let timer = null;
+  let paused = false;
+  let phase = finalePhase();
   let root, stage;
 
+  // After the deadline only the Eindstand: podium and the full final ranking.
   function buildSlides() {
     const list = [{ kind: "podium" }];
     for (let from = 3; from < data.standings.length; from += P.pageSize) list.push({ kind: "ranking", from });
-    list.push({ kind: "graph" }, { kind: "risers" });
+    if (!data.final) list.push({ kind: "graph" }, { kind: "risers" });
     return list;
   }
 
-  const title = (text, sub = "") => `<h2 class="p-title">${text}${sub ? ` <span class="p-sub">${sub}</span>` : ""}</h2>`;
+  const live = () => (phase === "live" ? ` <span class="live p-live">LIVE</span>` : "");
+  const title = (text, sub = "") =>
+    `<h2 class="p-title">${data && data.final ? "🏁 Eindstand" + (text === "Top 3" ? "" : ` · ${text.toLowerCase()}`) : text}${live()}${sub ? ` <span class="p-sub">${sub}</span>` : ""}</h2>`;
   const badge = (r) => (r.isPrivate ? privateBadge() : "");
   // The private dashboard passes first names as labels; the public site only has handles.
   const who = (handle) => {
@@ -45,7 +53,7 @@ const Present = (() => {
         <div class="p-pod-handle">${who(r.handle)}${badge(r)}</div>
         <div class="p-pod-views">${fmt(r.views)}</div>
         <div class="p-pod-label">weergaven</div>
-        <div class="p-pod-gain">${r.gain == null ? "&nbsp;" : `${signed(r.gain)} sinds gisteren`}</div>
+        <div class="p-pod-gain">${r.gain == null || data.final ? "&nbsp;" : `${signed(r.gain)} in 24 uur`}</div>
         <div class="p-pod-block">${r.rank}</div>
       </div>`;
     };
@@ -58,7 +66,7 @@ const Present = (() => {
     const to = from + rows.length;
     return title("Stand", `plaats ${from + 1}–${to} van ${data.standings.length}`) + `
       <div class="p-table" style="--rows:${P.pageSize}">
-        <div class="p-row p-head"><span>#</span><span>±</span><span>Account</span><span>Weergaven</span><span>Sinds gisteren</span></div>
+        <div class="p-row p-head"><span>#</span><span>±</span><span>Account</span><span>Weergaven</span><span>+ 24 uur</span></div>
         ${rows.map((r) => `
           <div class="p-row">
             <span class="p-rank">${r.rank}</span>
@@ -112,8 +120,8 @@ const Present = (() => {
       .filter((r) => r.gain != null)
       .sort((a, b) => b.gain - a.gain || a.handle.localeCompare(b.handle))
       .slice(0, P.risers);
-    const head = title("Stijgers van vandaag", "weergaven erbij sinds gisteren");
-    if (!rows.length) return head + `<p class="p-message">Nog geen vergelijking met gisteren. Morgen staan hier de grootste stijgers.</p>`;
+    const head = title("Stijgers", "weergaven erbij in de laatste 24 uur");
+    if (!rows.length) return head + `<p class="p-message">Nog geen vergelijking met 24 uur geleden. Morgen staan hier de grootste stijgers.</p>`;
     const max = Math.max(1, ...rows.map((r) => r.gain));
     return head + `
       <div class="p-table p-risers" style="--rows:${P.risers}">
@@ -145,26 +153,62 @@ const Present = (() => {
     stage.classList.remove("p-enter");
     void stage.offsetWidth;
     stage.classList.add("p-enter");
-    const bar = document.getElementById("p-bar");
-    bar.style.animation = "none";
-    void bar.offsetWidth;
-    bar.style.animation = `p-progress ${P.slideSeconds}s linear forwards`;
+    restartTimer();
     // tabindex=-1: a clicked dot never keeps focus, so Space keeps meaning "next slide".
     document.getElementById("p-dots").innerHTML = slides.map((sl, n) =>
       `<button type="button" tabindex="-1" data-slide="${n}" class="${n === index ? "on" : ""}"` +
       ` aria-label="Dia ${n + 1}: ${SLIDE_NAMES[sl.kind]}"${n === index ? ' aria-current="true"' : ""}></button>`).join("");
+  }
+
+  // Auto-advance and the progress bar; both stop while paused. Skipping keeps the pause.
+  function restartTimer() {
     clearTimeout(timer);
+    const bar = document.getElementById("p-bar");
+    bar.style.animation = "none";
+    if (paused) return;
+    void bar.offsetWidth;
+    bar.style.animation = `p-progress ${P.slideSeconds}s linear forwards`;
     timer = setTimeout(() => show(index + 1), P.slideSeconds * 1000);
+  }
+
+  function setPaused(value) {
+    paused = value;
+    const btn = document.getElementById("p-pause");
+    btn.textContent = paused ? "▶" : "⏸";
+    btn.setAttribute("aria-pressed", String(paused));
+    btn.setAttribute("aria-label", paused ? "Verder afspelen" : "Pauzeren");
+    btn.title = paused ? "Verder afspelen (P)" : "Pauzeren (P)";
+    document.getElementById("p-paused").hidden = !paused;
+    root.classList.toggle("p-is-paused", paused);
+    if (data) restartTimer();
+  }
+
+  // Finale countdown (every second while live) and the switch to the Eindstand at the deadline.
+  function tickFinale() {
+    const next = finalePhase();
+    const box = document.getElementById("p-finale");
+    if (next === "live") {
+      box.innerHTML = `<span class="live">LIVE</span> nog <strong>${countdown(FINALE.end - now())}</strong> tot de deadline (${hourFmt.format(FINALE.end)})`;
+    }
+    box.hidden = next !== "live";
+    if (next !== phase) {
+      phase = next;
+      if (next === "after") load(); // rebuilt frozen at the last run before the deadline: Eindstand slides
+      else if (data) show(index);  // LIVE labels on / off
+    }
   }
 
   function update(d) {
     const first = !data;
+    phase = finalePhase();
+    tickFinale();
+    const wasFinal = data && data.final;
     data = d;
     slides = buildSlides();
-    document.getElementById("p-updated").textContent =
-      d.latest ? `Bijgewerkt: ${stampFmt.format(d.latest)}` : "Nog geen gegevens";
-    // New data is picked up by the next slide; only the very first load starts the show.
-    if (first) show(0);
+    document.getElementById("p-updated").textContent = !d.latest ? "Nog geen gegevens"
+      : d.final ? `Eindstand · laatste meting ${stampFmt.format(d.latest)}` : `Bijgewerkt: ${stampFmt.format(d.latest)}`;
+    // New data is picked up by the next slide; the first load (and the switch to the Eindstand) starts over.
+    if (first || (d.final && !wasFinal)) show(0);
     else if (index >= slides.length) show(0);
   }
 
@@ -197,14 +241,26 @@ const Present = (() => {
       const dot = ev.target.closest("button[data-slide]");
       if (dot && data) show(Number(dot.dataset.slide));
     });
+    const pauseBtn = document.getElementById("p-pause");
+    pauseBtn.addEventListener("click", () => {
+      pauseBtn.blur(); // keep Space for "next slide"
+      setPaused(!paused);
+    });
     addEventListener("keydown", (ev) => {
       if (!data || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      if (PAUSE_KEYS.has(ev.key)) {
+        ev.preventDefault();
+        setPaused(!paused);
+        return;
+      }
       const next = ["ArrowRight", "PageDown"].includes(ev.key) || (ev.key === " " && !ev.shiftKey);
       const prev = ["ArrowLeft", "PageUp"].includes(ev.key) || (ev.key === " " && ev.shiftKey);
       if (!next && !prev) return;
       ev.preventDefault();
       show(index + (next ? 1 : -1));
     });
+
+    setInterval(tickFinale, 1000); // the finale state arrives with the data (and can start any time)
 
     // Hide the cursor (and the fullscreen button) after 3 s without mouse movement.
     let idle;

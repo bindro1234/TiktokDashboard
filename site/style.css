@@ -78,6 +78,22 @@ h2 { font-size: 1.15rem; margin: 28px 0 8px; }
 }
 .present-btn:hover, .present-btn:focus-visible { border-color: var(--accent); color: var(--accent); }
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+/* Finale: countdown banner and the Eindstand heading */
+.finale-banner {
+  display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: -4px 0 12px; padding: 6px 12px;
+  border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+.finale-banner[hidden] { display: none; }
+.live {
+  display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--bad); color: #fff;
+  font-size: 0.75rem; font-weight: 800; letter-spacing: 0.06em;
+}
+.live::before { content: "● "; animation: live-blink 1.2s steps(2, start) infinite; }
+@keyframes live-blink { to { visibility: hidden; } }
+@media (prefers-reduced-motion: reduce) { .live::before { animation: none; } }
+.final-title { margin: 0 0 12px; font-size: 1.4rem; }
+.final-title[hidden] { display: none; }
 .tabs a {
   padding: 10px 16px; border-radius: 8px 8px 0 0; text-decoration: none;
   color: var(--text-2); font-weight: 600; border-bottom: 3px solid transparent;
@@ -276,6 +292,28 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 
 /* Footer: slide dots, "Bijgewerkt", progress bar, fullscreen button */
 .p-foot { display: flex; justify-content: space-between; align-items: center; margin-top: calc(var(--u) * 2); font-size: calc(var(--u) * 1.8); color: var(--text-2); }
+/* Pause button + "gepauzeerd" next to the dots */
+.p-controls { display: flex; align-items: center; gap: calc(var(--u) * 1.2); }
+.p-pause {
+  width: max(28px, calc(var(--u) * 3.6)); height: max(28px, calc(var(--u) * 3.6)); padding: 0;
+  border: 1px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--text-2);
+  font-size: calc(var(--u) * 1.8); line-height: 1; cursor: pointer;
+}
+.p-pause:hover, .p-pause:focus-visible { color: var(--text); border-color: var(--text-2); }
+.p-paused {
+  padding: calc(var(--u) * 0.3) calc(var(--u) * 1.2); border-radius: 999px; background: var(--surface-2);
+  border: 1px solid var(--border); font-weight: 700; color: var(--text); font-size: calc(var(--u) * 1.8);
+}
+.p-paused[hidden] { display: none; }
+.p-is-paused .p-progress { visibility: hidden; }
+/* Finale countdown, in the footer between the dots and "Bijgewerkt" */
+.p-finale {
+  padding: calc(var(--u) * 0.5) calc(var(--u) * 2); border-radius: 999px; background: var(--surface-2); color: var(--text);
+  border: 1px solid var(--border); font-size: calc(var(--u) * 2.6); font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.p-finale[hidden] { display: none; }
+.present .live { font-size: 0.6em; vertical-align: middle; }
+.p-title .p-live { margin-left: 0.5em; font-size: 0.35em; }
 /* Dots are buttons: small visible dot, larger click target via transparent padding. */
 .p-dots { display: flex; margin-left: calc(var(--u) * -0.9); }
 .p-dots button {

@@ -31,9 +31,11 @@ function token(claims = {}, { key = access.privateKey, kid = "k1" } = {}) {
 
 // ---------- fake sheets + github ----------
 
-let sheets, calls;
-function values(tab) {
-  return sheets[tab] || null;
+let sheets, pub, calls;
+// Both spreadsheets share `sheets`, except the public copy of the finale tab (`pub`).
+const book = (id, tab) => (id === CONFIG.sheets.dataId && tab === "finale" ? pub : sheets);
+function values(id, tab) {
+  return book(id, tab)[tab] || null;
 }
 beforeEach(() => {
   resetCertCache();
@@ -49,6 +51,7 @@ beforeEach(() => {
     posts_latest: [["video_id", "handle", "created_at", "views"]],
   };
   sheets._recent = recent;
+  pub = {};
 });
 
 async function fakeFetch(input, init = {}) {
@@ -61,29 +64,36 @@ async function fakeFetch(input, init = {}) {
   if (url.hostname === "sheets.googleapis.com") {
     assert.equal(new Headers(init.headers).get("authorization"), "Bearer g-token");
     const path = decodeURIComponent(url.pathname);
+    const id = path.match(/\/spreadsheets\/([^/:]+)/)[1];
     if (method === "GET" && /\/spreadsheets\/[^/]+$/.test(path)) {
-      return ok({ sheets: Object.keys(sheets).filter((t) => !t.startsWith("_")).map((title) => ({ properties: { title } })) });
+      const titles = Object.keys(sheets).filter((t) => !t.startsWith("_") && (t !== "finale" || id !== CONFIG.sheets.dataId));
+      if (id === CONFIG.sheets.dataId && pub.finale) titles.push("finale");
+      return ok({ sheets: titles.map((title) => ({ properties: { title } })) });
     }
     if (path.endsWith("/values:batchGet")) {
-      return ok({ valueRanges: url.searchParams.getAll("ranges").map((r) => ({ values: values(r.replace(/'/g, "")) || [] })) });
+      return ok({ valueRanges: url.searchParams.getAll("ranges").map((r) => ({ values: values(id, r.replace(/'/g, "")) || [] })) });
     }
-    const m = path.match(/\/values\/'([^']+)'!([A-Z]+)(\d+)(:append)?$/);
+    const m = path.match(/\/values\/'([^']+)'!([A-Z]+)(\d+)(?::[A-Z]+\d+)?(:append)?$/);
     if (m && m[4]) {
       const rows = JSON.parse(init.body).values;
-      sheets[m[1]].push(...rows);
-      return ok({ updates: { updatedRange: `'${m[1]}'!A${sheets[m[1]].length}:C${sheets[m[1]].length}` } });
+      const tab = book(id, m[1])[m[1]];
+      tab.push(...rows);
+      return ok({ updates: { updatedRange: `'${m[1]}'!A${tab.length}:C${tab.length}` } });
     }
     if (m && method === "PUT") {
       const rows = JSON.parse(init.body).values;
       const col = m[2].charCodeAt(0) - 65;
+      const tab = book(id, m[1])[m[1]];
       rows.forEach((row, i) => {
-        const target = (sheets[m[1]][Number(m[3]) - 1 + i] ||= []);
+        const target = (tab[Number(m[3]) - 1 + i] ||= []);
         row.forEach((v, j) => { target[col + j] = v; });
       });
       return ok({});
     }
     if (path.endsWith(":batchUpdate")) {
-      for (const r of JSON.parse(init.body).requests) if (r.addSheet) sheets[r.addSheet.properties.title] = [];
+      for (const r of JSON.parse(init.body).requests) {
+        if (r.addSheet) book(id, r.addSheet.properties.title)[r.addSheet.properties.title] = [];
+      }
       return ok({});
     }
     throw new Error(`unexpected sheets call ${method} ${path}`);
@@ -248,16 +258,16 @@ test("backup timer starts the collector only when a window is open and not done"
   const at = (iso) => Date.parse(iso);
   const dispatches = () => calls.filter((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
 
-  // Outside every window: no Google or GitHub calls at all.
-  let r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T12:05:00+02:00"));
+  // Outside every window (odd hour, no finale): only the sheet is checked, GitHub is not called.
+  let r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T13:05:00+02:00"));
   assert.equal(r.action, "no window open");
-  assert.equal(calls.length, 0);
+  assert.equal(calls.filter((c) => c.url.includes("api.github.com")).length, 0);
 
-  // Evening window open, not done: dispatch "auto" (not a dry run) on main.
+  // 18u window open, not done: dispatch "auto" (not a dry run) on main.
   sheets._runs = [{ status: "completed" }];
   r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"));
   assert.equal(r.action, "collector started");
-  assert.deepEqual(r.due, ["2026-10-01/avond"]);
+  assert.deepEqual(r.due, ["2026-10-01/18u"]);
   assert.equal(dispatches().length, 1);
   assert.deepEqual(JSON.parse(dispatches()[0].body), { ref: "main", inputs: { command: "auto", dry_run: "false", handles: "" } });
 
@@ -268,8 +278,80 @@ test("backup timer starts the collector only when a window is open and not done"
   assert.equal(dispatches().length, 1);
 
   // Window done (also "skipped" right after Nu verversen): nothing to do.
-  sheets.run_log.push(["2026-10-01T16:30:00Z", "profiles", "2026-10-01/avond", false, 3, 0, 0, "skipped", "", ""]);
-  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T19:05:00+02:00"));
+  sheets.run_log.push(["2026-10-01T16:30:00Z", "profiles", "2026-10-01/18u", false, 3, 0, 0, "skipped", "", ""]);
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:50:00+02:00"));
   assert.equal(r.action, "windows already done");
   assert.equal(dispatches().length, 1);
+});
+
+// ---------- finale (manual, from Beheer) ----------
+
+const inHours = (h) => {
+  const t = new Date(Date.now() + h * 3600e3);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Amsterdam", year: "numeric",
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(t).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+};
+
+test("finale: start checks deadline limits, writes private + public state and logs who", async () => {
+  let res = await req("/api/finale/start", { body: { deadline: inHours(CONFIG.finale.maxHours + 1) } });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /maximaal/);
+  res = await req("/api/finale/start", { body: { deadline: inHours(0.1) } });
+  assert.equal(res.status, 400);
+  sheets._runs = [{ status: "completed" }];
+  res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  assert.equal(res.status, 200, await res.clone().text());
+  const row = sheets.finale.at(-1);
+  assert.deepEqual([row[1], row[3]], ["docent@school.nl", "active"]);
+  assert.deepEqual(pub.finale[0], ["started_at", "deadline", "status", "ended_at"]);
+  assert.equal(pub.finale[1][2], "active");
+  assert.ok(!JSON.stringify(pub).includes("@school.nl"), "no emails in the public sheet");
+  assert.ok(sheets.activity_log.some((r) => r[2] === "finale gestart" && r[1] === "docent@school.nl"));
+  assert.ok(calls.some((c) => c.url.includes("/actions/workflows/collect.yml/dispatches")), "first run started right away");
+  // A second start while it runs is refused.
+  res = await req("/api/finale/start", { body: { deadline: inHours(3) } });
+  assert.equal(res.status, 409);
+  // /api/data reports it as live.
+  const d = await (await req("/api/data")).json();
+  assert.equal(d.finale.phase, "live");
+  assert.equal(d.finaleHasRun, true);
+});
+
+test("finale: budget cap refuses a finale that doesn't fit", async () => {
+  sheets.run_log.push([new Date().toISOString(), "profiles", "big", false, 1, CONFIG.budget.monthlyCap - 5, 0, "ok", "sd_x", ""]);
+  const res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /budget/);
+});
+
+test("finale: change deadline, stop (Eindstand) and cancel are logged", async () => {
+  sheets._runs = [{ status: "completed" }];
+  await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  let res = await req("/api/finale/deadline", { body: { deadline: inHours(3) } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.ok(sheets.activity_log.some((r) => r[2] === "finale deadline gewijzigd"));
+  res = await req("/api/finale/stop", { body: { mode: "stop" } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(sheets.finale.at(-1).slice(3, 6).map((v, i) => (i === 1 ? typeof v : v)), ["stopped", "string", "docent@school.nl"]);
+  assert.equal(pub.finale[1][2], "stopped");
+  // Stopped: no longer live, so a second stop is refused; cancelling takes the Eindstand away.
+  assert.equal((await req("/api/finale/stop", { body: { mode: "stop" } })).status, 409);
+  assert.equal((await req("/api/finale/stop", { body: { mode: "cancel" } })).status, 200);
+  assert.equal(pub.finale[1][2], "cancelled");
+  assert.ok(sheets.activity_log.some((r) => r[2] === "finale geannuleerd"));
+});
+
+test("timer: during a finale it starts a run every 15 minutes, also outside the 2-hourly windows", async () => {
+  const start = Date.parse("2026-10-26T13:00:00Z");
+  sheets.finale = [["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"],
+    ["2026-10-26T13:00:00Z", "x@y.nl", "2026-10-26T15:00:00Z", "active", "", ""]];
+  sheets._runs = [{ status: "completed" }];
+  const r = await runSchedule(ENV, strictThisFetch, start + 65 * 60e3); // 15:05 Amsterdam: odd hour
+  assert.equal(r.action, "collector started");
+  assert.deepEqual(r.due, ["2026-10-26/finale-1500"]);
+  sheets.run_log.push(["2026-10-26T14:06:00Z", "profiles", "2026-10-26/finale-1500", false, 3, 3, 0, "ok", "sd", ""]);
+  assert.equal((await runSchedule(ENV, strictThisFetch, start + 70 * 60e3)).action, "windows already done");
+  // After the deadline (17:05 Amsterdam, an odd hour): back to the 2-hourly windows, none open now.
+  assert.equal((await runSchedule(ENV, strictThisFetch, start + 185 * 60e3)).action, "no window open");
 });

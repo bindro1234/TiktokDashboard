@@ -24,6 +24,7 @@
       <div>
         <h1>TikTok-campagne</h1>
         <p class="meta" id="updated">Gegevens laden…</p>
+        <p class="finale-banner" id="finale" role="status" hidden></p>
         <div class="admin" id="admin" hidden>
           <a class="admin-btn" id="admin-refresh" target="_blank" rel="noopener">↻ Ververs nu</a>
           <span class="admin-note">Laatste run: <strong id="admin-last">–</strong>. Klik op GitHub op <em>Run workflow</em>; nieuwe cijfers verschijnen binnen ~5–7 minuten.</span>
@@ -34,6 +35,7 @@
           <a href="#stand" data-view="stand">Stand</a>
           <a href="#grafiek" data-view="grafiek">Grafiek</a>
           <a href="#groei" data-view="groei">Groei</a>
+          <a href="#videos" data-view="videos">Video's</a>
           <a href="#hashtags" data-view="hashtags">Hashtags</a>
         </nav>
         <a class="present-btn" id="present-link" href="?present" target="_blank" rel="noopener" title="Presentatie voor de beamer (opent in een nieuw tabblad)">▶ Presentatie</a>
@@ -45,6 +47,7 @@
     <p class="notice" id="error" hidden></p>
 
     <section id="view-stand" class="view" hidden>
+      <h2 class="final-title" id="final-title" hidden>🏁 Eindstand</h2>
       <label class="sort-mobile">Sorteer op
         <select id="sort-select">
           <option value="views">Weergaven</option>
@@ -58,10 +61,10 @@
           <thead>
             <tr>
               <th class="num">#</th>
-              <th class="chg" title="Verandering in positie sinds gisteren">±</th>
+              <th class="chg" title="Verandering in positie t.o.v. 24 uur geleden">±</th>
               <th>Account</th>
               <th class="num c-views" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
-              <th class="num opt">+ sinds gisteren</th>
+              <th class="num opt" title="Weergaven erbij in de laatste 24 uur">+ 24 uur</th>
               <th class="num opt2 c-followers" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
               <th class="num opt2 c-posts" data-sort="posts"><button type="button" class="sort">Posts</button></th>
               <th class="num opt2 c-likes" data-sort="likes"><button type="button" class="sort">Likes</button></th>
@@ -76,6 +79,7 @@
     <section id="view-grafiek" class="view" hidden>
       <div class="controls">
         <div class="seg" role="group" aria-label="Meetwaarde" data-bind="metric"></div>
+        <div class="seg" role="group" aria-label="Periode" data-bind="range"></div>
         <label class="check"><input type="checkbox" id="show-others"> Overige accounts in grijs</label>
       </div>
       <div class="legend" id="legend-grafiek" aria-label="Legenda"></div>
@@ -100,6 +104,21 @@
           <tbody id="growth-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <section id="view-videos" class="view" hidden>
+      <h2 style="margin-top:0">Snelste stijgers</h2>
+      <div class="controls">
+        <div class="seg" role="group" aria-label="Periode" data-bind="videoRange"></div>
+        <span class="meta" id="videos-meta"></span>
+      </div>
+      <div class="board-wrap">
+        <table class="board small">
+          <thead><tr><th class="num">#</th><th>Account</th><th class="num">Weergaven erbij</th><th class="num opt">Totaal</th><th class="opt2">Geplaatst</th><th></th></tr></thead>
+          <tbody id="videos-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">De video's met de meeste nieuwe weergaven. Klik op een rij voor alle video's van dat account.</p>
     </section>
 
     <section id="view-hashtags" class="view" hidden>
@@ -132,14 +151,19 @@
   <div class="present" id="present" hidden>
     <div class="p-stage" id="p-stage"><p class="p-message">Gegevens laden…</p></div>
     <div class="p-foot">
-      <div class="p-dots" id="p-dots" role="group" aria-label="Dia's"></div>
+      <div class="p-controls">
+        <button class="p-pause" id="p-pause" type="button" tabindex="-1" aria-pressed="false" aria-label="Pauzeren" title="Pauzeren (P)">⏸</button>
+        <div class="p-dots" id="p-dots" role="group" aria-label="Dia's"></div>
+        <span class="p-paused" id="p-paused" hidden>gepauzeerd</span>
+      </div>
+      <div class="p-finale" id="p-finale" role="timer" hidden></div>
       <div class="p-updated" id="p-updated"></div>
     </div>
     <div class="p-progress" aria-hidden="true"><div id="p-bar"></div></div>
     <button class="p-fs" id="p-fs" type="button" title="Volledig scherm" aria-label="Volledig scherm">⛶</button>
   </div>
 
-  <footer class="foot">Alleen TikTok-accountnamen, geen namen van leerlingen. Gegevens worden twee keer per dag bijgewerkt.</footer>
+  <footer class="foot">Alleen TikTok-accountnamen, geen namen van leerlingen. Gegevens worden elke 2 uur bijgewerkt (tijdens een finale elke 15 minuten).</footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
