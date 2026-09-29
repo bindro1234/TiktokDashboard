@@ -32,3 +32,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# Node (site check)
+node_modules/

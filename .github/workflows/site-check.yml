@@ -1,0 +1,28 @@
+name: Check website
+
+# Verifies the live site against the real published CSV links: each link must
+# return CSV with the right header and a CORS header, and the site must render
+# without errors. Runs after every deploy and on demand.
+on:
+  pull_request:
+    paths: ["site/**", "tools/site_check.mjs", ".github/workflows/site-check.yml"]
+  workflow_run:
+    workflows: ["Deploy website"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - run: npm install --no-save playwright@1.56.1
+      - run: npx playwright install --with-deps chromium
+      - run: node tools/site_check.mjs "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
