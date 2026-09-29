@@ -3,6 +3,8 @@ name: Collect TikTok stats
 # GitHub cron is UTC and can be late or skip firings. Each window gets several
 # firings that cover both summer (UTC+2) and winter time (UTC+1); the collector
 # checks Amsterdam time and run_log so each window runs exactly once.
+# Backup: the private dashboard Worker (private/wrangler.toml [triggers]) starts this
+# workflow with command=auto via workflow_dispatch when a window is open and not done.
 on:
   schedule:
     - cron: "10,30,50 4-6 * * *"    # morning profiles, 06:30-07:59 Amsterdam

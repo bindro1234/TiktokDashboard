@@ -73,3 +73,56 @@ test("toCsv: Excel NL separator, decimal comma, formula protection", () => {
   assert.equal(csv, "naam;pct\r\n'=HYPERLINK(1);4,5\r\n\"Jan; Piet\";3\r\n");
   assert.equal(lib.toCsv(["a"], [["x,y"]]), "a\r\n\"x,y\"\r\n");
 });
+
+// ---------- collector windows (backup timer) ----------
+
+const log = (window, status, dry = false) => ({ window, status, dry_run: dry, timestamp: "2026-10-01T00:00:00Z" });
+
+test("openWindows follows Amsterdam time in summer and winter", () => {
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T06:45:00+02:00")), ["2026-10-01/ochtend"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T08:05:00+02:00")), []);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-26T19:45:00+01:00")), ["2026-10-26/avond"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-02T08:45:00+02:00")), ["2026-10-02/weekrefresh"]); // Friday
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T08:45:00+02:00")), []);                         // Thursday
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-09-27T07:00:00+02:00")), []);  // before the campaign
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-27T07:00:00+01:00")), []);  // after collect_until
+});
+
+test("dueWindows skips done windows, stops after max failures, adds the one-time check", () => {
+  const at = ams("2026-10-01T18:25:00+02:00");
+  assert.deepEqual(lib.dueWindows(CFG, [], at), ["2026-10-01/avond"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/avond", "skipped")], at), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/avond", "ok", true)], at), ["2026-10-01/avond"]); // dry run
+  const fails = Array(CFG.schedule.maxAttemptsPerWindow).fill(log("2026-10-01/avond", "failed"));
+  assert.deepEqual(lib.dueWindows(CFG, fails, at), []);
+  const check = ams(`${CFG.windowCheckDate}T18:45:00+02:00`);
+  const eve = `${CFG.windowCheckDate}/avond`;
+  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok")], check), [`${CFG.windowCheckDate}/window-check`]);
+  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok"), log(`${CFG.windowCheckDate}/window-check`, "ok")], check), []);
+});
+
+test("the Cloudflare cron in wrangler.toml hits every window at least 4 times, summer and winter", () => {
+  const toml = readFileSync(new URL("../wrangler.toml", import.meta.url), "utf8");
+  const crons = JSON.parse(toml.match(/^crons\s*=\s*(\[.*\])/m)[1]);
+  const expand = (field, max) => field.split(",").flatMap((part) => {
+    const [a, b] = part.split("-").map(Number);
+    return part === "*" ? [...Array(max).keys()] : b === undefined ? [a] : Array.from({ length: b - a + 1 }, (_, i) => a + i);
+  });
+  const firings = (day) => crons.flatMap((c) => {
+    const [min, hour, dom, mon, dow] = c.split(/\s+/);
+    assert.deepEqual([dom, mon, dow], ["*", "*", "*"]);
+    return expand(hour, 24).flatMap((h) => expand(min, 60).map((m) => Date.parse(`${day}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00Z`)));
+  });
+  // 1 Oct / 2 Oct (Friday) in summer time, 26 Oct in winter time; the refresh window on a winter Friday (30 Oct).
+  for (const day of ["2026-10-01", "2026-10-26"]) {
+    for (const w of CFG.schedule.profileRuns) {
+      const hits = firings(day).filter((t) => lib.openWindows(CFG, t).includes(`${day}/${w.name}`)).length;
+      assert.ok(hits >= 4, `${day} ${w.name}: ${hits} hits`);
+    }
+  }
+  const r = CFG.schedule.refresh;
+  for (const day of ["2026-10-02", "2026-10-30"]) {
+    const hits = firings(day).filter((t) => { const hm = lib.localTime(t); return r.start <= hm && hm <= r.end; }).length;
+    assert.ok(hits >= 4, `${day} ${r.name}: ${hits} hits`);
+  }
+});

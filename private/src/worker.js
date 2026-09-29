@@ -46,7 +46,47 @@ export default {
   async fetch(request, env, ctx) {
     return handle(request, env, ctx, fetch);
   },
+  // Cloudflare Cron Trigger (wrangler.toml): backup for GitHub's unreliable cron.
+  async scheduled(controller, env, ctx) {
+    ctx.waitUntil(runSchedule(env, fetch, controller.scheduledTime).then(
+      (r) => console.log(`schedule: ${r.action}${r.due?.length ? ` (${r.due.join(", ")})` : ""}`),
+      (e) => console.log(`schedule failed: ${e.message}`)));
+  },
 };
+
+/**
+ * Start the collector workflow ("auto") when a collector window is open and still needs its run.
+ * The collector itself decides again from run_log, so a double start (GitHub cron + this) costs nothing.
+ * Returns what it did; only window keys and counts, never sheet contents.
+ */
+export async function runSchedule(env, fetchImpl = fetch, nowMs = Date.now()) {
+  if (!lib.openWindows(CONFIG, nowMs).length) return { action: "no window open" };
+  const sheets = new Sheets(env.GOOGLE_SERVICE_ACCOUNT_B64, fetchImpl);
+  const { run_log: values } = await sheets.readTabs(CONFIG.sheets.adminId, ["run_log"]);
+  const due = lib.dueWindows(CONFIG, lib.rowsToObjects(values), nowMs);
+  if (!due.length) return { action: "windows already done", due };
+  if (!env.GH_DISPATCH_TOKEN) return { action: "GH_DISPATCH_TOKEN missing", due };
+  const gh = (path, init = {}) => fetchImpl(`https://api.github.com/repos/${env.GITHUB_REPO}${path}`, {
+    ...init,
+    headers: {
+      authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, accept: "application/vnd.github+json",
+      "x-github-api-version": "2022-11-28", "user-agent": "tiktok-beheer-worker",
+      ...(init.body ? { "content-type": "application/json" } : {}),
+    },
+  });
+  const wf = CONFIG.workflows.collect;
+  const runs = await gh(`/actions/workflows/${wf}/runs?per_page=5`);
+  if (!runs.ok) throw new Error(`GitHub runs: HTTP ${runs.status}`);
+  if (((await runs.json()).workflow_runs || []).some((r) => RUNNING.has(r.status))) {
+    return { action: "collector already running", due };
+  }
+  const res = await gh(`/actions/workflows/${wf}/dispatches`, {
+    method: "POST",
+    body: JSON.stringify({ ref: "main", inputs: { command: "auto", dry_run: "false", handles: "" } }),
+  });
+  if (!res.ok) throw new Error(`GitHub dispatch: HTTP ${res.status}`);
+  return { action: "collector started", due };
+}
 
 export async function handle(request, env, ctx, fetchImpl = fetch) {
   const url = new URL(request.url);

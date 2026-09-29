@@ -161,6 +161,46 @@ export function remainingProfileRuns(cfg, nowMs, done) {
   return count;
 }
 
+// ---------- collector windows (same rules as Collector.auto in collector/runner.py) ----------
+
+const weekdayFmt = new Intl.DateTimeFormat("en-US", { timeZone: TZ, weekday: "long" });
+
+/** Window keys ("YYYY-MM-DD/name") that are open right now, Amsterdam time. */
+export function openWindows(cfg, nowMs) {
+  const day = localDay(nowMs);
+  const time = localTime(nowMs);
+  if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
+  const inside = (w) => w.start <= time && time <= w.end;
+  const open = cfg.schedule.profileRuns.filter(inside).map((w) => `${day}/${w.name}`);
+  const r = cfg.schedule.refresh;
+  if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
+  return open;
+}
+
+/**
+ * Open windows that still need a collector run: not done, and not failed max-attempts times.
+ * On the window-check date, the check is due once the evening window is done (while it is open).
+ */
+export function dueWindows(cfg, runLog, nowMs) {
+  const done = doneWindows(runLog);
+  const failures = new Map();
+  for (const r of runLog) {
+    if (!truthy(r.dry_run) && r.window && String(r.status) === "failed") {
+      failures.set(String(r.window), (failures.get(String(r.window)) || 0) + 1);
+    }
+  }
+  const pending = (key) => !done.has(key) && (failures.get(key) || 0) < cfg.schedule.maxAttemptsPerWindow;
+  const open = openWindows(cfg, nowMs);
+  const due = open.filter(pending);
+  const day = localDay(nowMs);
+  const evening = cfg.schedule.profileRuns.at(-1);
+  if (cfg.windowCheckDate === day && open.includes(`${day}/${evening.name}`) && done.has(`${day}/${evening.name}`)
+      && pending(`${day}/window-check`)) {
+    due.push(`${day}/window-check`);
+  }
+  return due;
+}
+
 export function budget(cfg, runLog, activeCount, nowMs) {
   const used = monthUsage(runLog, nowMs);
   const runs = remainingProfileRuns(cfg, nowMs, doneWindows(runLog));

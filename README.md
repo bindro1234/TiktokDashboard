@@ -52,7 +52,7 @@ Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `na
 
 ## Schema
 
-GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een keer over. Daarom start de workflow meerdere keren per tijdvak, en kijkt de collector zelf naar de Nederlandse tijd en `run_log`: elk tijdvak draait precies één keer, en een mislukte poging wordt bij de volgende start opnieuw geprobeerd (maximaal 2 keer). Zomer- en wintertijd gaan zo vanzelf goed.
+GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een keer over (en bij een nieuwe repo soms urenlang alles). Daarom start de workflow meerdere keren per tijdvak, en kijkt de collector zelf naar de Nederlandse tijd en `run_log`: elk tijdvak draait precies één keer, en een mislukte poging wordt bij de volgende start opnieuw geprobeerd (maximaal 2 keer). Zomer- en wintertijd gaan zo vanzelf goed.
 
 | Run | Tijdvak (Amsterdam) |
 |---|---|
@@ -60,6 +60,8 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 | Profielen avond | 18:00 – 19:59 |
 | Weekrefresh | vrijdag 08:30 – 10:00 |
 | Eenmalige controle | 5 okt, direct na de avondrun |
+
+**Reservetimer op Cloudflare.** Omdat GitHub-cron niet betrouwbaar is, heeft de beheerpagina-Worker een eigen *Cron Trigger* (`[triggers]` in `private/wrangler.toml`, om :05, :25 en :45 tijdens de ochtend, de avond en vrijdagochtend, in UTC voor zomer- én wintertijd). Staat er een tijdvak uit `config.yaml` open dat nog geen run heeft (volgens `run_log`), en loopt de collector nog niet, dan start de Worker de workflow *Collect TikTok stats* met `auto` (via `GH_DISPATCH_TOKEN`). De GitHub-cron blijft ook gewoon aan. Starten ze allebei, dan doet de tweede niets en kost niets: elk tijdvak draait maar één keer. Op 5 okt start de timer ook de eenmalige controle. Wat de timer deed staat in de Worker-logs (Cloudflare → Workers & Pages → tiktok-beheer → Logs).
 
 **Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun was, bijvoorbeeld via *Nu verversen* om 17:30. Posts die daarna nog komen, worden bij de volgende run (de ochtendrun) meegenomen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`.
 
@@ -211,6 +213,7 @@ Werkt alles, dan kan de knop `?beheerder` van de openbare site weg (volgende PR)
 - `private/src/worker.js`: de Worker. Elk verzoek, ook voor de pagina zelf, gaat eerst door de Access-controle (`private/src/access.js`). Schrijven kan alleen met een geldige herkomst en een eigen header (tegen CSRF).
 - Leerling toevoegen gebruikt dezelfde handle-regels als de collector (`tests/handle_cases.json` test beide). Dubbele handles worden geweigerd.
 - *Nu verversen* start de workflow **Nu verversen** via de GitHub-API, maar alleen als de laatste profielrun minstens 30 minuten geleden is en er geen verversing loopt. De collector controleert dat daarna nog een keer.
+- De **reservetimer** (`scheduled` in `private/src/worker.js`) leest alleen `run_log` en start de collector als een tijdvak openstaat en nog niet gedraaid heeft; zie *Schema*.
 - `private/build.sh` zet de instellingen uit `config.yaml` klaar en kopieert de presentatiemodus van `site/`. Tests: `node --test "private/test/*.test.mjs"` en `node tools/private_check.mjs` (met nepnamen).
 
 ## Eenmalige installatie
