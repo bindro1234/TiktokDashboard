@@ -27,7 +27,7 @@ def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="collector", description=__doc__)
-    parser.add_argument("command", choices=["auto", "profiles", "refresh", "check", "status", "setup"])
+    parser.add_argument("command", choices=["auto", "profiles", "force", "refresh", "check", "status", "setup"])
     parser.add_argument("--dry-run", action="store_true", help="plan and log expected records, no scraping")
     parser.add_argument("--handles", default="", help="check: comma separated handles (default: most videos)")
     parser.add_argument("--config", default=str(config.ROOT / "config.yaml"))
@@ -48,6 +48,8 @@ def main(argv: list[str] | None = None) -> int:
         col.auto()
     elif args.command == "profiles":
         col.run_profiles(manual)
+    elif args.command == "force":
+        col.run_force_refresh(f"{col.now_local:%Y-%m-%d}/force-{col.now_local:%H%M}")
     elif args.command == "refresh":
         col.run_refresh(manual)
     elif args.command == "check":

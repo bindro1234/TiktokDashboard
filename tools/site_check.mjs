@@ -68,6 +68,13 @@ if (first) {
   const posts = await page.$$eval("#view-account tbody tr", (r) => r.length);
   console.log(`site account page: post rows=${posts}`);
 }
+// Admin refresh bar: hidden for everyone, visible with ?beheerder and linking to the workflow.
+if (await page.isVisible("#admin")) fail("site: admin bar is visible without ?beheerder");
+await page.goto(`${siteUrl}?beheerder#stand`, { waitUntil: "networkidle" });
+const href = await page.getAttribute("#admin-refresh", "href");
+const adminOk = (await page.isVisible("#admin")) && href === cfg.forceRefreshUrl;
+console.log(`site admin bar (?beheerder): ${adminOk ? "ok" : "MISSING"}, last run="${await page.textContent("#admin-last")}"`);
+if (!adminOk) fail(`site: admin bar missing or wrong link (${href})`);
 if (errors.length) fail(`site: browser errors: ${errors.join(" | ")}`);
 await browser.close();
 

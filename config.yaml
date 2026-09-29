@@ -55,3 +55,8 @@ window_check:
   date: 2026-10-05
   accounts: 4
   num_of_posts: 40
+
+force_refresh:
+  # "Nu verversen" workflow: an extra profiles run on demand. Refused (and logged)
+  # when the last real profiles run was less than this many minutes ago.
+  min_minutes_between: 30

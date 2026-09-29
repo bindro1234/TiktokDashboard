@@ -6,6 +6,7 @@ import unittest
 from collector import config, model
 from collector.config import UTC
 from collector.handles import normalize_handle, parse_accounts
+from collector.runner import Collector
 
 CFG = config.load()
 CAMP = CFG.campaign
@@ -187,6 +188,50 @@ class RefreshPlanTests(unittest.TestCase):
         self.assertEqual(cmp["missing"], 2)
         self.assertEqual(cmp["missing_inside_window"], 1)  # video 2 was newer than the window's oldest
         self.assertEqual(cmp["max_views_lag_pct"], 10.0)
+
+
+class FakeSheet:
+    """In-memory stand-in for Spreadsheet (read/append only)."""
+
+    def __init__(self, tabs):
+        self.tabs = {k: list(v) for k, v in tabs.items()}
+
+    def read(self, tab):
+        return list(self.tabs.get(tab, []))
+
+    def append(self, tab, rows):
+        self.tabs.setdefault(tab, []).extend(rows)
+
+
+class ForceRefreshTests(unittest.TestCase):
+    NOW = dt.datetime(2026, 10, 1, 10, 0, tzinfo=UTC)
+
+    def run_force(self, run_log):
+        admin = FakeSheet({"run_log": run_log, "accounts": []})
+        col = Collector(CFG, admin, FakeSheet({}), bd=None, now=self.NOW)
+        col.run_force_refresh("2026-10-01/force-1200")
+        return admin.tabs["run_log"][-1]
+
+    def test_last_profiles_run_ignores_dry_runs_and_runs_without_a_job(self):
+        rows = [
+            {"timestamp": "2026-10-01T09:50:00Z", "run_type": "profiles", "dry_run": True, "snapshot_ids": "sd_x"},
+            {"timestamp": "2026-10-01T09:55:00Z", "run_type": "force_refresh", "dry_run": False, "snapshot_ids": ""},
+            {"timestamp": "2026-10-01T09:58:00Z", "run_type": "posts_refresh", "dry_run": False, "snapshot_ids": "sd_y"},
+            {"timestamp": "2026-10-01T09:20:00Z", "run_type": "profiles", "dry_run": False, "snapshot_ids": "sd_z"},
+        ]
+        self.assertEqual(model.last_profiles_run(rows), dt.datetime(2026, 10, 1, 9, 20, tzinfo=UTC))
+
+    def test_refused_within_cooldown(self):
+        row = self.run_force([{"timestamp": "2026-10-01T09:40:00Z", "run_type": "profiles",
+                               "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
+        self.assertEqual((row["run_type"], row["status"], row["actual_records"]), ("force_refresh", "refused", 0))
+        self.assertIn("20 min ago", row["notes"])
+
+    def test_allowed_after_cooldown(self):
+        row = self.run_force([{"timestamp": "2026-10-01T09:25:00Z", "run_type": "force_refresh",
+                               "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
+        # Past the cooldown it goes on to the normal profiles run (here: no accounts, so skipped).
+        self.assertEqual((row["run_type"], row["status"]), ("force_refresh", "skipped"))
 
 
 if __name__ == "__main__":

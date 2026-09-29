@@ -10,6 +10,9 @@ window.TT_CONFIG = {
   campaignStart: "2026-09-28",
   campaignEnd: "2026-10-26",
   refreshMinutes: 10,
+  // "Nu verversen" workflow page, shown to the admin via ?beheerder. Starting it
+  // requires being logged in to GitHub with write access; the site holds no tokens.
+  forceRefreshUrl: "https://github.com/bindro1234/TiktokDashboard/actions/workflows/force-refresh.yml",
 };
 
 window.TT_CONFIG.csvUrl = function (tab) {

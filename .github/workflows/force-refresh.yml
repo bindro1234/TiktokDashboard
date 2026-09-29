@@ -1,0 +1,34 @@
+name: Nu verversen
+
+# Extra profiles run on demand, for all active accounts. Only people with write
+# access to this repo can start it. Respects the monthly budget cap and is refused
+# (and logged in run_log) when the last real profiles run was less than
+# force_refresh.min_minutes_between (config.yaml) ago, so a double tap costs nothing.
+on:
+  workflow_dispatch:
+
+# Same group as the scheduled collector: never two collections at once. A tap
+# during a scheduled run waits for it, and the cooldown then refuses the tap.
+concurrency:
+  group: collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Refresh profiles now
+        env:
+          BRIGHTDATA_API_KEY: ${{ secrets.BRIGHTDATA_API_KEY }}
+          GOOGLE_SERVICE_ACCOUNT_B64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}
+        run: python -m collector force
