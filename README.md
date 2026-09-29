@@ -107,4 +107,4 @@ Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `h
 - **Groei**: erbij per dag of per week, plus de grootste stijgers.
 - **Account**: klik op een account voor details en alle posts.
 
-Werkt de CSV-link niet? Vul dan in `site/config.js` bij `publishedId` het deel van de "Publiceren op internet"-link in dat met `2PACX-` begint.
+De site leest de CSV via de "Publiceren op internet"-link: `publishedId` in `site/config.js` is het deel van die link dat met `2PACX-` begint. Publiceer je de sheet opnieuw en verandert de link, pas het dan daar aan. De workflow *Check website* controleert na elke deploy of de links en de site werken.
