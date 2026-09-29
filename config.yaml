@@ -27,9 +27,10 @@ brightdata:
 budget:
   # Hard cap on Bright Data records per calendar month (free records renew on the 1st;
   # above 5,000 it is pay as you go). October at 12 runs a day: ≈13,300-13,800 records with
-  # 40 accounts, ≈15,000-15,600 with 45. With more than ~42 accounts the weekly refreshes of
-  # 16 and 23 Oct need ~17,000 here (they reserve the month's remaining profile runs first).
-  monthly_cap: 16000
+  # 40 accounts, ≈15,000-15,600 with 45, plus up to ≈1,260 for an 8-hour finale. The weekly
+  # refreshes of 16 and 23 Oct reserve the month's remaining profile runs first, so they
+  # need ~17,000 here with more than ~42 accounts; 17,500 leaves room for that and a finale.
+  monthly_cap: 17500
 
 schedule:
   # A window that failed is retried by the next cron firing, at most this many times.

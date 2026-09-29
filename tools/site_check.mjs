@@ -115,24 +115,22 @@ if (first) {
   const posts = await page.$$eval("#view-account tbody tr", (r) => r.length);
   console.log(`site account page: post rows=${posts}`);
 }
-// Admin refresh bar: hidden for everyone, visible with ?beheerder and linking to the workflow.
-if (await page.isVisible("#admin")) fail("site: admin bar is visible without ?beheerder");
+// The old ?beheerder refresh button is gone: the public site has no admin UI at all
+// (refreshing lives on the private site).
 await page.goto(`${siteUrl}?beheerder#stand`, { waitUntil: "networkidle" });
-const href = await page.getAttribute("#admin-refresh", "href");
-const adminOk = (await page.isVisible("#admin")) && href === cfg.forceRefreshUrl;
-console.log(`site admin bar (?beheerder): ${adminOk ? "ok" : "MISSING"}, last run="${await page.textContent("#admin-last")}"`);
-if (!adminOk) fail(`site: admin bar missing or wrong link (${href})`);
+const adminLeft = await page.$$eval("#admin, a[href*='force-refresh']", (e) => e.length);
+console.log(`site ?beheerder: ${adminLeft ? "ADMIN UI STILL PRESENT" : "no admin UI (ok)"}`);
+if (adminLeft) fail("site: admin UI still present with ?beheerder");
 if (errors.length) fail(`site: browser errors: ${errors.join(" | ")}`);
 
 // Presentation mode (?present) at both projector resolutions: every slide fits without
 // scrolling, the slideshow cycles, no tabs/admin UI, light theme, "Bijgewerkt" shown.
-// ?beheerder is added on purpose: the admin button must stay hidden in presentation mode.
 for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   const pp = await browser.newPage({ viewport: { width: w, height: h } });
   const perrors = [];
   pp.on("pageerror", (e) => perrors.push(e.message));
   pp.on("console", (m) => m.type() === "error" && perrors.push(m.text()));
-  await pp.goto(`${siteUrl}?present&beheerder&sec=2`, { waitUntil: "networkidle" });
+  await pp.goto(`${siteUrl}?present&sec=2`, { waitUntil: "networkidle" });
   await pp.waitForSelector("#p-stage[data-kind]", { timeout: 30000 });
   const count = await pp.$$eval("#p-dots button", (s) => s.length);
   const kinds = [];
@@ -154,7 +152,7 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   const ui = await pp.evaluate(() => ({
     theme: document.documentElement.dataset.theme,
     header: getComputedStyle(document.querySelector(".top")).display,
-    admin: !document.getElementById("admin").hidden,
+    admin: !!document.querySelector("#admin, a[href*='force-refresh']"),
     updated: document.getElementById("p-updated").textContent,
   }));
   await pp.waitForTimeout(3300);
