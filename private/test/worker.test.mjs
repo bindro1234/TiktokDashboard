@@ -146,6 +146,30 @@ test("a valid token gets the page with security headers", async () => {
   assert.equal(res.headers.get("cache-control"), "no-store");
 });
 
+// Workers' global fetch throws "Illegal invocation" when called with any `this` other than
+// undefined/globalThis (e.g. stored as this.fetch and called as a method). Mimic that.
+function strictThisFetch(input, init) {
+  if (this !== undefined && this !== globalThis) {
+    throw new TypeError("Illegal invocation: function called with incorrect `this` reference.");
+  }
+  return fakeFetch(input, init);
+}
+
+test("fetch is never called as a method (Illegal invocation on Workers)", async () => {
+  const run = (path, opts = {}) => {
+    const h = new Headers({ "Cf-Access-Jwt-Assertion": token(), ...(opts.body ? {
+      "content-type": "application/json", "x-requested-with": "tiktok-beheer", origin: ORIGIN } : {}) });
+    return handle(new Request(ORIGIN + path, { method: opts.body ? "POST" : "GET", headers: h,
+      body: opts.body ? JSON.stringify(opts.body) : undefined }), ENV, null, strictThisFetch);
+  };
+  // Sheets (Google login + reads + activity log write), GitHub (runs, dispatch) and a sheet write.
+  for (const [path, opts] of [["/api/data"], ["/api/runs"], ["/api/refresh", { body: {} }],
+    ["/api/accounts", { body: { name: "Eva", handle: "eva.e" } }]]) {
+    const res = await run(path, opts);
+    assert.equal(res.status, 200, `${path}: ${await res.clone().text()}`);
+  }
+});
+
 // ---------- data ----------
 
 test("/api/data returns names, flags problems and logs the first visit of the day", async () => {
