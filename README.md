@@ -47,7 +47,7 @@ Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `na
 ## Kosten en budget
 
 - Bright Data rekent per record: 1 profiel = 1 record, 1 post = 1 record. 5.000 records per kalendermaand zijn gratis, daarna ca. $1,50 per 1.000.
-- **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **16.000**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
+- **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **17.500**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
 - Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen, zodat de hoofdbron nooit zonder budget komt te zitten.
 - De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu **40**). Dat is ook de bovengrens die de dry-run gebruikt en die wordt gereserveerd.
 - **Schatting oktober** (profielen elke 2 uur, 26 dagen × 12 runs):
@@ -62,7 +62,7 @@ Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `na
   | finale van 8 uur, het maximum (+28 runs) | +1.120 | +1.260 |
 
   Boven de gratis 5.000 kost dat bij 45 accounts ≈ $15–17 (≈ €14–16).
-- **Let op bij meer dan ~42 accounts:** de weekrefreshes van 16 en 23 oktober reserveren eerst alle resterende profielruns van de maand en passen dan niet meer binnen 16.000 (ze worden `refused`). Zet `budget.monthly_cap` dan op **17.000**; met een lange finale erbij ook.
+- **Waarom 17.500:** de weekrefreshes van 16 en 23 oktober reserveren eerst alle resterende profielruns van de maand. Bij meer dan ~42 accounts passen ze dan niet binnen 16.000 (ze zouden `refused` worden); met 17.500 passen ze bij 45 accounts, en is er ook ruimte voor een finale van 8 uur (≈ 15.600 + 1.260 = 16.860). De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
 
 ## Schema
 
@@ -125,7 +125,7 @@ Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**,
   2. **de rest van de stand** in pagina's van 10 (plaats 4–13, 14–23, …), met ▲▼ en *+ 24 uur*;
   3. **grafiek** van de weergaven van de top 8;
   4. **Stijgers**: de grootste groei in weergaven in de laatste 24 uur.
-- Geen tabbladen en geen beheerdersknop (ook niet met `?beheerder`); alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
+- Geen tabbladen en geen beheerdersknoppen; alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
 - **Zelf doorklikken:**
   - klik op een **bolletje** onderaan om naar die dia te springen;
   - **→**, **spatiebalk** of **PageDown**: volgende dia;
@@ -142,12 +142,14 @@ Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**,
 
 Extra profielrun buiten het schema, bijvoorbeeld vlak voor de les.
 
-1. Open de site met **`?beheerder`** achter het adres: `https://bindro1234.github.io/TiktokDashboard/?beheerder`. Alleen dan staat bovenaan de knop **↻ Ververs nu**, met de tijd van de laatste run.
-2. De knop opent de workflow **Nu verversen** op GitHub. Klik daar op **Run workflow**. Nieuwe cijfers staan binnen ~5–7 minuten op de site; in beheerdersmodus laadt de site elke minuut opnieuw.
+1. Open de **privé-site** (achter Cloudflare Access) en ga naar **Beheer**. Klik op **↻ Nu verversen**. Nieuwe cijfers staan binnen ~5–7 minuten op beide sites.
+2. Alternatief zonder privé-site: op GitHub onder **Actions → Nu verversen → Run workflow** (alleen met schrijfrechten op deze repo).
+
+De openbare site heeft geen beheerdersknop meer (de oude `?beheerder`-link doet niets meer).
 
 Beveiliging en kosten:
 
-- De site bevat **geen tokens of sleutels**; de knop is alleen een link. Alleen wie op GitHub is ingelogd met schrijfrechten op deze repo kan de workflow starten. `?beheerder` verbergt alleen de knop voor leerlingen, het is geen beveiliging.
+- De openbare site bevat **geen tokens of sleutels** en geen beheerfuncties. De privé-site start de workflow via de Worker, die de Access-login zelf controleert.
 - Een run haalt alle actieve profielen op (1 record per account) en valt onder dezelfde **maandlimiet**.
 - **Dubbel tikken kost niets extra:** was de laatste echte profielrun (gepland of handmatig) minder dan 30 minuten geleden, dan wordt de run geweigerd en als `refused` gelogd in `run_log` (instelbaar via `force_refresh.min_minutes_between` in `config.yaml`). Loopt er net een geplande run, dan wacht de workflow daarop en wordt hij daarna geweigerd.
 
@@ -236,8 +238,6 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 1. Open het workers.dev-adres. Vul je e-mail in, je krijgt een code per mail, en je bent binnen.
 2. Probeer met een adres dat níét op de lijst staat: dat krijgt geen code.
 3. Kijk op **Beheer** bij *Activiteit*: daar staat je bezoek.
-
-Werkt alles, dan kan de knop `?beheerder` van de openbare site weg (volgende PR).
 
 ### Hoe het werkt
 

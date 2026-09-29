@@ -26,9 +26,6 @@ const TAGS_SHOWN = 30; // rows before "Toon alle"
 const PARAMS = new URLSearchParams(location.search);
 // Presentation mode (?present): classroom slideshow, see present.js.
 const IS_PRESENT = PARAMS.has("present");
-// Admin mode (?beheerder): shows a link to the "Nu verversen" workflow. It is only a link;
-// GitHub itself checks that whoever starts the workflow has write access. Never in presentation mode.
-const IS_ADMIN = PARAMS.has("beheerder") && !IS_PRESENT;
 // ?nu=2026-10-26T19:30 (Amsterdam time) pretends it is that moment, to check the finale and the
 // Eindstand before the day. Only changes what this browser shows.
 const CLOCK_OFFSET = (() => {
@@ -253,9 +250,6 @@ async function load() {
     if (!state.selected.length) state.data.standings.slice(0, 5).forEach((r) => select(r.handle));
     const upd = state.data.latest ? `Bijgewerkt: ${stampFmt.format(state.data.latest)}` : "Nog geen gegevens";
     document.getElementById("updated").textContent = `${upd} · ${state.data.accounts.length} accounts`;
-    if (IS_ADMIN) {
-      document.getElementById("admin-last").textContent = state.data.latest ? stampFmt.format(state.data.latest) : "nog geen";
-    }
     render();
   } catch (err) {
     if (IS_PRESENT) {
@@ -906,11 +900,6 @@ document.getElementById("tags-more").addEventListener("click", () => { state.tag
 window.addEventListener("hashchange", route);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 
-if (IS_ADMIN && CFG.forceRefreshUrl) {
-  document.getElementById("admin-refresh").href = CFG.forceRefreshUrl;
-  document.getElementById("admin").hidden = false;
-}
-
 // Start once every script (including present.js) has run.
 document.addEventListener("DOMContentLoaded", () => {
   if (IS_PRESENT) Present.start();
@@ -919,9 +908,9 @@ document.addEventListener("DOMContentLoaded", () => {
   scheduleLoad();
 });
 
-// Reload every refreshMinutes; every minute for the admin; every 2 minutes during the finale.
+// Reload every refreshMinutes; every 2 minutes during the finale.
 function scheduleLoad() {
-  const minutes = IS_ADMIN ? 1 : finalePhase() === "live" ? 2 : CFG.refreshMinutes || 10;
+  const minutes = finalePhase() === "live" ? 2 : CFG.refreshMinutes || 10;
   setTimeout(() => { load(); scheduleLoad(); }, minutes * 60 * 1000);
 }
 

@@ -60,16 +60,6 @@ h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
 h2 { font-size: 1.15rem; margin: 28px 0 8px; }
 .meta { margin: 2px 0 12px; color: var(--text-2); font-size: 0.95rem; }
 
-/* Admin bar: only shown with ?beheerder in the URL. */
-.admin { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin: -4px 0 12px; }
-.admin[hidden] { display: none; }
-.admin-btn {
-  display: inline-flex; align-items: center; min-height: 34px; padding: 5px 14px; border-radius: 8px;
-  background: var(--accent); color: #fff; font-weight: 700; font-size: 0.9rem; text-decoration: none;
-}
-.admin-btn:hover, .admin-btn:focus-visible { filter: brightness(1.1); }
-.admin-note { color: var(--text-2); font-size: 0.85rem; }
-
 .nav-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .present-btn {
   display: inline-flex; align-items: center; min-height: 36px; padding: 5px 14px; margin-bottom: 6px;
