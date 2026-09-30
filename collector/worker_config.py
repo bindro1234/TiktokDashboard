@@ -20,6 +20,9 @@ def build(cfg: config.Config) -> dict:
         "timezone": str(cfg.tz),
         "campaign": {"start": camp.start.isoformat(), "end": camp.end.isoformat(),
                      "collectUntil": camp.collect_until.isoformat()},
+        "offDays": {"weekends": cfg.off_days.weekends,
+                    "periods": [{"name": p.name, "from": p.start.isoformat(), "to": p.end.isoformat()}
+                                for p in cfg.off_days.periods]},
         "sheets": {"adminId": cfg.admin_sheet_id, "dataId": cfg.data_sheet_id},
         "budget": {"monthlyCap": cfg.monthly_cap},
         "schedule": {

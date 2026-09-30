@@ -189,6 +189,7 @@ test("/api/data returns names, flags problems and logs the first visit of the da
   assert.equal(d.me, "docent@school.nl");
   assert.deepEqual(d.accounts.filter((a) => a.tracked).map((a) => [a.name, a.handle]), [["Anna", "anna_1"], ["", "chris"]]);
   assert.equal(d.budget.cap, CONFIG.budget.monthlyCap);
+  assert.deepEqual(d.config.offDays, CONFIG.offDays); // the page needs it for streaks and "vrij" days
   assert.equal(sheets.activity_log.length, 2); // header + "geopend"
   assert.deepEqual(sheets.activity_log[1].slice(1, 3), ["docent@school.nl", "geopend"]);
   await req("/api/data");

@@ -11,6 +11,13 @@ campaign:
   start_date: 2026-09-28     # first day a new post counts (inclusive)
   end_date: 2026-10-26       # last day a new post counts (inclusive)
   collect_until: 2026-10-26  # scheduled runs stop after this day
+  # Free days: posting is optional. A post on a free day still adds to the streak; no post
+  # never breaks the streak, is not a missed day and does not count for the "geen post"
+  # warning. Collection itself runs as normal on these days.
+  off_days:
+    weekends: true
+    periods:
+      - {name: Herfstvakantie, from: 2026-10-19, to: 2026-10-23}
 
 sheets:
   # Private: accounts (student names), run_log, profile_window. Never publish.

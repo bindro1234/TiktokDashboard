@@ -69,6 +69,36 @@ test("studentStats: missed days, streaks, engagement and best video", () => {
   assert.deepEqual(st.tags[0], ["fyp", 5]);
 });
 
+test("off days: weekends and Herfstvakantie never break a streak, aren't missed or warned about", () => {
+  assert.equal(lib.isOffDay(CFG, "2026-10-03"), true);   // Saturday
+  assert.equal(lib.isOffDay(CFG, "2026-10-21"), true);   // Herfstvakantie (Wednesday)
+  assert.equal(lib.isOffDay(CFG, "2026-10-26"), false);  // Monday after the holiday
+  assert.equal(lib.offDayName(CFG, "2026-10-19"), "Herfstvakantie");
+  assert.equal(lib.offDayName(CFG, "2026-10-04"), "weekend");
+  const p = (id, iso) => ({ video_id: id, created_at: iso, views: 10 });
+  // Every weekday until Mon 12 Oct, Tue 13 missed, then Wed 14 - Sat 17 (a free day, still counts).
+  const posts = [];
+  for (let d = "2026-09-28"; d <= "2026-10-12"; d = lib.addDays(d, 1)) {
+    if (!lib.isOffDay(CFG, d)) posts.push(p(d, `${d}T10:00:00Z`));
+  }
+  for (const d of ["2026-10-14", "2026-10-15", "2026-10-16", "2026-10-17"]) posts.push(p(d, `${d}T10:00:00Z`));
+  // Monday 26 Oct at noon: nothing since Saturday 17, but the week between was all free days.
+  let st = lib.studentStats(posts, CFG, ams("2026-10-26T12:00:00+02:00"));
+  assert.deepEqual(st.missedList, ["2026-10-13"]);
+  assert.equal(st.streak, 4);        // 14-17 Oct; 18-25 Oct free, 26 Oct not over yet
+  assert.equal(st.longest, 11);      // 28 Sep - 12 Oct: 11 weekdays, weekends in between don't break it
+  assert.equal(st.quietDays, 1);     // only today (26 Oct) counts: no warning
+  // With a post on the last day, the streak carries on and stays after the campaign ends.
+  posts.push(p("last", "2026-10-26T10:00:00Z"));
+  st = lib.studentStats(posts, CFG, ams("2026-10-28T12:00:00+02:00"));
+  assert.equal(st.streak, 5);
+  // Posted Wednesday 30 Sep, now Sunday 4 Oct: Thu and Fri count, the weekend doesn't.
+  st = lib.studentStats([p("a", "2026-09-30T10:00:00Z")], CFG, ams("2026-10-04T12:00:00+02:00"));
+  assert.equal(st.quietDays, 2);
+  assert.deepEqual(st.missedList, ["2026-09-28", "2026-09-29", "2026-10-01", "2026-10-02"]);
+  assert.equal(st.streak, 0);        // Thu 1 and Fri 2 Oct were missed
+});
+
 test("toCsv: Excel NL separator, decimal comma, formula protection", () => {
   const csv = lib.toCsv(["naam", "pct"], [["=HYPERLINK(1)", 4.5], ["Jan; Piet", 3]], { sep: ";", decimalComma: true });
   assert.equal(csv, "naam;pct\r\n'=HYPERLINK(1);4,5\r\n\"Jan; Piet\";3\r\n");

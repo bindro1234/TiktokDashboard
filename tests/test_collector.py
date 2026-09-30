@@ -338,6 +338,25 @@ class FinaleTests(unittest.TestCase):
         self.assertEqual(len(admin.tabs["run_log"]), 2)
 
 
+class OffDayTests(unittest.TestCase):
+    def test_weekends_and_herfstvakantie(self):
+        off = config.load().off_days
+        self.assertTrue(off.contains(dt.date(2026, 10, 3)))    # Saturday
+        self.assertTrue(off.contains(dt.date(2026, 10, 19)))   # Herfstvakantie, Monday
+        self.assertTrue(off.contains(dt.date(2026, 10, 23)))   # Herfstvakantie, Friday
+        self.assertFalse(off.contains(dt.date(2026, 10, 26)))  # Monday after
+        self.assertFalse(off.contains(dt.date(2026, 10, 16)))  # Friday before
+
+    def test_worker_config_and_validation(self):
+        from collector import worker_config
+        out = worker_config.build(config.load())["offDays"]
+        self.assertEqual(out, {"weekends": True, "periods": [
+            {"name": "Herfstvakantie", "from": "2026-10-19", "to": "2026-10-23"}]})
+        with self.assertRaises(ValueError):
+            config._off_days({"periods": [{"name": "x", "from": "2026-10-23", "to": "2026-10-19"}]})
+        self.assertEqual(config._off_days(None), config.OffDays())
+
+
 class FakeSheet:
     """In-memory stand-in for Spreadsheet (read/append only)."""
 
