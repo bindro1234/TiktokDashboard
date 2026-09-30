@@ -190,7 +190,7 @@ class Api {
       config: {
         campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: CONFIG.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
-        finale: CONFIG.finale,
+        finale: CONFIG.finale, offDays: CONFIG.offDays,
       },
       finale: finale && { ...finale, row: undefined },
       // Any finale that really ran (not cancelled): hides the "start the finale" reminder.

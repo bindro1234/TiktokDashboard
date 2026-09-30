@@ -1,7 +1,7 @@
 // Private dashboard page. All data comes from the Worker API (/api/*) behind Cloudflare Access.
 import * as lib from "./lib.js";
 
-const WARN_DAYS = 2; // "no post for 2+ days"
+const WARN_DAYS = 2; // "no post for 2+ days" (free days don't count)
 const WEEKDAYS_NL = { monday: "maandag", tuesday: "dinsdag", wednesday: "woensdag", thursday: "donderdag",
   friday: "vrijdag", saturday: "zaterdag", sunday: "zondag" };
 const nf = new Intl.NumberFormat("nl-NL");
@@ -104,8 +104,10 @@ function warnings(s, cfg, now) {
   if (status.startsWith("fout")) out.push({ cls: "bad", text: "niet gevonden", title: status });
   if (!s.info) out.push({ cls: "info", text: "nog niet opgehaald" });
   const today = lib.localDay(now);
-  if (s.info && today <= cfg.campaign.end && s.stats.daysSinceLast !== null && s.stats.daysSinceLast >= WARN_DAYS) {
-    out.push({ cls: "warn", text: s.stats.lastDay ? `${s.stats.daysSinceLast} dagen geen post` : "nog geen post" });
+  // Counted in days on which posting is expected: weekends and holidays (off_days) are left out.
+  if (s.info && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
+    out.push({ cls: "warn", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
+      title: "Weekenden en vakantiedagen tellen niet mee" });
   }
   if (s.stats.missing) out.push({ cls: "warn", text: `${s.stats.missing} video${s.stats.missing > 1 ? "'s" : ""} verdwenen`,
     title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?" });
@@ -171,10 +173,28 @@ function renderOverview(m) {
 
 const heatClass = (n) => (n >= 3 ? "p3" : n === 2 ? "p2" : n === 1 ? "p1" : "");
 
-function dayCellClass(s, day, today) {
+function dayCellClass(s, day, today, cfg) {
   const n = s.stats.perDay.get(day) || 0;
-  if (day > today) return "future";
-  return [n ? heatClass(n) : day < today ? "miss" : "", day === today ? "today" : ""].filter(Boolean).join(" ");
+  const off = lib.isOffDay(cfg, day);
+  if (day > today) return off ? "future off" : "future";
+  return [n ? heatClass(n) : off ? "off" : day < today ? "miss" : "", day === today ? "today" : ""].filter(Boolean).join(" ");
+}
+
+// Title text of a calendar cell: date, number of posts and, on a free day, why it is free.
+function dayTitle(cfg, day, n) {
+  const free = lib.offDayName(cfg, day);
+  return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${free ? ` (vrij: ${free})` : ""}`;
+}
+
+// "Vrij: weekenden, Herfstvakantie 19 okt – 23 okt" for the legend.
+function offDaysText(cfg) {
+  const parts = [];
+  if (cfg.offDays?.weekends) parts.push("weekenden");
+  for (const p of cfg.offDays?.periods || []) {
+    const d = (x) => shortDate.format(Date.parse(x + "T00:00:00Z"));
+    parts.push(p.from === p.to ? `${esc(p.name)} ${d(p.from)}` : `${esc(p.name)} ${d(p.from)} – ${d(p.to)}`);
+  }
+  return parts.join(", ");
 }
 
 function renderStudents(m) {
@@ -190,8 +210,9 @@ function renderStudents(m) {
   $("ll-content").innerHTML = `
     <div class="legend-row">
       <span><span class="sw p1"></span>1 post</span><span><span class="sw p2"></span>2</span><span><span class="sw p3"></span>3+</span>
-      <span><span class="sw miss"></span>gemist</span><span><span class="sw future"></span>nog niet</span>
+      <span><span class="sw miss"></span>gemist</span><span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
       <span>Dagen volgens Nederlandse tijd. Vandaag telt nog niet als gemist.</span>
+      ${offDaysText(m.cfg) ? `<span>Vrij (posten mag, hoeft niet; telt wel mee voor de reeks, overslaan breekt de reeks niet): ${offDaysText(m.cfg)}.</span>` : ""}
     </div>
     <div class="table-wrap">
       <table class="heat">
@@ -201,7 +222,7 @@ function renderStudents(m) {
             <td class="name">${nameCell(s)} <span class="meta">@${esc(s.handle)}</span></td>
             ${days.map((d) => {
               const n = s.stats.perDay.get(d) || 0;
-              return `<td class="day ${dayCellClass(s, d, today)}" title="${dayLabel(d)}: ${n} post${n === 1 ? "" : "s"}">${n > 1 ? n : ""}</td>`;
+              return `<td class="day ${dayCellClass(s, d, today, m.cfg)}" title="${dayTitle(m.cfg, d, n)}">${n > 1 ? n : ""}</td>`;
             }).join("")}
             <td class="num"><strong>${s.stats.streak}</strong></td>
             <td class="num">${s.stats.missedDays}</td>
@@ -228,7 +249,7 @@ function renderStudent(m, handle) {
   const lead = (new Date(days[0] + "T00:00:00Z").getUTCDay() + 6) % 7;
   const cells = [...Array(lead).fill(`<div class="d out"></div>`), ...days.map((d) => {
     const n = st.perDay.get(d) || 0;
-    return `<div class="d ${dayCellClass(s, d, today)}" title="${dayLabel(d)}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${d > today ? "" : n}</b></div>`;
+    return `<div class="d ${dayCellClass(s, d, today, m.cfg)}" title="${dayTitle(m.cfg, d, n)}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${d > today ? "" : n}</b></div>`;
   })];
   const posts = [...s.posts].sort((a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0));
   box.innerHTML = `
@@ -242,7 +263,7 @@ function renderStudent(m, handle) {
       ${tile("Positie", s.rank, `van ${m.students.length}`)}
       ${tile("Weergaven", fmt(s.views), s.gain == null ? "" : `${signed(s.gain)} in 24 uur`)}
       ${tile("Posts", fmt(st.posts), `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}`)}
-      ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren")}
+      ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren, zonder vrije dagen")}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
       ${tile("Gem. weergaven/post", fmt(st.avgViews))}
       ${tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven")}

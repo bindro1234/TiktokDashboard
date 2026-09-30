@@ -65,6 +65,36 @@ class Campaign:
 
 
 @dataclass(frozen=True)
+class OffPeriod:
+    name: str
+    start: dt.date
+    end: dt.date
+
+
+@dataclass(frozen=True)
+class OffDays:
+    """Days on which posting is optional (only used by the private site's streaks and warnings)."""
+    weekends: bool = False
+    periods: tuple[OffPeriod, ...] = ()
+
+    def contains(self, day: dt.date) -> bool:
+        if self.weekends and day.weekday() >= 5:
+            return True
+        return any(p.start <= day <= p.end for p in self.periods)
+
+
+def _off_days(raw: dict | None) -> OffDays:
+    raw = raw or {}
+    periods = []
+    for p in raw.get("periods") or []:
+        start, end = _date(p["from"]), _date(p["to"])
+        if end < start:
+            raise ValueError(f"campaign.off_days: {p.get('name')!r} ends before it starts")
+        periods.append(OffPeriod(str(p.get("name") or "vrij"), start, end))
+    return OffDays(weekends=bool(raw.get("weekends", False)), periods=tuple(periods))
+
+
+@dataclass(frozen=True)
 class FinaleSettings:
     """Manual finale (started on the private site): runs every `every_minutes` until the deadline,
     at most `max_hours` long. The state itself lives in the private sheet (tab finale)."""
@@ -94,6 +124,7 @@ class Config:
     force_min_minutes: int
     skip_recent_minutes: int
     finale: FinaleSettings = FinaleSettings()
+    off_days: OffDays = OffDays()
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -139,4 +170,5 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
             max_hours=int((raw.get("finale") or {}).get("max_hours", 8)),
             remind_days_before_end=int((raw.get("finale") or {}).get("remind_days_before_end", 3)),
         ),
+        off_days=_off_days(camp.get("off_days")),
     )

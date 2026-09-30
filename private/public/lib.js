@@ -257,8 +257,26 @@ export function budget(cfg, runLog, activeCount, nowMs) {
 // ---------- per student statistics ----------
 
 /**
+ * Free day (config.yaml campaign.off_days: weekends and holidays): posting is optional.
+ * A post still adds to the streak; no post never breaks it, isn't missed and isn't warned about.
+ */
+export function isOffDay(cfg, day) {
+  const off = cfg.offDays || {};
+  if (off.weekends && [0, 6].includes(new Date(day + "T00:00:00Z").getUTCDay())) return true;
+  return (off.periods || []).some((p) => day >= p.from && day <= p.to);
+}
+
+/** The holiday a day falls in (name), or "weekend", or null. */
+export function offDayName(cfg, day) {
+  const p = (cfg.offDays?.periods || []).find((x) => day >= x.from && day <= x.to);
+  if (p) return p.name;
+  return isOffDay(cfg, day) ? "weekend" : null;
+}
+
+/**
  * Posts of one account (campaign posts from posts_latest) -> calendar and grading numbers.
- * Days are Amsterdam dates. Today is never counted as missed (the day isn't over).
+ * Days are Amsterdam dates. Today is never counted as missed (the day isn't over), and neither is
+ * a free day (isOffDay): a post on it extends the streak, no post simply doesn't count.
  */
 export function studentStats(posts, cfg, nowMs) {
   const days = campaignDays(cfg);
@@ -287,19 +305,28 @@ export function studentStats(posts, cfg, nowMs) {
     }
   }
   const past = days.filter((d) => d < today);
-  const missed = past.filter((d) => perDay.get(d) === 0);
-  // Current streak: consecutive days with a post up to today (or up to yesterday if nothing yet today).
+  const off = (day) => isOffDay(cfg, day);
+  const missed = past.filter((d) => perDay.get(d) === 0 && !off(d));
+  // Streak = days with a post, counted back from today (from the last campaign day once it is over).
+  // Only a missed day breaks it: nothing yet today and free days without a post are skipped.
   let streak = 0;
-  let d = perDay.get(today) ? today : addDays(today, -1);
-  while (perDay.has(d) && perDay.get(d) > 0) { streak++; d = addDays(d, -1); }
+  for (let d = today < days.at(-1) ? today : days.at(-1); perDay.has(d); d = addDays(d, -1)) {
+    if (perDay.get(d) > 0) streak++;
+    else if (d < today && !off(d)) break;
+  }
   let longest = 0, run = 0;
   for (const day of days) {
     if (day > today) break;
-    run = perDay.get(day) > 0 ? run + 1 : 0;
+    if (perDay.get(day) > 0) run++;
+    else if (day < today && !off(day)) run = 0;
     longest = Math.max(longest, run);
   }
   const lastDay = last !== null ? localDay(last) : null;
   const campaignStarted = today >= cfg.campaign.start;
+  // Days without a post since the last one (or since the start), up to and including today,
+  // leaving out free days. Drives the "geen post" warning.
+  const quietDays = !campaignStarted ? null
+    : days.filter((d) => d <= today && (lastDay ? d > lastDay : true) && !off(d)).length;
   return {
     perDay, today,
     posts: counted.length,
@@ -310,6 +337,7 @@ export function studentStats(posts, cfg, nowMs) {
     avgViews: counted.length ? Math.round(views / counted.length) : null,
     engagement: views ? (likes + comments + shares) / views : null,
     best, last, lastDay,
+    quietDays,
     daysSinceLast: !campaignStarted ? null : lastDay ? dayDiff(today, lastDay) : dayDiff(today, cfg.campaign.start),
     missing,
     tags: [...tags].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),

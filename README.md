@@ -159,8 +159,8 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 
 | Tabblad | Wat |
 |---|---|
-| **Overzicht** | alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer), *video verdwenen*. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
-| **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / nog niet, met reeks en gemiste dagen. Klik voor details: gemiste dagen, huidige en langste reeks, gem. weergaven per post, beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts |
+| **Overzicht** | alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen*. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
+| **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks en gemiste dagen (zie *Vrije dagen* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, gem. weergaven per post, beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts |
 | **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam |
 | **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
@@ -168,6 +168,16 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 | **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).
+
+### Vrije dagen (weekenden en vakantie)
+
+Op vrije dagen hoeft niemand te posten. Ze staan in `config.yaml` onder `campaign.off_days`: nu alle **weekenden** en de **Herfstvakantie (ma 19 t/m vr 23 oktober)**.
+
+- **Wel gepost op een vrije dag:** telt gewoon mee (posts, weergaven) en verlengt de **reeks**.
+- **Niet gepost op een vrije dag:** geen *gemiste dag*, de reeks blijft staan, en de dag telt niet mee voor de waarschuwing *X dagen geen post*. Voorbeeld: vrijdag gepost, dan zaterdag t/m maandag niets = geen waarschuwing; pas als ook dinsdag voorbij is zonder post.
+- In de kalender zijn vrije dagen **grijs** (*vrij*); met een post krijgen ze gewoon de blauwe kleur. Met de muis erop staat waarom de dag vrij is.
+- Alleen de privé-site gebruikt dit (reeks, gemiste dagen, waarschuwingen, Export). Het ophalen van cijfers loopt op vrije dagen gewoon door.
+- Een extra vrije periode toevoegen: nog een regel onder `periods`, bijv. `- {name: Studiedag, from: 2026-10-09, to: 2026-10-09}`. Na de merge zet de deploy het vanzelf in de privé-site.
 
 ### Finale (laatste les)
 

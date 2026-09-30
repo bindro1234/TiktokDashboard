@@ -75,7 +75,7 @@ function api(req, body) {
   if (req.method === "GET" && req.url === "/api/data") {
     return [200, { me: "docent@school.nl", serverTime: NOW,
       config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
-        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale },
+        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays },
       finale, finaleHasRun,
       accounts, handles, history, posts, runLog, activity,
       budget: lib.budget(CFG, runLog, tracked.length, NOW), lastProfilesRun: lib.lastProfilesRun(runLog) }];
@@ -190,9 +190,14 @@ await page.waitForSelector(".heat tbody tr");
 const heatRows = await page.$$eval(".heat tbody tr", (r) => r.length);
 const missCells = await page.$$eval(".heat td.miss", (c) => c.length);
 const days = await page.$$eval(".heat thead th", (c) => c.length - 4);
-console.log(`leerlingen: ${heatRows} rows x ${days} days, ${missCells} missed cells`);
+// Free days (weekends, Herfstvakantie) are "vrij", never "gemist"; the first column is Monday 28 Sep.
+const offMissed = await page.$$eval(".heat tbody tr", (rows) => rows.flatMap((r) =>
+  [...r.querySelectorAll("td.day")].filter((c, i) => [5, 6].includes(i % 7) && c.classList.contains("miss"))).length);
+const offCells = await page.$$eval(".heat td.off", (c) => c.length);
+console.log(`leerlingen: ${heatRows} rows x ${days} days, ${missCells} missed cells, ${offCells} free-day cells`);
 if (heatRows !== tracked.length || days !== lib.campaignDays(CFG).length) fail("leerlingen: heatmap has the wrong size");
 if (!missCells) fail("leerlingen: no missed days marked");
+if (!offCells || offMissed) fail(`leerlingen: free days wrong (${offCells} vrij, ${offMissed} weekend cells marked gemist)`);
 await page.click(".heat tbody tr:first-child");
 await page.waitForSelector(".cal");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });

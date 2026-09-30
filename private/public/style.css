@@ -44,11 +44,11 @@
 }
 
 /* Heatmap steps (posts per day) and warning tints, per theme. */
-:root { --h1: #a9c9f0; --h2: #5d9ae3; --h3: #1f5fb3; --miss: #f6d6d6; --warn-bg: #fff4d6; }
+:root { --h1: #a9c9f0; --h2: #5d9ae3; --h3: #1f5fb3; --miss: #f6d6d6; --off: #dcdad3; --warn-bg: #fff4d6; }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) { --h1: #24466f; --h2: #2f68ad; --h3: #4b95ee; --miss: #4a2525; --warn-bg: #3a3017; }
+  :root:not([data-theme="light"]) { --h1: #24466f; --h2: #2f68ad; --h3: #4b95ee; --miss: #4a2525; --off: #3b3a36; --warn-bg: #3a3017; }
 }
-:root[data-theme="dark"] { --h1: #24466f; --h2: #2f68ad; --h3: #4b95ee; --miss: #4a2525; --warn-bg: #3a3017; }
+:root[data-theme="dark"] { --h1: #24466f; --h2: #2f68ad; --h3: #4b95ee; --miss: #4a2525; --off: #3b3a36; --warn-bg: #3a3017; }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -146,6 +146,8 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .heat td.p3 { background: var(--h3); color: #fff; }
 .heat td.miss { background: var(--miss); }
 .heat td.future { background: transparent; border: 1px dashed var(--border); }
+.heat td.off:not(.p1):not(.p2):not(.p3) { background: var(--off); }
+.heat td.future.off { background: var(--off); opacity: 0.45; }
 .heat td.today { outline: 2px solid var(--text); outline-offset: -1px; }
 .heat th.wk { border-left: 1px solid var(--border); }
 .heat tr.link { cursor: pointer; }
@@ -154,7 +156,7 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .legend-row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 10px 0; font-size: 0.85rem; color: var(--text-2); }
 .legend-row .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; background: var(--surface-2); }
 .legend-row .sw.p1 { background: var(--h1); } .legend-row .sw.p2 { background: var(--h2); } .legend-row .sw.p3 { background: var(--h3); }
-.legend-row .sw.miss { background: var(--miss); } .legend-row .sw.future { background: transparent; border: 1px dashed var(--border); }
+.legend-row .sw.miss { background: var(--miss); } .legend-row .sw.off { background: var(--off); } .legend-row .sw.future { background: transparent; border: 1px dashed var(--border); }
 
 /* Student detail: week calendar */
 .detail-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-bottom: 12px; }
@@ -167,6 +169,8 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .cal .d.p1 { background: var(--h1); } .cal .d.p2 { background: var(--h2); color: #fff; } .cal .d.p3 { background: var(--h3); color: #fff; }
 .cal .d.miss { background: var(--miss); }
 .cal .d.future { background: transparent; border: 1px dashed var(--border); color: var(--muted); }
+.cal .d.off:not(.p1):not(.p2):not(.p3):not(.future) { background: var(--off); color: var(--text-2); }
+.cal .d.future.off { background: var(--off); opacity: 0.55; }
 .cal .d.out { visibility: hidden; }
 .cal .d.today { outline: 2px solid var(--text); outline-offset: -2px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
