@@ -18,14 +18,14 @@ on:
       command:
         description: "What to run"
         type: choice
-        options: [auto, profiles, refresh, check, status, setup]
+        options: [auto, profiles, refresh, check, today, status, setup]
         default: status
       dry_run:
         description: "Dry run (no scraping, only log expected records)"
         type: boolean
         default: true
       handles:
-        description: "check only: comma separated handles (empty = accounts with most videos)"
+        description: "check: comma separated handles (empty = accounts with most videos); today: the handles to check (Vandaag tab)"
         type: string
         default: ""
 

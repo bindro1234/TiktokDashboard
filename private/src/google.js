@@ -98,12 +98,12 @@ export class Sheets {
     });
   }
 
-  /** Create a tab with a header row if it does not exist yet. */
-  async ensureTab(id, tab, header) {
+  /** Create a tab with a header row if it does not exist yet (with a fixed tab id when given). */
+  async ensureTab(id, tab, header, sheetId = null) {
     const meta = await this.call(id, "GET", "", { params: { fields: "sheets.properties.title" } });
     if ((meta.sheets || []).some((s) => s.properties.title === tab)) return;
     await this.call(id, "POST", ":batchUpdate", { body: { requests: [
-      { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 } } } },
+      { addSheet: { properties: { title: tab, gridProperties: { frozenRowCount: 1 }, ...(sheetId != null ? { sheetId } : {}) } } },
     ] } });
     await this.update(id, tab, "A1", [header]);
   }

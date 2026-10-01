@@ -9,8 +9,8 @@ timezone: Europe/Amsterdam
 
 campaign:
   start_date: 2026-09-28     # first day a new post counts (inclusive)
-  end_date: 2026-10-26       # last day a new post counts (inclusive)
-  collect_until: 2026-10-26  # scheduled runs stop after this day
+  end_date: 2026-10-30       # last day a new post counts (inclusive)
+  collect_until: 2026-10-30  # scheduled runs stop after this day
   # Free days: posting is optional. A post on a free day still adds to the streak; no post
   # never breaks the streak, is not a missed day and does not count for the "geen post"
   # warning. Collection itself runs as normal on these days.
@@ -33,11 +33,11 @@ brightdata:
 
 budget:
   # Hard cap on Bright Data records per calendar month (free records renew on the 1st;
-  # above 5,000 it is pay as you go). October at 12 runs a day: ≈13,300-13,800 records with
-  # 40 accounts, ≈15,000-15,600 with 45, plus up to ≈1,260 for an 8-hour finale. The weekly
-  # refreshes of 16 and 23 Oct reserve the month's remaining profile runs first, so they
-  # need ~17,000 here with more than ~42 accounts; 17,500 leaves room for that and a finale.
-  monthly_cap: 17500
+  # above 5,000 it is pay as you go). October, campaign until 30 Oct, with 48 accounts:
+  # ≈17,300 for profile runs (30 days x 12 runs), a refresh reserve of ≈1,920 (48 x 40) and
+  # ≈1,350 for an 8-hour finale: ≈20,500. 23,000 leaves room for "Controleer nu" checks
+  # (Vandaag tab). Refreshes and checks also reserve the month's remaining profile runs.
+  monthly_cap: 23000
 
 schedule:
   # A window that failed is retried by the next cron firing, at most this many times.
@@ -94,6 +94,27 @@ window_check:
   date: 2026-10-05
   accounts: 4
   num_of_posts: 40
+
+today_check:
+  # Vandaag tab on the private site, button "Controleer nu": a profiles run for only the active,
+  # non-private accounts that have not posted yet today (1 record per account). Its own run type
+  # (today_check), so it never makes a scheduled run skip itself. Respects the monthly cap
+  # (keeping the month's remaining profile runs reserved) and waits this long between checks.
+  cooldown_minutes: 10
+
+signals:
+  # Opvallend tab (private site only): videos and accounts worth a look. Never says "bot";
+  # every flag shows the numbers behind it. Computed in the browser from posts_latest,
+  # post_history and history; nothing is written anywhere.
+  min_views: 1000                  # smaller videos are never flagged
+  like_ratio_factor: 3             # likes per view 3x below or above the class median
+  step_share: 0.6                  # 60%+ of a video's views arrived in one step...
+  step_max_hours: 2.5              # ...of at most this long (one or two runs apart)...
+  flat_hours: 6                    # ...and in the 6 hours after it...
+  flat_share: 0.1                  # ...it grew by less than 10% of that step
+  zero_engagement_min_views: 5000  # this many views and not a single comment or share
+  follower_jump_min: 100           # followers gained between two runs...
+  follower_jump_factor: 5          # ...with 5x fewer new views per new follower than the class median
 
 force_refresh:
   # "Nu verversen" workflow: an extra profiles run on demand. Refused (and logged)

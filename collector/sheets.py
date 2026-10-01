@@ -64,19 +64,22 @@ class Spreadsheet:
         meta = self._call("GET", params={"fields": "sheets.properties(sheetId,title)"})
         return {s["properties"]["title"]: s["properties"]["sheetId"] for s in meta.get("sheets", [])}
 
-    def ensure_tabs(self, schema: dict[str, list[str]]) -> dict[str, int]:
-        """Create missing tabs, write header rows into empty tabs, freeze the header row."""
+    def ensure_tabs(self, schema: dict[str, list[str]], sheet_ids: dict[str, int] | None = None) -> dict[str, int]:
+        """Create missing tabs, write header rows into empty tabs, freeze the header row.
+        sheet_ids: tabs that must get a fixed tab id (gid) when they are created."""
+        sheet_ids = sheet_ids or {}
         existing = self.tabs()
         requests_ = []
         missing = [t for t in schema if t not in existing]
         # A brand-new spreadsheet has one empty "Sheet1": reuse it for the first missing tab.
-        if missing and "Sheet1" in existing and not self._values("Sheet1"):
+        if missing and missing[0] not in sheet_ids and "Sheet1" in existing and not self._values("Sheet1"):
             requests_.append({"updateSheetProperties": {
                 "properties": {"sheetId": existing["Sheet1"], "title": missing[0]},
                 "fields": "title"}})
             existing[missing.pop(0)] = existing.pop("Sheet1")
         for tab in missing:
-            requests_.append({"addSheet": {"properties": {"title": tab}}})
+            props = {"title": tab, **({"sheetId": sheet_ids[tab]} if tab in sheet_ids else {})}
+            requests_.append({"addSheet": {"properties": props}})
         if requests_:
             self._call("POST", ":batchUpdate", json={"requests": requests_})
             existing = self.tabs()

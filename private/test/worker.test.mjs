@@ -6,6 +6,7 @@ import { handle, runSchedule } from "../src/worker.js";
 import { resetCertCache } from "../src/access.js";
 import { resetTokenCache } from "../src/google.js";
 import CONFIG from "../src/config.json" with { type: "json" };
+import * as lib from "../public/lib.js";
 
 const TEAM = "https://example-team.cloudflareaccess.com";
 const AUD = "test-aud-123";
@@ -174,7 +175,8 @@ test("fetch is never called as a method (Illegal invocation on Workers)", async 
   };
   // Sheets (Google login + reads + activity log write), GitHub (runs, dispatch) and a sheet write.
   for (const [path, opts] of [["/api/data"], ["/api/runs"], ["/api/refresh", { body: {} }],
-    ["/api/accounts", { body: { name: "Eva", handle: "eva.e" } }]]) {
+    ["/api/accounts", { body: { name: "Eva", handle: "eva.e" } }], ["/api/outliers", { body: { handle: "anna_1", on: true } }],
+    ["/api/tasks", { body: { action: "add", date: CONFIG.campaign.start, min: 2 } }], ["/api/today/check", { body: {} }]]) {
     const res = await run(path, opts);
     assert.equal(res.status, 200, `${path}: ${await res.clone().text()}`);
   }
@@ -355,4 +357,84 @@ test("timer: during a finale it starts a run every 15 minutes, also outside the 
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 70 * 60e3)).action, "windows already done");
   // After the deadline (17:05 Amsterdam, an odd hour): back to the 2-hourly windows, none open now.
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 185 * 60e3)).action, "no window open");
+});
+
+// ---------- buiten schaal, dagopdrachten, Vandaag ----------
+
+test("buiten schaal: one row per handle in the public outliers tab (fixed tab id), logged", async () => {
+  let res = await req("/api/outliers", { body: { handle: "@Anna_1", on: true } });
+  assert.equal(res.status, 200, await res.clone().text());
+  const add = calls.find((c) => c.url.includes(":batchUpdate") && c.body.includes('"outliers"'));
+  assert.equal(JSON.parse(add.body).requests[0].addSheet.properties.sheetId, CONFIG.fixedGids.outliers);
+  assert.deepEqual(sheets.outliers[0], ["handle", "buiten_schaal", "updated_at"]);
+  assert.deepEqual(sheets.outliers[1].slice(0, 2), ["anna_1", "ja"]);
+  assert.deepEqual((await (await req("/api/data")).json()).outliers, ["anna_1"]);
+  res = await req("/api/outliers", { body: { handle: "anna_1", on: false } });
+  assert.equal(res.status, 200);
+  assert.equal(sheets.outliers.length, 2, "updated in place, never a second row");
+  assert.equal(sheets.outliers[1][1], "nee");
+  assert.deepEqual((await (await req("/api/data")).json()).outliers, []);
+  assert.equal((await req("/api/outliers", { body: { handle: "bram.b", on: true } })).status, 409); // inactive
+  assert.ok(sheets.activity_log.some((r) => r[2] === "buiten schaal aan" && r[3] === "@anna_1"));
+  assert.ok(!JSON.stringify(sheets.outliers).includes("Anna"), "handles only in the public sheet");
+});
+
+test("dagopdrachten: add, refuse bad input and doubles, edit, remove (never deleted), logged", async () => {
+  const day = CONFIG.campaign.start;
+  let res = await req("/api/tasks", { body: { action: "add", date: day, min: 3, label: "Kerstspecial" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.dagopdrachten[1].slice(0, 4), [day, 3, "Kerstspecial", "ja"]);
+  assert.equal((await req("/api/tasks", { body: { action: "add", date: day, min: 4 } })).status, 409);
+  assert.equal((await req("/api/tasks", { body: { action: "add", date: "2026-12-01", min: 4 } })).status, 400);
+  assert.equal((await req("/api/tasks", { body: { action: "add", date: lib.addDays(day, 1), min: 1 } })).status, 400);
+  let d = await (await req("/api/data")).json();
+  assert.deepEqual(d.tasks.map((t) => [t.date, t.min, t.label]), [[day, 3, "Kerstspecial"]]);
+  res = await req("/api/tasks", { body: { action: "edit", row: 2, was: day, date: day, min: 5, label: "" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(sheets.dagopdrachten[1][1], 5);
+  assert.equal((await req("/api/tasks", { body: { action: "remove", row: 2, was: "2026-10-01" } })).status, 409); // stale
+  res = await req("/api/tasks", { body: { action: "remove", row: 2, was: day } });
+  assert.equal(res.status, 200);
+  assert.equal(sheets.dagopdrachten.length, 2, "row kept");
+  assert.equal(sheets.dagopdrachten[1][3], "nee");
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.tasks, []);
+  for (const a of ["dagopdracht toegevoegd", "dagopdracht gewijzigd", "dagopdracht verwijderd"]) {
+    assert.ok(sheets.activity_log.some((r) => r[2] === a), a);
+  }
+});
+
+test("Controleer nu: only accounts not done today, cooldown, busy collector and budget", async () => {
+  const now = new Date().toISOString();
+  sheets.accounts.push(["Dewi", "dewi", "ja"], ["Eva", "eva", "ja"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"], ["dewi", true, 1, "", "privé"], ["eva", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"], ["1", "anna_1", now, 5], ["2", "eva", "2026-09-29T10:00:00Z", 5]];
+  // Busy: a collection is running.
+  sheets._runs = [{ status: "in_progress" }];
+  let res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /loopt al/);
+  sheets._runs = [{ status: "completed" }];
+  res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal((await res.json()).count, 2);
+  const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+  // anna_1 posted today, dewi is private: chris and eva are checked. Handles only, never names.
+  assert.deepEqual(JSON.parse(dispatch.body), { ref: "main", inputs: { command: "today", dry_run: "false", handles: "chris,eva" } });
+  assert.ok(sheets.activity_log.some((r) => r[2] === "vandaag gecontroleerd" && r[3].startsWith("2 accounts")));
+  // Cooldown from the activity log entry.
+  res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /weer over 10 min/);
+  // /api/data reports the last check for the page.
+  assert.ok((await (await req("/api/data")).json()).lastTodayCheck > Date.now() - 60e3);
+});
+
+test("Controleer nu: refused when it would not fit in the monthly budget", async () => {
+  sheets.run_log.push([new Date().toISOString(), "profiles", "big", false, 1, CONFIG.budget.monthlyCap, 0, "ok", "sd_x", ""]);
+  sheets._runs = [{ status: "completed" }];
+  const res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /budget/);
+  assert.ok(!calls.some((c) => c.url.includes("dispatches")));
 });

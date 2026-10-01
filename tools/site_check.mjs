@@ -20,7 +20,12 @@ const expected = {
   posts: ["video_id", "handle", "created_at", "views"],
   post_history: ["video_id", "handle", "timestamp", "views", "likes"],
   finale: ["started_at", "deadline", "status", "ended_at"],
+  outliers: ["handle", "buiten_schaal"],
 };
+// Created by the first collector run after it was added (or the first "buiten schaal" switch);
+// until then the site simply has no outliers.
+const optional = new Set(["outliers"]);
+const missingTabs = new Set();
 
 let failed = false;
 const fail = (msg) => { failed = true; console.log(`FAIL ${msg}`); };
@@ -40,6 +45,12 @@ for (const [tab, cols] of Object.entries(expected)) {
   const type = res.headers.get("content-type");
   console.log(`${tab}: HTTP ${res.status}, type=${type}, CORS=${cors}, data rows=${Math.max(0, lines.length - 1)}`
     + (tab === "posts" ? `, hashtags column=${header.includes("hashtags")}` : ""));
+  // (Google may also answer an unknown gid with another tab's CSV: then the columns don't match.)
+  if (optional.has(tab) && (!res.ok || !cols.every((c) => header.includes(c)))) {
+    console.log(`${tab}: not created yet (fine: no account marked)`);
+    missingTabs.add(tab);
+    continue;
+  }
   if (!res.ok) fail(`${tab}: HTTP ${res.status}`);
   else if (text.trimStart().startsWith("<")) fail(`${tab}: got HTML instead of CSV (not published?)`);
   else if (!cols.every((c) => header.includes(c))) fail(`${tab}: header is [${header.join(", ")}]`);
@@ -50,7 +61,9 @@ const browser = await chromium.launch();
 const page = await browser.newPage();
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
-page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+// A tab that doesn't exist yet answers 400; the site handles that, but Chrome still logs it.
+const expectedError = (text) => missingTabs.size > 0 && /Failed to load resource.*\b400\b/.test(text);
+page.on("console", (m) => m.type() === "error" && !expectedError(m.text()) && errors.push(m.text()));
 
 for (const hash of ["#stand", "#grafiek", "#groei"]) {
   await page.goto(siteUrl + hash, { waitUntil: "networkidle" });
@@ -129,7 +142,7 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   const pp = await browser.newPage({ viewport: { width: w, height: h } });
   const perrors = [];
   pp.on("pageerror", (e) => perrors.push(e.message));
-  pp.on("console", (m) => m.type() === "error" && perrors.push(m.text()));
+  pp.on("console", (m) => m.type() === "error" && !expectedError(m.text()) && perrors.push(m.text()));
   await pp.goto(`${siteUrl}?present&sec=2`, { waitUntil: "networkidle" });
   await pp.waitForSelector("#p-stage[data-kind]", { timeout: 30000 });
   const count = await pp.$$eval("#p-dots button", (s) => s.length);

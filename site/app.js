@@ -131,6 +131,21 @@ async function fetchCsv(tab) {
   return Papa.parse(text, { header: true, skipEmptyLines: true }).data;
 }
 
+// "Buiten schaal" (public tab outliers, handles only): accounts left out of the chart scales.
+// Missing tab (nobody marked yet) means none.
+async function fetchOutliers() {
+  if (!(CFG.csvUrls && CFG.csvUrls.outliers) && !(CFG.gids && CFG.gids.outliers != null)) return [];
+  try {
+    return await fetchCsv("outliers");
+  } catch {
+    return [];
+  }
+}
+function outliersFromRows(rows) {
+  return new Set((rows || []).filter((r) => isTrue(r.buiten_schaal))
+    .map((r) => String(r.handle || "").trim().toLowerCase().replace(/^@/, "")).filter(Boolean));
+}
+
 // The small public finale tab; missing (not linked yet, or never started) means no finale.
 async function fetchFinale() {
   if (!(CFG.csvUrls && CFG.csvUrls.finale) && !(CFG.gids && CFG.gids.finale != null)) return [];
@@ -141,7 +156,7 @@ async function fetchFinale() {
   }
 }
 
-function build(handleRows, historyRows, postRows, labels = {}) {
+function build(handleRows, historyRows, postRows, labels = {}, outliers = new Set()) {
   // After the deadline everything is frozen at the last run before it (Eindstand).
   const final = finalePhase() === "after";
   const cutoff = final ? FINALE.end : Infinity;
@@ -179,7 +194,7 @@ function build(handleRows, historyRows, postRows, labels = {}) {
       tags: String(r.hashtags || "").toLowerCase().split(/\s+/).filter(Boolean),
     });
   }
-  return { accounts, series, posts, latest, labels, final, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
+  return { accounts, series, posts, latest, labels, final, outliers, standings: standings(accounts, series, latest), tags: hashtagStats(posts) };
 }
 
 // Per hashtag: campaign posts using it, accounts, and total views/likes of those posts.
@@ -237,11 +252,12 @@ async function load() {
     // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
     const src = CFG.source
       ? await CFG.source()
-      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale()])
-        .then(([handles, history, posts, finaleRows]) => ({ handles, history, posts, finaleRows }));
+      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale(), fetchOutliers()])
+        .then(([handles, history, posts, finaleRows, outlierRows]) => ({ handles, history, posts, finaleRows, outlierRows }));
     FINALE = "finale" in src ? (src.finale ? { start: src.finale.start, end: src.finale.end } : null)
       : finaleFromRows(src.finaleRows);
-    state.data = build(src.handles, src.history, src.posts, src.labels);
+    const outliers = src.outliers ? new Set(src.outliers) : outliersFromRows(src.outlierRows);
+    state.data = build(src.handles, src.history, src.posts, src.labels, outliers);
     if (IS_PRESENT) {
       Present.update(state.data);
       return;
@@ -334,13 +350,15 @@ function renderVideos() {
   }
   const hours = Number(state.videoRange);
   const rows = fastestVideos(hours).filter((x) => x.gain > 0).slice(0, VIDEOS_SHOWN);
-  const max = Math.max(1, ...rows.map((x) => x.gain));
+  // Bars scale without "buiten schaal" accounts (theirs is capped at full width).
+  const scaled = rows.filter((x) => !state.data.outliers.has(x.handle));
+  const max = Math.max(1, ...(scaled.length ? scaled : rows).map((x) => x.gain));
   meta.textContent = `Weergaven erbij in de laatste ${VIDEO_RANGES[hours]} tot ${state.data.latest ? stampFmt.format(state.data.latest) : "nu"}`;
   body.innerHTML = rows.map((x, i) => `
     <tr tabindex="0" data-handle="${esc(x.handle)}">
       <td class="rank num">${i + 1}</td>
       <td class="handle">@${esc(x.handle)}${x.post.type && x.post.type !== "video" ? ` <span class="badge pinned">${esc(x.post.type)}</span>` : ""}</td>
-      <td class="num views bar-cell"><span class="cell-bar" style="--w:${(x.gain / max) * 100}%"></span>${signed(x.gain)}</td>
+      <td class="num views bar-cell"><span class="cell-bar${x.gain > max ? " out" : ""}" style="--w:${Math.min(1, x.gain / max) * 100}%"></span>${x.gain > max ? `<span class="out-mark" title="Buiten schaal">▲</span> ` : ""}${signed(x.gain)}</td>
       <td class="num opt">${fmt(x.post.views)}</td>
       <td class="opt2">${Number.isFinite(x.post.created) ? postDateFmt.format(x.post.created) : "–"}</td>
       <td><a href="https://www.tiktok.com/@${encodeURIComponent(x.handle)}/video/${esc(x.post.id)}" target="_blank" rel="noopener">open ↗</a></td>
@@ -403,9 +421,11 @@ const colorOf = (handle) => cssVar(`--s${state.slotOf.get(handle)}`);
 // Legend above the chart: the selected accounts with their colour (click to remove).
 function renderLegend(containerId) {
   const box = document.getElementById(containerId);
+  const out = state.data.outliers;
   box.innerHTML = state.selected.map((h) =>
     `<button type="button" class="chip" aria-pressed="true" data-handle="${esc(h)}" title="Klik om te verbergen">` +
-    `<span class="dot" style="background:${colorOf(h)}"></span>@${esc(h)}</button>`).join("")
+    `<span class="dot" style="background:${out.has(h) ? cssVar("--muted") : colorOf(h)}"></span>@${esc(h)}` +
+    `${out.has(h) ? ` <span class="out-mark" title="Buiten de schaal van de grafiek: staat als ▲ bovenaan met het echte getal">▲ buiten schaal</span>` : ""}</button>`).join("")
     || `<span class="limit">Kies hieronder accounts om te vergelijken.</span>`;
   for (const b of box.querySelectorAll("button")) {
     b.addEventListener("click", () => { deselect(b.dataset.handle); render(); });
@@ -422,7 +442,8 @@ function renderChips(containerId) {
     b.type = "button";
     b.className = "chip";
     b.setAttribute("aria-pressed", String(on));
-    b.innerHTML = `<span class="dot"${on ? ` style="background:${colorOf(r.handle)}"` : ""}></span>@${esc(r.handle)}`;
+    const dot = state.data.outliers.has(r.handle) ? cssVar("--muted") : colorOf(r.handle);
+    b.innerHTML = `<span class="dot"${on ? ` style="background:${dot}"` : ""}></span>@${esc(r.handle)}`;
     b.addEventListener("click", () => {
       if (on) deselect(r.handle);
       else if (!select(r.handle)) {
@@ -530,6 +551,67 @@ const endLabels = {
   },
 };
 
+// "Buiten schaal": a marked account must not stretch the y-axis of a chart with other accounts.
+// Its values above the highest value of the others are left out of its line (so the axis scales on
+// the rest) and shown as a grey ▲ at the top edge with its handle and real number. Rank, tables and
+// the podium are not affected. Datasets carry their handle in `handle`.
+function applyOutliers(datasets) {
+  const out = state.data.outliers;
+  if (!out || !out.size) return datasets;
+  const val = (p) => (p && typeof p === "object" ? p.y : p);
+  const isOut = (ds) => ds.handle && out.has(ds.handle);
+  const cap = Math.max(0, ...datasets.filter((d) => !isOut(d)).flatMap((d) => d.data.map(val).filter((v) => v != null)));
+  if (!cap) return datasets; // nothing else on this chart to scale on
+  let n = 0;
+  for (const ds of datasets.filter(isOut)) {
+    let last = null;
+    ds.data.forEach((p, i) => { if (val(p) != null) last = { x: p && typeof p === "object" ? p.x : i, v: val(p) }; });
+    if (!last || !ds.data.some((p) => val(p) > cap)) continue;
+    ds.data = ds.data.map((p) => (val(p) > cap ? (p && typeof p === "object" ? { x: p.x, y: null } : null) : p));
+    Object.assign(ds, { outlierMark: { x: last.x, value: last.v, slot: n++ }, endLabel: false, borderDash: [6, 4],
+      borderColor: cssVar("--muted"), backgroundColor: cssVar("--muted"), spanGaps: false });
+  }
+  return datasets;
+}
+
+// Room above the plot for the ▲ markers, so they never sit on top of the lines or end labels.
+const markSize = () => Math.max(11, Math.round((Chart.defaults.font.size || 12) * 0.95));
+function outlierPadding(opts, datasets) {
+  const n = datasets.filter((d) => d.outlierMark).length;
+  if (n) opts.layout = { ...(opts.layout || {}), padding: { ...((opts.layout || {}).padding || {}), top: n * (markSize() + 8) + 4 } };
+  return opts;
+}
+
+// Draws the ▲ markers of applyOutliers at the top edge of the chart.
+const outlierMarks = {
+  id: "outlierMarks",
+  afterDatasetsDraw(chart) {
+    const marks = chart.data.datasets.filter((d) => d.outlierMark);
+    if (!marks.length) return;
+    const { ctx, chartArea: a, scales } = chart;
+    const size = markSize();
+    ctx.save();
+    ctx.font = `700 ${size}px system-ui, sans-serif`;
+    ctx.fillStyle = cssVar("--muted");
+    ctx.textBaseline = "middle";
+    for (const d of marks) {
+      const m = d.outlierMark;
+      let x = scales.x.getPixelForValue(m.x);
+      if (!Number.isFinite(x)) x = a.right;
+      x = Math.min(a.right - 6, Math.max(a.left + 6, x));
+      const y = a.top - (marks.length - m.slot) * (size + 8) + size / 2;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 6); ctx.lineTo(x + 6, y + 5); ctx.lineTo(x - 6, y + 5); ctx.closePath();
+      ctx.fill();
+      const text = `${d.label} ${fmt(m.value)} (buiten schaal)`;
+      const w = ctx.measureText(text).width;
+      ctx.textAlign = x - 10 - w > a.left ? "right" : "left";
+      ctx.fillText(text, ctx.textAlign === "right" ? x - 10 : x + 10, y);
+    }
+    ctx.restore();
+  },
+};
+
 function drawChart(id, config) {
   if (state.charts[id]) state.charts[id].destroy();
   const canvas = document.getElementById(id);
@@ -556,13 +638,15 @@ function renderMainChart() {
       const ds = lineDataset("@" + r.handle, points(r.handle, m.key, min), cssVar("--other"), false);
       ds.borderWidth = 1;
       ds.pointHoverRadius = 0;
+      ds.handle = r.handle;
       datasets.push(ds);
     }
   }
-  for (const h of state.selected) datasets.push(lineDataset("@" + h, points(h, m.key, min), colorOf(h), true));
-  const opts = timeAxis(baseOptions(m.label), min, state.data.latest || null);
+  for (const h of state.selected) datasets.push({ ...lineDataset("@" + h, points(h, m.key, min), colorOf(h), true), handle: h });
+  applyOutliers(datasets);
+  const opts = outlierPadding(timeAxis(baseOptions(m.label), min, state.data.latest || null), datasets);
   if (min != null) opts.scales.y.beginAtZero = false; // zoomed in: show the change, not the zero line
-  drawChart("chart-main", { type: "line", data: { datasets }, options: opts, plugins: [endLabels] });
+  drawChart("chart-main", { type: "line", data: { datasets }, options: opts, plugins: [endLabels, outlierMarks] });
 }
 
 // Points of one account; with `from`, only those in range (plus one before it, so the line starts at the edge).
@@ -603,12 +687,14 @@ function renderGrowth() {
       ? { label: "@" + h, data: keys.map((k) => g.get(k) ?? null), backgroundColor: colorOf(h), borderRadius: 4,
           borderSkipped: "start", borderColor: cssVar("--surface"), borderWidth: 1, maxBarThickness: 36 }
       : lineDataset("@" + h, keys.map((k) => g.get(k) ?? null), colorOf(h), true);
+    ds.handle = h;
     return ds;
   });
-  const opts = baseOptions(`${m.label} erbij`);
+  applyOutliers(datasets);
+  const opts = outlierPadding(baseOptions(`${m.label} erbij`), datasets);
   opts.scales.y.beginAtZero = true;
   if (!isBar) opts.spanGaps = true;
-  drawChart("chart-growth", { type: isBar ? "bar" : "line", data: { labels, datasets }, options: opts, plugins: [endLabels] });
+  drawChart("chart-growth", { type: isBar ? "bar" : "line", data: { labels, datasets }, options: opts, plugins: [endLabels, outlierMarks] });
 
   // Ranked table for the latest period.
   const lastKey = keys.at(-1);

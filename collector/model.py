@@ -25,9 +25,13 @@ SCHEMA_ADMIN = {
     # Finale started by hand on the private site; one row per finale, the last row counts.
     # status: active | stopped (ended early, Eindstand) | cancelled (no Eindstand).
     "finale": ["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"],
+    # Dagopdrachten (minimum number of posts on a day), managed on the private site's Beheer tab.
+    # Rows are never deleted: removing one sets active=nee.
+    "dagopdrachten": ["date", "min_posts", "label", "active", "updated_at", "updated_by"],
 }
 SCHEMA_DATA = {
-    "handles": ["handle", "is_private", "followers", "last_scraped", "last_status"],
+    # status_since: when last_status last changed between ok / privé / fout (shown as "since when").
+    "handles": ["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"],
     "profile_snapshots": ["timestamp", "handle", "followers", "following", "likes", "video_count", "is_private"],
     "posts_latest": ["video_id", "handle", "created_at", "views", "likes", "comments", "shares", "post_type",
                      "pinned", "first_seen", "last_seen", "source", "hashtags", "missing_since",
@@ -37,7 +41,12 @@ SCHEMA_DATA = {
     "post_history": ["video_id", "handle", "timestamp", "views", "likes"],
     # Public copy of the current finale (no names/emails), written by the private site.
     "finale": ["started_at", "deadline", "status", "ended_at"],
+    # "Buiten schaal": accounts left out of the chart scales (handles only), set on the private site.
+    "outliers": ["handle", "buiten_schaal", "updated_at"],
 }
+# Tabs created with a fixed tab id (gid), so the website can link to them before they exist
+# (site/config.js gids). The private Worker uses the same id when it creates the tab.
+FIXED_SHEET_IDS = {"outliers": 702500001}
 
 # run_log statuses that mean "this window is handled, don't run it again".
 DONE_STATUSES = {"ok", "partial", "refused", "skipped"}
@@ -424,7 +433,24 @@ def window_state(run_log: list[dict]) -> tuple[set[str], dict[str, int]]:
     return done, failures
 
 
+# Full profiles runs. "today_check" (Vandaag tab: only the accounts that have not posted yet
+# today) is left out on purpose: a partial check must never make a full run skip itself.
 PROFILE_RUN_TYPES = {"profiles", "force_refresh"}
+
+
+def status_kind(status) -> str:
+    """ok / privé / fout, from handles.last_status."""
+    text = str(status or "").strip()
+    return "fout" if text.startswith("fout") else "privé" if text == "privé" else "ok" if text == "ok" else ""
+
+
+def private_since(snapshots: list[dict], handle: str) -> str | None:
+    """Start of the account's current run of private snapshots (profile_snapshots), or None."""
+    since = None
+    rows = sorted((r for r in snapshots if str(r.get("handle")) == handle), key=lambda r: str(r.get("timestamp")))
+    for r in rows:
+        since = (since or str(r.get("timestamp"))) if truthy(r.get("is_private")) else None
+    return since
 
 
 def last_profiles_run(run_log: list[dict]) -> dt.datetime | None:

@@ -278,7 +278,7 @@ export function offDayName(cfg, day) {
  * Days are Amsterdam dates. Today is never counted as missed (the day isn't over), and neither is
  * a free day (isOffDay): a post on it extends the streak, no post simply doesn't count.
  */
-export function studentStats(posts, cfg, nowMs) {
+export function studentStats(posts, cfg, nowMs, assignments = []) {
   const days = campaignDays(cfg);
   const today = localDay(nowMs);
   const perDay = new Map(days.map((d) => [d, 0]));
@@ -327,6 +327,12 @@ export function studentStats(posts, cfg, nowMs) {
   // leaving out free days. Drives the "geen post" warning.
   const quietDays = !campaignStarted ? null
     : days.filter((d) => d <= today && (lastDay ? d > lastDay : true) && !off(d)).length;
+  // Dagopdrachten: a minimum number of posts on a day. Only judged once the day is over; never
+  // touches the streak or missed days (one post is enough for those).
+  const tasks = assignments.filter((a) => perDay.has(a.date)).map((a) => {
+    const count = perDay.get(a.date);
+    return { ...a, count, status: count >= a.min ? "reached" : a.date < today ? "missed" : "pending" };
+  });
   return {
     perDay, today,
     posts: counted.length,
@@ -340,8 +346,158 @@ export function studentStats(posts, cfg, nowMs) {
     quietDays,
     daysSinceLast: !campaignStarted ? null : lastDay ? dayDiff(today, lastDay) : dayDiff(today, cfg.campaign.start),
     missing,
+    tasks, tasksMissed: tasks.filter((t) => t.status === "missed").length,
     tags: [...tags].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])),
   };
+}
+
+// ---------- dagopdrachten, Vandaag, buiten schaal ----------
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Sheet date cell -> "YYYY-MM-DD" (accepts a typed date, an ISO text or a Sheets serial number). */
+export function sheetDate(v) {
+  if (typeof v === "number" && v > 30000 && v < 80000) return new Date(Date.UTC(1899, 11, 30) + v * 864e5).toISOString().slice(0, 10);
+  const s = String(v ?? "").trim().slice(0, 10);
+  return DATE_RE.test(s) ? s : null;
+}
+
+/** Active dagopdrachten from the private tab: [{ row, date, min, label }] by date; the last row of a date wins. */
+export function parseAssignments(rows) {
+  const byDate = new Map();
+  for (const r of rows || []) {
+    const date = sheetDate(r.date);
+    const min = toNum(r.min_posts);
+    if (!date || !Number.isInteger(min) || min < 1 || parseActive(r.active) === false) continue;
+    byDate.set(date, { row: r._row ?? null, date, min, label: String(r.label ?? "").trim() });
+  }
+  return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+/** Handles marked "buiten schaal" in the public outliers tab. */
+export function parseOutliers(rows) {
+  const out = new Set();
+  for (const r of rows || []) {
+    const { handle } = normalizeHandle(r.handle);
+    if (handle && truthy(r.buiten_schaal)) out.add(handle);
+  }
+  return out;
+}
+
+export function median(values) {
+  const v = values.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+/**
+ * Vandaag: per tracked account the campaign posts of today (Amsterdam), how many are needed (1,
+ * or the dagopdracht minimum) and whether that is reached. Private accounts can't be checked.
+ * students: [{ handle, posts, isPrivate }]. Returns { day, task, offDay, rows }.
+ */
+export function todayStatus(cfg, students, assignments, nowMs) {
+  const day = localDay(nowMs);
+  const task = (assignments || []).find((a) => a.date === day) || null;
+  const required = task ? task.min : 1;
+  const rows = students.map((s) => {
+    const today = (s.posts || []).map((p) => parseTs(p.created_at)).filter((t) => t !== null && localDay(t) === day).sort((a, b) => a - b);
+    return { handle: s.handle, count: today.length, required, done: today.length >= required, private: Boolean(s.isPrivate),
+      first: today[0] ?? null, last: today.at(-1) ?? null };
+  });
+  return { day, task, offDay: isOffDay(cfg, day), rows };
+}
+
+/** Accounts "Controleer nu" fetches: not private and not done yet today. */
+export function todayTargets(status) {
+  return status.rows.filter((r) => !r.done && !r.private).map((r) => r.handle);
+}
+
+/** Start time (ms) of the last Vandaag check: its activity_log entry or its run_log row. */
+export function lastTodayCheck(runLog, activity) {
+  let last = null;
+  for (const r of runLog || []) {
+    if (r.run_type !== "today_check" || truthy(r.dry_run)) continue;
+    const t = parseTs(r.timestamp);
+    if (t !== null && (last === null || t > last)) last = t;
+  }
+  for (const a of activity || []) {
+    if (a.action !== TODAY_CHECK_ACTION) continue;
+    const t = parseTs(a.timestamp);
+    if (t !== null && (last === null || t > last)) last = t;
+  }
+  return last;
+}
+export const TODAY_CHECK_ACTION = "vandaag gecontroleerd";
+
+// ---------- Opvallend (signals worth a look; private site only) ----------
+
+/**
+ * Flags per video and account, relative to the class. Never a verdict: each flag carries its numbers.
+ * s: signal settings (config.json signals). posts: [{ handle, video_id, views, likes, comments, shares, created_at }].
+ * byVideo: Map(video_id -> [{ t, views }]) from post_history. series: Map(handle -> [{ t, views, followers }]) from history.
+ */
+export function signals(s, posts, byVideo, series) {
+  const flags = [];
+  const big = posts.filter((p) => (toNum(p.views) || 0) >= s.minViews);
+  // 1. Likes per view far from the class median.
+  const ratio = (p) => (toNum(p.likes) || 0) / (toNum(p.views) || 1);
+  const med = median(big.map(ratio));
+  if (med) {
+    for (const p of big) {
+      const r = ratio(p);
+      if (r * s.likeRatioFactor <= med || r >= med * s.likeRatioFactor) {
+        flags.push({ kind: "likes", handle: p.handle, video: String(p.video_id), views: toNum(p.views), likes: toNum(p.likes) || 0,
+          ratio: r, median: med, high: r > med });
+      }
+    }
+  }
+  // 2. Step-shaped growth: one short step brings most of the views, then (nearly) flat.
+  for (const p of big) {
+    const pts = (byVideo && byVideo.get(String(p.video_id))) || [];
+    const total = Math.max(toNum(p.views) || 0, pts.length ? pts.at(-1).views : 0);
+    let best = null;
+    for (let i = 1; i < pts.length; i++) {
+      const step = pts[i].views - pts[i - 1].views;
+      if (pts[i].t - pts[i - 1].t > s.stepMaxHours * 3600e3 || step < s.stepShare * total) continue;
+      const after = pts.filter((q) => q.t > pts[i].t && q.t <= pts[i].t + s.flatHours * 3600e3);
+      if (!after.length || after.at(-1).t - pts[i].t < s.flatHours * 3600e3 * 0.75) continue; // not enough "after" yet
+      const growth = after.at(-1).views - pts[i].views;
+      if (growth > s.flatShare * step) continue;
+      if (!best || step > best.step) best = { step, from: pts[i - 1], to: pts[i], after: growth };
+    }
+    if (best) flags.push({ kind: "step", handle: p.handle, video: String(p.video_id), views: total, ...best, share: best.step / total });
+  }
+  // 3. Many views, no comments and no shares at all.
+  for (const p of posts) {
+    const v = toNum(p.views) || 0;
+    if (v >= s.zeroEngagementMinViews && !(toNum(p.comments) || 0) && !(toNum(p.shares) || 0)) {
+      flags.push({ kind: "silent", handle: p.handle, video: String(p.video_id), views: v, likes: toNum(p.likes) || 0 });
+    }
+  }
+  // 4. A follower jump between two runs without matching views (relative to the class median of
+  //    views per new follower over the whole campaign).
+  const vpf = [];
+  for (const list of (series || new Map()).values()) {
+    const f = list.filter((x) => x.followers != null);
+    if (f.length < 2) continue;
+    const dF = f.at(-1).followers - f[0].followers, dV = f.at(-1).views - f[0].views;
+    if (dF > 0 && dV > 0) vpf.push(dV / dF);
+  }
+  const medVpf = median(vpf);
+  for (const [handle, list] of (series || new Map())) {
+    const f = list.filter((x) => x.followers != null);
+    let best = null;
+    for (let i = 1; i < f.length; i++) {
+      const dF = f[i].followers - f[i - 1].followers, dV = Math.max(0, f[i].views - f[i - 1].views);
+      if (dF < s.followerJumpMin) continue;
+      const per = dV / dF;
+      if (medVpf != null && per * s.followerJumpFactor > medVpf) continue;
+      if (!best || dF > best.followers) best = { followers: dF, views: dV, per, from: f[i - 1].t, to: f[i].t };
+    }
+    if (best) flags.push({ kind: "followers", handle, ...best, median: medVpf });
+  }
+  return flags;
 }
 
 /** Per hashtag: posts using it, accounts (with counts), total views. */

@@ -15,7 +15,7 @@ from .sheets import Spreadsheet, session_from_env
 def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
     """Create tabs and headers in both spreadsheets. Safe to run again."""
     tabs = admin.ensure_tabs(model.SCHEMA_ADMIN)
-    data_tabs = data.ensure_tabs(model.SCHEMA_DATA)
+    data_tabs = data.ensure_tabs(model.SCHEMA_DATA, model.FIXED_SHEET_IDS)
     # The website needs the gid of each public tab (site/config.js); tab ids are not secret.
     summary("Public sheet tab ids (gid) for site/config.js: "
             + ", ".join(f"{name}={data_tabs[name]}" for name in model.SCHEMA_DATA))
@@ -30,9 +30,9 @@ def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="collector", description=__doc__)
-    parser.add_argument("command", choices=["auto", "profiles", "force", "refresh", "check", "status", "setup"])
+    parser.add_argument("command", choices=["auto", "profiles", "force", "refresh", "check", "today", "status", "setup"])
     parser.add_argument("--dry-run", action="store_true", help="plan and log expected records, no scraping")
-    parser.add_argument("--handles", default="", help="check: comma separated handles (default: most videos)")
+    parser.add_argument("--handles", default="", help="check: comma separated handles (default: most videos); today: the handles to check")
     parser.add_argument("--config", default=str(config.ROOT / "config.yaml"))
     args = parser.parse_args(argv)
 
@@ -58,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "check":
         chosen = [h.strip().lstrip("@").lower() for h in args.handles.split(",") if h.strip()]
         col.run_window_check(manual, chosen or None)
+    elif args.command == "today":
+        chosen = [h.strip().lstrip("@").lower() for h in args.handles.split(",") if h.strip()]
+        col.run_today_check(f"{col.now_local:%Y-%m-%d}/today-{col.now_local:%H%M}", chosen)
     elif args.command == "status":
         col.status()
     return 0

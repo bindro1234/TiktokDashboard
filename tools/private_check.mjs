@@ -34,7 +34,8 @@ tracked.forEach((h, i) => {
     if (rnd() < 0.25) continue;               // missed days
     const n = rnd() < 0.2 ? 2 : 1;
     for (let k = 0; k < n; k++) {
-      const views = Math.round(200 + rnd() * 3000 * (1 + i / 4));
+      // test_11 is the outlier ("buiten schaal"): ~50x the views of the rest.
+      const views = Math.round((200 + rnd() * 3000 * (1 + i / 4)) * (i === 10 ? 50 : 1));
       posts.push({
         video_id: String(7600000000000000000n + BigInt(i * 1000 + d * 10 + k)), handle: h,
         created_at: new Date(start + d * DAY + k * 3 * 3600e3).toISOString(), views,
@@ -53,8 +54,15 @@ tracked.forEach((h, i) => {
       followers: 50 + i * 20 + d * 3, campaign_likes: mine.reduce((s, p) => s + p.likes, 0), campaign_posts: mine.length });
   }
 });
+// Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
+Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
+Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
 const handles = tracked.map((h, i) => ({ handle: h, is_private: i === 1, followers: 50 + i * 20, last_scraped: "",
-  last_status: i === 1 ? "privé" : i === 2 ? "fout: dead_page: not found" : "ok" }));
+  last_status: i === 1 ? "privé" : i === 2 ? "fout: dead_page: not found" : "ok",
+  status_since: i === 1 ? "2026-10-03T08:00:00Z" : i === 2 ? "2026-10-05T14:00:00Z" : "2026-09-28T06:00:00Z" }));
+// Dagopdrachten: Thu 1 Oct (minimum 2, over) and today (Wed 7 Oct, minimum 2, still pending).
+let tasks = [{ row: 2, date: "2026-10-01", min: 2, label: "Dubbeldag" }, { row: 3, date: "2026-10-07", min: 2, label: "" }];
+const outliers = new Set(["test_11"]);
 const runLog = [
   { timestamp: "2026-10-07T16:05:00Z", run_type: "profiles", window: "2026-10-07/18u", dry_run: false, expected_records: 11, actual_records: 11, errors: 0, status: "ok", snapshot_ids: "sd_x", notes: "11 profiles ok | budget: used 400" },
   { timestamp: "2026-10-02T06:40:00Z", run_type: "posts_refresh", window: "2026-10-02/weekrefresh", dry_run: false, expected_records: 80, actual_records: 12, errors: 0, status: "ok", snapshot_ids: "sd_y", notes: "" },
@@ -62,6 +70,7 @@ const runLog = [
 const activity = [{ timestamp: "2026-10-07T08:00:00Z", email: "docent@school.nl", action: "geopend", details: "" }];
 
 const posted = [];
+let todayStarted = null;
 let finale = null;       // { start, end, phase } like the Worker returns
 let finaleHasRun = false;
 // post_history rows for the fake posts: a row every 2 hours for 3 days, growing views.
@@ -75,14 +84,16 @@ function api(req, body) {
   if (req.method === "GET" && req.url === "/api/data") {
     return [200, { me: "docent@school.nl", serverTime: NOW,
       config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
-        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays },
+        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals },
       finale, finaleHasRun,
       accounts, handles, history, posts, runLog, activity,
-      budget: lib.budget(CFG, runLog, tracked.length, NOW), lastProfilesRun: lib.lastProfilesRun(runLog) }];
+      budget: lib.budget(CFG, runLog, tracked.length, NOW), lastProfilesRun: lib.lastProfilesRun(runLog),
+      lastTodayCheck: null, tasks, outliers: [...outliers] }];
   }
   if (req.method === "GET" && req.url === "/api/post-history") return [200, { rows: postHistory }];
   if (req.method === "GET" && req.url === "/api/runs") {
-    return [200, { runs: [{ workflow: "force-refresh.yml", status: "completed", conclusion: "success", event: "workflow_dispatch", created: "2026-10-07T15:00:00Z", url: "https://github.com/" }] }];
+    return [200, { runs: [{ workflow: "force-refresh.yml", status: "completed", conclusion: "success", event: "workflow_dispatch", created: "2026-10-07T15:00:00Z", url: "https://github.com/" },
+      ...(todayStarted ? [{ workflow: "collect.yml", status: "completed", conclusion: "success", event: "workflow_dispatch", created: new Date(todayStarted + 5000).toISOString(), url: "https://github.com/" }] : [])] }];
   }
   if (req.method === "POST") {
     if (req.headers["x-requested-with"] !== "tiktok-beheer") return [403, { error: "Ontbrekende header" }];
@@ -99,6 +110,19 @@ function api(req, body) {
       return [200, { ok: true, message: "ok" }];
     }
     if (req.url === "/api/log") return [200, { ok: true }];
+    if (req.url === "/api/outliers") {
+      if (body.on) outliers.add(body.handle); else outliers.delete(body.handle);
+      return [200, { ok: true, message: `@${body.handle} ${body.on ? "buiten" : "in"} schaal.` }];
+    }
+    if (req.url === "/api/tasks") {
+      if (body.action === "add") tasks = [...tasks, { row: 10 + tasks.length, date: body.date, min: body.min, label: body.label }];
+      if (body.action === "remove") tasks = tasks.filter((t) => t.row !== body.row);
+      return [200, { ok: true, message: "Dagopdracht opgeslagen." }];
+    }
+    if (req.url === "/api/today/check") {
+      todayStarted = Date.now();
+      return [200, { ok: true, count: 3, startedAt: todayStarted, message: "Controle gestart voor 3 accounts (3 records)." }];
+    }
     if (req.url === "/api/finale/start") {
       const [d, t] = String(body.deadline).split("T");
       finale = { start: Date.now(), end: lib.amsMs(d, t), phase: "live", startedBy: "docent@school.nl" };
@@ -156,7 +180,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   const tag = `${viewport.width}px`;
   const page = await open(viewport, "#overzicht");
   await page.waitForSelector("#ov-body tr[data-handle]");
-  for (const view of ["overzicht", "leerlingen", "hashtags", "presentatie", "beheer", "export"]) {
+  for (const view of ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"]) {
     await page.evaluate((v) => { location.hash = v; }, view);
     await page.waitForTimeout(250);
     if (!(await page.isVisible(`#view-${view}`))) fail(`${tag}: tab ${view} not shown`);
@@ -181,6 +205,17 @@ const namesAsc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((
 await page.click('#ov-table th[data-sort="name"] button');
 const namesDesc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((x) => x.firstChild.textContent.trim()));
 if (namesAsc[0] !== "Anna" || namesDesc[0] !== "Kim") fail(`overzicht: sort by name wrong (${namesAsc[0]} / ${namesDesc[0]})`);
+// Actie nodig, median, clickable warnings (which video, since when).
+const actions = await page.textContent("#ov-actions");
+for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet gehaald", "Dagopdracht vandaag"]) if (!actions.includes(w)) fail(`overzicht: Actie nodig has no "${w}"`);
+if (!/mediaan per leerling/.test(await page.textContent("#ov-tiles"))) fail("overzicht: no median next to the total");
+await page.click('#ov-body td.wide-only button[data-warn]:text("verdwenen")');
+const detail = await page.textContent("#ov-body tr.warn-detail");
+if (!/verdwenen sinds/.test(detail) || !/open ↗/.test(detail)) fail(`overzicht: warning details missing (${detail.slice(0, 80)})`);
+await page.click('#ov-body td.wide-only button[data-warn]:text("privé")');
+if (!/privé sinds/.test(await page.textContent("#ov-body tr.warn-detail"))) fail("overzicht: privé has no 'since'");
+if (!(await page.textContent("#ov-body")).includes("opdracht 1 okt")) fail("overzicht: no dagopdracht badge");
+console.log(`overzicht: actie nodig "${actions.replace(/\s+/g, " ").slice(0, 90)}…"`);
 await page.check("#ov-warn");
 const warnRows = await page.$$eval("#ov-body tr[data-handle]", (r) => r.length);
 console.log(`overzicht: sort by name ok=${namesAsc[0] === "Anna"}, with warning=${warnRows}`);
@@ -189,7 +224,7 @@ await page.evaluate(() => { location.hash = "leerlingen"; });
 await page.waitForSelector(".heat tbody tr");
 const heatRows = await page.$$eval(".heat tbody tr", (r) => r.length);
 const missCells = await page.$$eval(".heat td.miss", (c) => c.length);
-const days = await page.$$eval(".heat thead th", (c) => c.length - 4);
+const days = await page.$$eval(".heat tbody tr:first-child td.day", (c) => c.length);
 // Free days (weekends, Herfstvakantie) are "vrij", never "gemist"; the first column is Monday 28 Sep.
 const offMissed = await page.$$eval(".heat tbody tr", (rows) => rows.flatMap((r) =>
   [...r.querySelectorAll("td.day")].filter((c, i) => [5, 6].includes(i % 7) && c.classList.contains("miss"))).length);
@@ -198,6 +233,10 @@ console.log(`leerlingen: ${heatRows} rows x ${days} days, ${missCells} missed ce
 if (heatRows !== tracked.length || days !== lib.campaignDays(CFG).length) fail("leerlingen: heatmap has the wrong size");
 if (!missCells) fail("leerlingen: no missed days marked");
 if (!offCells || offMissed) fail(`leerlingen: free days wrong (${offCells} vrij, ${offMissed} weekend cells marked gemist)`);
+const taskCells = await page.$$eval(".heat td.task-miss", (c) => c.map((x) => x.textContent));
+console.log(`leerlingen: dagopdracht not reached in ${taskCells.length} cells, e.g. "${taskCells[0]}"`);
+if (!taskCells.length || !taskCells.every((t) => /^[01]\/2$/.test(t))) fail(`leerlingen: dagopdracht cells wrong (${taskCells.join(",")})`);
+if (!(await page.textContent(".heat thead")).includes("Opdr. niet gehaald")) fail("leerlingen: no 'opdrachten niet gehaald' column");
 await page.click(".heat tbody tr:first-child");
 await page.waitForSelector(".cal");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
@@ -205,8 +244,30 @@ const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => 
 for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
 console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval("#ll-content tbody tr", (r) => r.length)}`);
 
+// Vandaag: lists and "Controleer nu" with its cost.
+await page.evaluate(() => { location.hash = "vandaag"; });
+await page.waitForSelector("#td-todo li");
+const cost = await page.textContent("#td-cost");
+const todayCounts = await page.evaluate(() => ["td-todo-n", "td-done-n", "td-priv-n"].map((id) => document.getElementById(id).textContent));
+console.log(`vandaag: nog niet/gepost/privé = ${todayCounts.join("/")}, knop: "${cost}"`);
+if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${cost})`);
+if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
+page.once("dialog", (d) => d.accept());
+await page.click("#td-check");
+await page.waitForFunction(() => /5–7 minuten|gestart/.test(document.getElementById("td-msg").textContent));
+if (!posted.some((p) => p.url === "/api/today/check")) fail("vandaag: Controleer nu did not post");
+
+// Opvallend: flags with their numbers.
+await page.evaluate(() => { location.hash = "opvallend"; });
+await page.waitForFunction(() => document.querySelectorAll("#sig-body tr").length && !/laden/.test(document.getElementById("sig-body").textContent));
+const sig = await page.textContent("#sig-body");
+console.log(`opvallend: ${await page.textContent("#sig-meta")}`);
+for (const w of ["Likes per weergave", "Geen reacties of shares"]) if (!sig.includes(w)) fail(`opvallend: no "${w}" flag`);
+if (/bot/i.test(sig)) fail("opvallend: says 'bot'");
+
 await page.evaluate(() => { location.hash = "hashtags"; });
 await page.waitForSelector("#tags-body tr[data-tag]");
+if (!(await page.isChecked("#tag-out"))) fail("hashtags: 'zonder buiten schaal' not on by default");
 await page.click("#tags-body tr[data-tag]");
 const tagUsers = await page.$$eval("#tags-body .chip", (c) => c.length);
 console.log(`hashtags: ${await page.$$eval("#tags-body tr[data-tag]", (r) => r.length)} tags, first used by ${tagUsers}`);
@@ -230,6 +291,17 @@ page.once("dialog", (d) => d.accept());
 await page.click('#acc-body button[data-active="false"]');
 await page.waitForTimeout(500);
 if (!posted.some((p) => p.url === "/api/accounts/active" && p.body.active === false)) fail("beheer: deactivate did not post");
+// Dagopdracht toevoegen en buiten schaal.
+if ((await page.$$eval("#task-body tr", (r) => r.length)) !== 2) fail("beheer: dagopdrachten not listed");
+await page.selectOption('#task-form [name="date"]', "2026-10-09");
+await page.fill('#task-form [name="min"]', "3");
+await page.click('#task-form button[type="submit"]');
+await page.waitForFunction(() => /opgeslagen/.test(document.getElementById("task-msg").textContent));
+const task = posted.find((p) => p.url === "/api/tasks");
+if (!task || task.body.action !== "add" || task.body.date !== "2026-10-09" || task.body.min !== 3) fail(`beheer: dagopdracht not posted right (${JSON.stringify(task && task.body)})`);
+await page.click('#acc-body button[data-outlier="test_04"]');
+await page.waitForTimeout(400);
+if (!posted.some((p) => p.url === "/api/outliers" && p.body.handle === "test_04" && p.body.on === true)) fail("beheer: buiten schaal did not post");
 await page.click("#bh-refresh");
 await page.waitForFunction(() => document.getElementById("bh-refresh-msg").textContent.includes("min"));
 console.log(`beheer: refresh message "${await page.textContent("#bh-refresh-msg")}"`);
@@ -241,6 +313,7 @@ const csv = readFileSync(await download.path(), "utf8");
 const lines = csv.trim().split(/\r\n/);
 console.log(`export: ${download.suggestedFilename()}, ${lines.length - 1} rows, header starts "${lines[0].slice(0, 30)}"`);
 if (!csv.startsWith("﻿naam;handle;")) fail("export: no BOM or wrong separator");
+if (!lines[0].includes("opdrachten_niet_gehaald")) fail("export: no opdrachten_niet_gehaald column");
 if (lines.length - 1 < tracked.length) fail("export: missing rows");
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
@@ -254,6 +327,11 @@ await page.close();
   if (await fp.isVisible("#reminder")) fail("reminder banner visible outside the reminder period");
   const card = await fp.textContent("#bh-finale");
   if (!/records per uur/.test(card) || !/elke 15 minuten/.test(card) || !/Eindstand/.test(card)) fail("finale card: explanation or cost per hour missing");
+  // Dutch 24-hour fields instead of the browser's own date/time inputs ("02:00 AM").
+  if (await fp.$('#bh-finale input[type="date"], #bh-finale input[type="time"]')) fail("finale card: native date/time inputs");
+  const hours = await fp.$$eval('#finale-start [name="hour"] option', (o) => o.map((x) => x.textContent));
+  const dayText = await fp.$eval('#finale-start [name="date"] option', (o) => o.textContent);
+  if (hours.length !== 24 || hours[23] !== "23" || !/^(ma|di|wo|do|vr|za|zo) \d+ /.test(dayText)) fail(`finale card: not Dutch 24-hour fields (${dayText}, ${hours.length} hours)`);
   const est = await fp.textContent("#finale-start-estimate");
   if (!/runs × \d+ accounts/.test(est)) fail(`finale card: no estimate (${est})`);
   fp.once("dialog", (d) => d.accept());
@@ -319,8 +397,36 @@ if (process.env.SHOTS) await pres.screenshot({ path: `${process.env.SHOTS}/priva
 const podium = await pres.$$eval(".p-pod-handle", (p) => p.map((x) => x.textContent.trim()));
 console.log(`presentatie: podium ${JSON.stringify(podium)}`);
 if (!podium.some((t) => /^[A-Z][a-z]+ ?@test_/.test(t))) fail("presentatie: no first names on the podium");
+// "Buiten schaal" never changes the rank: the outlier (test_11, 50x the views) is still number 1.
+const first = await pres.$eval(".p-pod-1 .p-pod-handle", (e) => e.textContent);
+if (!first.includes("@test_11")) fail(`presentatie: outlier lost its place on the podium (${first})`);
 if (pres.errors.length) fail(`presentatie: browser errors: ${pres.errors.join(" | ")}`);
 await pres.close();
+// The public site's own pages with the same data (build.sh copies them): Grafiek and Groei scale
+// without the outlier, the Stand keeps it at its place.
+{
+  const sp = await open({ width: 1280, height: 900 }, "present/index.html#grafiek");
+  await sp.waitForFunction(() => window.Chart && Chart.getChart(document.getElementById("chart-main")), null, { timeout: 20000 });
+  const g = await sp.evaluate(() => {
+    const c = Chart.getChart(document.getElementById("chart-main"));
+    return { max: c.scales.y.max, marks: c.data.datasets.filter((d) => d.outlierMark).map((d) => d.label) };
+  });
+  console.log(`site grafiek: y max ${g.max}, buiten schaal: ${g.marks.join(", ")}`);
+  if (!(g.max < 200000) || !g.marks.includes("@test_11")) fail(`site grafiek: not scaled without the outlier (${JSON.stringify(g)})`);
+  await sp.evaluate(() => { location.hash = "stand"; });
+  await sp.waitForSelector("#board-body tr[data-handle]");
+  if ((await sp.$eval("#board-body tr", (r) => r.dataset.handle)) !== "test_11") fail("site stand: outlier not at its own place");
+  await sp.evaluate(() => { location.hash = "groei"; });
+  await sp.waitForTimeout(500);
+  if (sp.errors.length) fail(`site: browser errors: ${sp.errors.join(" | ")}`);
+  if (process.env.SHOTS) {
+    await sp.evaluate(() => { location.hash = "grafiek"; });
+    await sp.waitForTimeout(500);
+    await sp.screenshot({ path: `${process.env.SHOTS}/site-grafiek.png` });
+  }
+  await sp.close();
+}
+
 // With names the slides must still fit both projector resolutions.
 for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   const pp = await open({ width: w, height: h }, "present/index.html?present&sec=60");
@@ -333,6 +439,16 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
       return { kind: st.dataset.kind, over: st.scrollHeight > st.clientHeight + 1 || st.scrollWidth > st.clientWidth + 1 };
     });
     if (m.over) fail(`presentatie ${w}x${h}: slide ${i + 1} (${m.kind}) does not fit`);
+    if (m.kind === "graph") {
+      // The y-axis scales on the others; the outlier is a ▲ marker with its real number.
+      const g = await pp.evaluate(() => {
+        const c = Chart.getChart(document.getElementById("p-chart"));
+        return { max: c.scales.y.max, marks: c.data.datasets.filter((d) => d.outlierMark).map((d) => d.label) };
+      });
+      if (!(g.max < 200000) || g.marks.join() !== "@test_11") fail(`presentatie: graph not scaled without the outlier (${JSON.stringify(g)})`);
+    }
+    if (m.kind === "risers" && !(await pp.$(".p-bar-out"))) fail("presentatie: risers bar of the outlier not capped");
+    if (process.env.SHOTS) await pp.screenshot({ path: `${process.env.SHOTS}/private-present-${w}-${i + 1}.png` });
     await pp.keyboard.press("ArrowRight");
   }
   console.log(`presentatie ${w}x${h}: ${total} slides checked`);
