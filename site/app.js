@@ -121,10 +121,10 @@ function weekLabel(n) {
 
 // ---------- data loading ----------
 
-async function fetchCsv(tab) {
+async function fetchCsv(tab, signal) {
   const base = (CFG.csvUrls && CFG.csvUrls[tab]) || CFG.csvUrl(tab);
   const url = base + (base.includes("?") ? "&" : "?") + "t=" + Date.now();
-  const res = await fetch(url, { cache: "no-store" });
+  const res = await fetch(url, { cache: "no-store", signal });
   if (!res.ok) throw new Error(`Tabblad '${tab}' niet te laden (HTTP ${res.status}). Is de sheet gepubliceerd?`);
   const text = await res.text();
   if (text.trimStart().startsWith("<")) throw new Error(`Tabblad '${tab}' gaf geen CSV terug. Is de sheet gepubliceerd?`);
@@ -132,14 +132,21 @@ async function fetchCsv(tab) {
 }
 
 // "Buiten schaal" (public tab outliers, handles only): accounts left out of the chart scales.
-// Missing tab (nobody marked yet) means none.
-async function fetchOutliers() {
-  if (!(CFG.csvUrls && CFG.csvUrls.outliers) && !(CFG.gids && CFG.gids.outliers != null)) return [];
-  try {
-    return await fetchCsv("outliers");
-  } catch {
-    return [];
-  }
+// Fetched next to the main data but never holding it up: a missing (nobody marked yet) or slow
+// tab just means no outliers until it arrives; then the charts are redrawn.
+let OUTLIERS = new Set();
+function refreshOutliers() {
+  if (!(CFG.csvUrls && CFG.csvUrls.outliers) && !(CFG.gids && CFG.gids.outliers != null)) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 10000);
+  fetchCsv("outliers", ctrl.signal).then((rows) => {
+    const next = outliersFromRows(rows);
+    if ([...next].join() === [...OUTLIERS].join()) return;
+    OUTLIERS = next;
+    if (!state.data) return;
+    state.data.outliers = OUTLIERS;
+    if (IS_PRESENT) Present.update(state.data); else render();
+  }).catch(() => {}).finally(() => clearTimeout(timer));
 }
 function outliersFromRows(rows) {
   return new Set((rows || []).filter((r) => isTrue(r.buiten_schaal))
@@ -252,12 +259,12 @@ async function load() {
     // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
     const src = CFG.source
       ? await CFG.source()
-      : await Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale(), fetchOutliers()])
-        .then(([handles, history, posts, finaleRows, outlierRows]) => ({ handles, history, posts, finaleRows, outlierRows }));
+      : await (refreshOutliers(), Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale()]))
+        .then(([handles, history, posts, finaleRows]) => ({ handles, history, posts, finaleRows }));
     FINALE = "finale" in src ? (src.finale ? { start: src.finale.start, end: src.finale.end } : null)
       : finaleFromRows(src.finaleRows);
-    const outliers = src.outliers ? new Set(src.outliers) : outliersFromRows(src.outlierRows);
-    state.data = build(src.handles, src.history, src.posts, src.labels, outliers);
+    if (src.outliers) OUTLIERS = new Set(src.outliers);
+    state.data = build(src.handles, src.history, src.posts, src.labels, OUTLIERS);
     if (IS_PRESENT) {
       Present.update(state.data);
       return;
