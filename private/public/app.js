@@ -364,6 +364,7 @@ function renderStudent(m, handle) {
       ${st.tasks.length ? tile("Dagopdrachten", `${st.tasks.filter((t) => t.status === "reached").length}/${st.tasks.filter((t) => t.status !== "pending").length}`,
         st.tasksMissed ? `niet gehaald: ${st.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : "gehaald") : ""}
       ${tile("Gem. weergaven/post", fmt(st.avgViews))}
+      ${tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee")}
       ${tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven")}
       ${tile("Volgers", fmt(s.followers))}
       ${tile("Beste video", st.best ? `<a href="${tiktok(s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
@@ -958,14 +959,14 @@ function renderSignals(m) {
 // ---------- Export ----------
 
 const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen", "opdrachten_niet_gehaald",
-  "huidige_reeks", "langste_reeks", "gem_weergaven_per_post", "likes", "reacties", "gedeeld", "engagement_pct",
+  "huidige_reeks", "langste_reeks", "gem_weergaven_per_post", "mediaan_weergaven_per_video", "likes", "reacties", "gedeeld", "engagement_pct",
   "beste_video", "beste_video_weergaven", "laatste_post", "hashtags", "privé", "let_op"];
 
 function exportRows(m) {
   return [...m.students].sort(byName).map((s) => {
     const st = s.stats;
     return [s.name || "onbekend", "@" + s.handle, s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.tasksMissed,
-      st.streak, st.longest, st.avgViews, st.likes, st.comments, st.shares,
+      st.streak, st.longest, st.avgViews, st.medianViews, st.likes, st.comments, st.shares,
       st.engagement == null ? null : Math.round(st.engagement * 1000) / 10,
       st.best ? tiktok(s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
       st.tags.slice(0, 10).map(([t]) => "#" + t).join(" "), s.isPrivate ? "ja" : "nee",

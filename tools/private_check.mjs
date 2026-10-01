@@ -254,7 +254,7 @@ await page.click(".heat tbody tr:first-child");
 await page.waitForSelector(".cal");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
 const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
-for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
+for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
 console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval("#ll-content tbody tr", (r) => r.length)}`);
 
 // Vandaag: lists and "Controleer nu" with its cost.
@@ -327,6 +327,7 @@ const lines = csv.trim().split(/\r\n/);
 console.log(`export: ${download.suggestedFilename()}, ${lines.length - 1} rows, header starts "${lines[0].slice(0, 30)}"`);
 if (!csv.startsWith("﻿naam;handle;")) fail("export: no BOM or wrong separator");
 if (!lines[0].includes("opdrachten_niet_gehaald")) fail("export: no opdrachten_niet_gehaald column");
+if (!lines[0].includes("mediaan_weergaven_per_video")) fail("export: no mediaan_weergaven_per_video column");
 if (lines.length - 1 < tracked.length) fail("export: missing rows");
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
