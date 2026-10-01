@@ -69,6 +69,7 @@ test("studentStats: missed days, streaks, engagement and best video", () => {
   assert.equal(st.longest, 2);
   assert.equal(st.best.id, "3");
   assert.equal(st.avgViews, 100);
+  assert.equal(st.medianViews, 50);   // views 100, 50, 300, 50, 0: the typical video, not the average
   assert.equal(st.engagement, (9 + 5) / 500);
   assert.equal(st.daysSinceLast, 1);
   assert.deepEqual(st.tags[0], ["fyp", 5]);

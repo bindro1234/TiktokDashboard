@@ -341,6 +341,8 @@ export function studentStats(posts, cfg, nowMs, assignments = []) {
     streak, longest,
     views, likes, comments, shares,
     avgViews: counted.length ? Math.round(views / counted.length) : null,
+    // Views of the typical video: unlike the average, one viral video hardly moves it.
+    medianViews: counted.length ? Math.round(median(counted.map((p) => toNum(p.views) || 0))) : null,
     engagement: views ? (likes + comments + shares) / views : null,
     best, last, lastDay,
     quietDays,

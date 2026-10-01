@@ -65,8 +65,27 @@ page.on("pageerror", (e) => errors.push(e.message));
 const expectedError = (text) => missingTabs.size > 0 && /Failed to load resource.*\b400\b/.test(text);
 page.on("console", (m) => m.type() === "error" && !expectedError(m.text()) && errors.push(m.text()));
 
+// Requests still open, for the report when a page never settles.
+const pending = new Map();
+page.on("request", (r) => pending.set(r, Date.now()));
+page.on("requestfinished", (r) => pending.delete(r));
+page.on("requestfailed", (r) => pending.delete(r));
+const consoleLog = [];
+page.on("console", (m) => consoleLog.push(`${m.type()}: ${m.text().slice(0, 160)}`));
+
 for (const hash of ["#stand", "#grafiek", "#groei"]) {
-  await page.goto(siteUrl + hash, { waitUntil: "networkidle" });
+  try {
+    await page.goto(siteUrl + hash, { waitUntil: "networkidle" });
+  } catch (err) {
+    fail(`site ${hash}: page never settled (${err.message.split("\n")[0]})`);
+    console.log(`  still open: ${[...pending].map(([r, t]) => `${r.method()} ${r.url().slice(0, 140)} (${Math.round((Date.now() - t) / 1000)} s)`).join(" | ") || "none"}`);
+    console.log(`  console: ${consoleLog.slice(-12).join(" | ") || "none"}`);
+    const state = await page.evaluate(() => ({ rows: document.querySelectorAll("#board-body tr").length,
+      updated: document.getElementById("updated")?.textContent, error: document.getElementById("error")?.textContent,
+      ready: document.readyState })).catch((e) => ({ evaluate: e.message.slice(0, 100) }));
+    console.log(`  page: ${JSON.stringify(state)}`);
+    continue;
+  }
   await page.waitForFunction(
     () => document.querySelector("#board-body tr") || !document.getElementById("error").hidden,
     null, { timeout: 30000 });

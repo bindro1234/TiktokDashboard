@@ -34,8 +34,9 @@ tracked.forEach((h, i) => {
     if (rnd() < 0.25) continue;               // missed days
     const n = rnd() < 0.2 ? 2 : 1;
     for (let k = 0; k < n; k++) {
-      // test_11 is the outlier ("buiten schaal"): ~50x the views of the rest.
-      const views = Math.round((200 + rnd() * 3000 * (1 + i / 4)) * (i === 10 ? 50 : 1));
+      // test_11 is the outlier ("buiten schaal"): ~200x the views of the rest, so it gains
+      // 7-digit numbers a day (like the real 2.3M account: "+1.863.580").
+      const views = Math.round((200 + rnd() * 3000 * (1 + i / 4)) * (i === 10 ? 200 : 1));
       posts.push({
         video_id: String(7600000000000000000n + BigInt(i * 1000 + d * 10 + k)), handle: h,
         created_at: new Date(start + d * DAY + k * 3 * 3600e3).toISOString(), views,
@@ -205,6 +206,18 @@ const namesAsc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((
 await page.click('#ov-table th[data-sort="name"] button');
 const namesDesc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((x) => x.firstChild.textContent.trim()));
 if (namesAsc[0] !== "Anna" || namesDesc[0] !== "Kim") fail(`overzicht: sort by name wrong (${namesAsc[0]} / ${namesDesc[0]})`);
+// Actie nodig chips: name and @handle on one line, vertically centred on each other.
+const chipOff = await page.$$eval("#ov-actions a.chip", (chips) => chips.map((a) => {
+  const range = document.createRange();
+  range.setStart(a.firstChild, 0);
+  range.setEnd(a.firstChild, a.firstChild.textContent.trim().length);
+  const name = range.getBoundingClientRect(), handle = a.querySelector(".chip-handle, .meta").getBoundingClientRect();
+  return Math.round((handle.top + handle.height / 2) - (name.top + name.height / 2));
+}));
+const worstChip = chipOff.reduce((a, b) => (Math.abs(b) > Math.abs(a) ? b : a), 0);
+console.log(`overzicht: Actie nodig chips, @handle vs name centre: worst ${worstChip}px (${chipOff.length} chips)`);
+if (Math.abs(worstChip) > 2) fail(`overzicht: handles in Actie nodig are ${worstChip}px off centre`);
+
 // Actie nodig, median, clickable warnings (which video, since when).
 const actions = await page.textContent("#ov-actions");
 for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet gehaald", "Dagopdracht vandaag"]) if (!actions.includes(w)) fail(`overzicht: Actie nodig has no "${w}"`);
@@ -241,7 +254,7 @@ await page.click(".heat tbody tr:first-child");
 await page.waitForSelector(".cal");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
 const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
-for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
+for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
 console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval("#ll-content tbody tr", (r) => r.length)}`);
 
 // Vandaag: lists and "Controleer nu" with its cost.
@@ -314,6 +327,7 @@ const lines = csv.trim().split(/\r\n/);
 console.log(`export: ${download.suggestedFilename()}, ${lines.length - 1} rows, header starts "${lines[0].slice(0, 30)}"`);
 if (!csv.startsWith("﻿naam;handle;")) fail("export: no BOM or wrong separator");
 if (!lines[0].includes("opdrachten_niet_gehaald")) fail("export: no opdrachten_niet_gehaald column");
+if (!lines[0].includes("mediaan_weergaven_per_video")) fail("export: no mediaan_weergaven_per_video column");
 if (lines.length - 1 < tracked.length) fail("export: missing rows");
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");

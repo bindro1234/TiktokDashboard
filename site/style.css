@@ -269,9 +269,11 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 .p-chg { font-size: 0.7em; font-weight: 700; }
 .p-handle { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-gain { color: var(--text-2); }
-/* Number columns wide enough for 7 digits (a 2-million account gains 6 digits a day); fixed, so rows line up. */
-.p-row { grid-template-columns: calc(var(--u) * 7) calc(var(--u) * 9) minmax(0, 1fr) calc(var(--u) * 28) calc(var(--u) * 26); }
-.p-risers .p-row { grid-template-columns: calc(var(--u) * 7) minmax(0, 1.2fr) minmax(0, 1fr) calc(var(--u) * 26); }
+/* Number columns as wide as the longest number on the slide (--vw/--gw characters, set by present.js;
+   1.15ch per character for the bold digits), never narrower than before. Same width in every row. */
+.p-row { grid-template-columns: calc(var(--u) * 7) calc(var(--u) * 9) minmax(0, 1fr)
+  max(calc(var(--u) * 24), calc(var(--vw, 0) * 1.15ch)) max(calc(var(--u) * 24), calc(var(--gw, 0) * 1.15ch)); }
+.p-risers .p-row { grid-template-columns: calc(var(--u) * 7) minmax(0, 1.2fr) minmax(0, 1fr) max(calc(var(--u) * 20), calc(var(--gw, 0) * 1.15ch)); }
 .p-track { position: relative; height: 45%; overflow: hidden; background: var(--surface-2); border-radius: calc(var(--u) * 0.6); }
 .p-track-out { overflow: visible; }
 .p-out-mark { position: absolute; right: calc(var(--u) * -0.6); top: 50%; transform: translate(100%, -50%); color: var(--muted); font-size: calc(var(--u) * 2.6); line-height: 1; }
