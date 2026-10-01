@@ -157,7 +157,7 @@ const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.d
   .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
-  <span class="meta">@${esc(s.handle)}</span>${extra}</a>`;
+  <span class="chip-handle">@${esc(s.handle)}</span>${extra}</a>`;
 
 // ---------- Overzicht ----------
 

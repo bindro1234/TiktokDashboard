@@ -206,6 +206,18 @@ const namesAsc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((
 await page.click('#ov-table th[data-sort="name"] button');
 const namesDesc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((x) => x.firstChild.textContent.trim()));
 if (namesAsc[0] !== "Anna" || namesDesc[0] !== "Kim") fail(`overzicht: sort by name wrong (${namesAsc[0]} / ${namesDesc[0]})`);
+// Actie nodig chips: name and @handle on one line, vertically centred on each other.
+const chipOff = await page.$$eval("#ov-actions a.chip", (chips) => chips.map((a) => {
+  const range = document.createRange();
+  range.setStart(a.firstChild, 0);
+  range.setEnd(a.firstChild, a.firstChild.textContent.trim().length);
+  const name = range.getBoundingClientRect(), handle = a.querySelector(".chip-handle, .meta").getBoundingClientRect();
+  return Math.round((handle.top + handle.height / 2) - (name.top + name.height / 2));
+}));
+const worstChip = chipOff.reduce((a, b) => (Math.abs(b) > Math.abs(a) ? b : a), 0);
+console.log(`overzicht: Actie nodig chips, @handle vs name centre: worst ${worstChip}px (${chipOff.length} chips)`);
+if (Math.abs(worstChip) > 2) fail(`overzicht: handles in Actie nodig are ${worstChip}px off centre`);
+
 // Actie nodig, median, clickable warnings (which video, since when).
 const actions = await page.textContent("#ov-actions");
 for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet gehaald", "Dagopdracht vandaag"]) if (!actions.includes(w)) fail(`overzicht: Actie nodig has no "${w}"`);

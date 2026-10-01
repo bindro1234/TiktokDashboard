@@ -183,6 +183,8 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { display: inline-flex; gap: 5px; align-items: center; border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 3px 10px; font-size: 0.87rem; color: var(--text); text-decoration: none; }
 .chip-n { color: var(--muted); font-size: 0.85em; }
+/* @handle inside a chip: no margins (.meta has them), so it lines up with the name */
+.chip-handle { color: var(--text-2); font-size: 0.9em; }
 
 .runs { list-style: none; margin: 0; padding: 0; font-size: 0.88rem; }
 .runs li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--grid); }
