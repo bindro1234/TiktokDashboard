@@ -1,4 +1,5 @@
-"""Run types: profiles (twice a day), weekly posts refresh, one-time window check, and the scheduler."""
+"""Run types: profiles (every 2 hours), the Vandaag check (part of the accounts, on demand), weekly
+posts refresh, one-time window check, and the scheduler."""
 
 from __future__ import annotations
 
@@ -169,24 +170,51 @@ class Collector:
             return
         self._profiles(res)
 
-    def _profiles(self, res: RunResult) -> None:
+    def run_today_check(self, window: str, handles: list[str]) -> RunResult:
+        """Vandaag tab ("Controleer nu"): a profiles run for only the given accounts, e.g. the ones
+        that have not posted yet today. Own run type, so it never counts as a full profiles run."""
+        res = RunResult("today_check", window, self.dry_run)
+        return self.run_guarded(res, lambda r: self._today_check(r, handles))
+
+    def _today_check(self, res: RunResult, requested: list[str]) -> None:
+        active, _ = self.accounts()
+        private = {r["handle"] for r in self.data.read("handles") if model.truthy(r.get("is_private"))}
+        targets = [h for h in dict.fromkeys(requested) if h in active and h not in private]
+        dropped = [h for h in requested if h not in targets]
+        if dropped:
+            res.notes.append("not checked (inactive, unknown or private): " + ", ".join("@" + h for h in dropped[:20]))
+        if not targets:
+            res.status = "skipped"
+            res.notes.append("no accounts to check")
+            return
+        # Like a refresh: keep budget for the scheduled profile runs still to come this month.
+        _, reserve = self._reserve()
+        self._profiles(res, only=targets, reserve=reserve)
+
+    def _profiles(self, res: RunResult, only: list[str] | None = None, reserve: int = 0) -> None:
+        """Profiles run for all active accounts, or (only=...) for some of them. A partial run
+        updates just the accounts it fetched: their posts, snapshots, status and history rows."""
         handles, issues = self.accounts()
-        res.notes.extend(issues)
-        res.expected = len(handles)
-        if not handles:
+        if only is None:
+            res.notes.extend(issues)
+        targets = handles if only is None else [h for h in only if h in handles]
+        res.expected = len(targets)
+        if not targets:
             res.status = "skipped"
             res.notes.append("no active valid handles in accounts")
             return
-        if not self.budget_ok(res):
+        if not self.budget_ok(res, reserve):
             return
         if self.dry_run:
             res.status = "dry-run"
+            if only is not None:
+                res.notes.append("would check: " + ", ".join("@" + h for h in targets))
             return
-        records = self.collect(res, self.cfg.profiles_dataset, [{"url": profile_url(h)} for h in handles])
+        records = self.collect(res, self.cfg.profiles_dataset, [{"url": profile_url(h)} for h in targets])
         if records is None:
             return
 
-        wanted = set(handles)
+        wanted = set(targets)
         parsed, failed = {}, {}
         for rec in records:
             handle = model.record_handle(rec)
@@ -211,27 +239,42 @@ class Collector:
         old_windows.update({h: p["window"] for h, p in parsed.items()})
         self.admin.rewrite("profile_window", sorted(old_windows.values(), key=lambda r: str(r["handle"])))
 
+        self.data.ensure_columns("handles", model.SCHEMA_DATA["handles"])
         old_handles = {r["handle"]: r for r in self.data.read("handles")}
+        snapshots = None
         rows = []
-        for handle in handles:
+        for handle in handles:  # every active account keeps its row; only the fetched ones change
             row = dict(old_handles.get(handle, {"handle": handle}))
+            before = model.status_kind(row.get("last_status"))
             if handle in parsed:
                 snap = parsed[handle]["snapshot"]
                 row.update(is_private=snap["is_private"], followers=snap["followers"], last_scraped=self.stamp,
                            last_status="privé" if snap["is_private"] else "ok")
-            else:
+            elif handle in failed:
                 reason = failed[handle]
                 if "private" in reason.lower():
                     row["is_private"] = True
                 row["last_status"] = f"fout: {reason[:80]}"
+            now_kind = model.status_kind(row.get("last_status"))
+            if now_kind and (now_kind != before or not str(row.get("status_since") or "").strip()):
+                since = self.stamp
+                if now_kind == before == "privé":  # column is new: look up when it went private
+                    if snapshots is None:
+                        snapshots = self.data.read("profile_snapshots")
+                    since = model.private_since(snapshots, handle) or self.stamp
+                row["status_since"] = since
             rows.append(row)
         self.data.rewrite("handles", rows)
-        self.append_history(handles, posts)
+        if "outliers" not in self.sheet_tabs(self.data):  # created once, with its fixed tab id (site/config.js)
+            self.data.ensure_tabs({"outliers": model.SCHEMA_DATA["outliers"]}, model.FIXED_SHEET_IDS)
+        # A partial run writes history rows only for the accounts it fetched (no stale rows for the rest).
+        self.append_history(handles if only is None else [h for h in targets if h in parsed], posts)
 
         private = [h for h, p in parsed.items() if p["snapshot"]["is_private"]]
         reposts = sum(p["reposts"] for p in parsed.values())
         pinned = sum(num for p in parsed.values() if (num := p["window"]["pinned_in_window"]))
-        res.notes.append(f"{len(parsed)} profiles ok, {len(videos)} campaign videos seen in top_videos, "
+        res.notes.append(f"{len(parsed)} profiles ok{'' if only is None else f' of {len(targets)} checked'}, "
+                         f"{len(videos)} campaign videos seen in top_videos, "
                          f"{pinned} pinned in window, {reposts} reposts skipped, "
                          f"{getattr(self, 'post_history_written', 0)} post_history rows")
         if private:
@@ -398,7 +441,11 @@ class Collector:
         return model.finale_state(self.admin.read("finale"), self.now_utc, self.cfg.finale.max_hours)
 
     def admin_tabs(self) -> set[str]:
-        tabs = getattr(self.admin, "tabs", None)
+        return self.sheet_tabs(self.admin)
+
+    @staticmethod
+    def sheet_tabs(sheet) -> set[str]:
+        tabs = getattr(sheet, "tabs", None)
         if callable(tabs):
             return set(tabs())
         return set(tabs or {})  # FakeSheet in tests

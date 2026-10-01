@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -94,6 +94,14 @@ def _off_days(raw: dict | None) -> OffDays:
     return OffDays(weekends=bool(raw.get("weekends", False)), periods=tuple(periods))
 
 
+# Opvallend tab thresholds (config.yaml signals); only used by the private site.
+SIGNAL_DEFAULTS = {
+    "min_views": 1000, "like_ratio_factor": 3, "step_share": 0.6, "step_max_hours": 2.5,
+    "flat_hours": 6, "flat_share": 0.1, "zero_engagement_min_views": 5000,
+    "follower_jump_min": 100, "follower_jump_factor": 5,
+}
+
+
 @dataclass(frozen=True)
 class FinaleSettings:
     """Manual finale (started on the private site): runs every `every_minutes` until the deadline,
@@ -125,6 +133,8 @@ class Config:
     skip_recent_minutes: int
     finale: FinaleSettings = FinaleSettings()
     off_days: OffDays = OffDays()
+    today_cooldown_minutes: int = 10
+    signals: dict = field(default_factory=dict)
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -171,4 +181,6 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
             remind_days_before_end=int((raw.get("finale") or {}).get("remind_days_before_end", 3)),
         ),
         off_days=_off_days(camp.get("off_days")),
+        today_cooldown_minutes=int((raw.get("today_check") or {}).get("cooldown_minutes", 10)),
+        signals={**SIGNAL_DEFAULTS, **(raw.get("signals") or {})},
     )

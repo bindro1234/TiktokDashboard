@@ -41,8 +41,13 @@ test("budget helpers agree with collector/model.py", () => {
   assert.deepEqual([...lib.doneWindows(log)], ["2026-10-01/06u"]);
   // Same case as test_remaining_profile_runs: Friday 23 Oct 08:45, the 08u window already ran.
   const at = ams("2026-10-23T08:45:00+02:00");
-  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/08u"])), 43);
-  assert.equal(lib.remainingProfileRuns(CFG, at, new Set()), 44);
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/08u"])), 91);
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set()), 92);
+  // Campaign until Friday 30 Oct: windows open that day, none on the 31st.
+  assert.equal(CFG.campaign.end, "2026-10-30");
+  assert.equal(CFG.budget.monthlyCap, 23000);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-30T22:10:00+01:00")), ["2026-10-30/22u"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-31T00:10:00+01:00")), []);
 });
 
 test("studentStats: missed days, streaks, engagement and best video", () => {
@@ -88,10 +93,10 @@ test("off days: weekends and Herfstvakantie never break a streak, aren't missed 
   assert.equal(st.streak, 4);        // 14-17 Oct; 18-25 Oct free, 26 Oct not over yet
   assert.equal(st.longest, 11);      // 28 Sep - 12 Oct: 11 weekdays, weekends in between don't break it
   assert.equal(st.quietDays, 1);     // only today (26 Oct) counts: no warning
-  // With a post on the last day, the streak carries on and stays after the campaign ends.
-  posts.push(p("last", "2026-10-26T10:00:00Z"));
-  st = lib.studentStats(posts, CFG, ams("2026-10-28T12:00:00+02:00"));
-  assert.equal(st.streak, 5);
+  // Posting every school day to the end (26-30 Oct): the streak carries on and stays after the campaign ends.
+  for (const d of ["2026-10-26", "2026-10-27", "2026-10-28", "2026-10-29", "2026-10-30"]) posts.push(p("e" + d, `${d}T10:00:00Z`));
+  st = lib.studentStats(posts, CFG, ams("2026-11-02T12:00:00+01:00"));
+  assert.equal(st.streak, 9);
   // Posted Wednesday 30 Sep, now Sunday 4 Oct: Thu and Fri count, the weekend doesn't.
   st = lib.studentStats([p("a", "2026-09-30T10:00:00Z")], CFG, ams("2026-10-04T12:00:00+02:00"));
   assert.equal(st.quietDays, 2);
@@ -119,7 +124,7 @@ test("openWindows follows Amsterdam time in summer and winter", () => {
   assert.deepEqual(lib.openWindows(CFG, ams("2026-10-02T08:45:00+02:00")), ["2026-10-02/08u", "2026-10-02/weekrefresh"]);
   assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T09:45:00+02:00")), []);           // Thursday, no refresh
   assert.deepEqual(lib.openWindows(CFG, ams("2026-09-27T08:00:00+02:00")), []);  // before the campaign
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-27T08:00:00+01:00")), []);  // after collect_until
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-31T08:00:00+01:00")), []);  // after collect_until
 });
 
 test("dueWindows skips done windows, stops after max failures, adds the one-time check", () => {
@@ -166,7 +171,7 @@ test("the Cloudflare cron in wrangler.toml hits every window at least 3 times, a
     }
   }
   const r = CFG.schedule.refresh;
-  for (const day of ["2026-10-02", "2026-10-23"]) { // first and last Friday of the collection
+  for (const day of ["2026-10-02", "2026-10-30"]) { // first and last Friday of the collection
     const hits = firings(day).filter((t) => lib.openWindows(CFG, t).includes(`${day}/${r.name}`)).length;
     assert.ok(hits >= 4, `${day} ${r.name}: ${hits} hits`);
   }
@@ -199,4 +204,108 @@ test("finale windows replace the 2-hourly ones while live; keys match the collec
   assert.equal(lib.amsMs("2026-10-26", "16:00"), Date.parse("2026-10-26T15:00:00Z"));
   assert.equal(lib.amsMs("2026-10-01", "16:00"), Date.parse("2026-10-01T14:00:00Z"));
   assert.equal(lib.finaleRuns(0, 2 * 3600e3, 15), 8);
+});
+
+// ---------- dagopdrachten, Vandaag, buiten schaal, Opvallend ----------
+
+test("parseAssignments: active rows only, last row per date wins, sheet serial dates", () => {
+  const rows = [
+    { _row: 2, date: "2026-10-02", min_posts: 3, label: "eerst", active: "ja" },
+    { _row: 3, date: "2026-10-02", min_posts: 5, label: "later", active: "" },
+    { _row: 4, date: "2026-10-05", min_posts: 2, label: "", active: "nee" },
+    { _row: 5, date: 46301, min_posts: "2", label: "", active: "ja" }, // 6 Oct 2026 as a Sheets serial number
+    { _row: 6, date: "kapot", min_posts: 2, active: "ja" },
+  ];
+  assert.deepEqual(lib.parseAssignments(rows).map((a) => [a.row, a.date, a.min, a.label]),
+    [[3, "2026-10-02", 5, "later"], [5, "2026-10-06", 2, ""]]);
+});
+
+test("dagopdracht: judged after the day, never breaks the streak; zero posts is still a missed day", () => {
+  const p = (id, iso) => ({ video_id: id, created_at: iso, views: 10 });
+  const tasks = [{ date: "2026-10-01", min: 3, label: "" }, { date: "2026-10-02", min: 2, label: "" },
+    { date: "2026-10-05", min: 2, label: "" }, { date: "2026-10-06", min: 2, label: "" }];
+  const posts = [p("a", "2026-09-30T10:00:00Z"),
+    p("b", "2026-10-01T09:00:00Z"), p("c", "2026-10-01T11:00:00Z"),       // 2 of 3: not reached
+    p("d", "2026-10-02T09:00:00Z"), p("e", "2026-10-02T11:00:00Z"),       // 2 of 2: reached
+    p("f", "2026-10-06T09:00:00Z")];                                     // today, 1 of 2: still pending
+  const st = lib.studentStats(posts, CFG, ams("2026-10-06T15:00:00+02:00"), tasks);
+  assert.deepEqual(st.tasks.map((t) => [t.date, t.count, t.status]),
+    [["2026-10-01", 2, "missed"], ["2026-10-02", 2, "reached"], ["2026-10-05", 0, "missed"], ["2026-10-06", 1, "pending"]]);
+  assert.equal(st.tasksMissed, 2);
+  // Streak: 30 Sep - 2 Oct, weekend free, 5 Oct missed (0 posts), today 6 Oct posted -> 1. The 2/3 on 1 Oct
+  // does not break anything; 5 Oct does, as a normal missed day.
+  assert.equal(st.streak, 1);
+  assert.deepEqual(st.missedList, ["2026-09-28", "2026-09-29", "2026-10-05"]);
+  const plain = lib.studentStats(posts, CFG, ams("2026-10-06T15:00:00+02:00"));
+  assert.equal(plain.streak, st.streak);
+  assert.equal(plain.longest, st.longest);
+});
+
+test("todayStatus / todayTargets: who still has to post today; private accounts can't be checked", () => {
+  const now = ams("2026-10-06T13:00:00+02:00");
+  const students = [
+    { handle: "a", posts: [{ created_at: "2026-10-06T07:00:00Z" }] },                                 // posted 09:00
+    { handle: "b", posts: [{ created_at: "2026-10-05T21:30:00Z" }] },                                 // 23:30 yesterday
+    { handle: "c", posts: [], isPrivate: true },
+    { handle: "d", posts: [] },
+  ];
+  let st = lib.todayStatus(CFG, students, [], now);
+  assert.deepEqual(st.rows.map((r) => [r.handle, r.count, r.done]), [["a", 1, true], ["b", 0, false], ["c", 0, false], ["d", 0, false]]);
+  assert.deepEqual(lib.todayTargets(st), ["b", "d"]);
+  // With a dagopdracht of 2 today, one post is not enough yet.
+  st = lib.todayStatus(CFG, students, [{ date: "2026-10-06", min: 2, label: "" }], now);
+  assert.equal(st.task.min, 2);
+  assert.deepEqual(lib.todayTargets(st), ["a", "b", "d"]);
+  assert.equal(lib.todayStatus(CFG, students, [], ams("2026-10-10T12:00:00+02:00")).offDay, true); // Saturday
+});
+
+test("lastTodayCheck: from the activity log (dispatch) or run_log (today_check)", () => {
+  const runLog = [{ run_type: "today_check", timestamp: "2026-10-06T10:00:00Z", dry_run: false },
+    { run_type: "profiles", timestamp: "2026-10-06T11:00:00Z", dry_run: false },
+    { run_type: "today_check", timestamp: "2026-10-06T11:30:00Z", dry_run: true }];
+  assert.equal(lib.lastTodayCheck(runLog, []), Date.parse("2026-10-06T10:00:00Z"));
+  assert.equal(lib.lastTodayCheck(runLog, [{ action: lib.TODAY_CHECK_ACTION, timestamp: "2026-10-06T10:20:00Z" }]),
+    Date.parse("2026-10-06T10:20:00Z"));
+  // A check never counts as a full profiles run (no 30-minute "Nu verversen" cooldown, no 60-minute skip).
+  assert.equal(lib.lastProfilesRun([{ run_type: "today_check", timestamp: "2026-10-06T10:00:00Z", snapshot_ids: "sd" }]), null);
+});
+
+test("parseOutliers and median", () => {
+  assert.deepEqual([...lib.parseOutliers([{ handle: "@Big.One", buiten_schaal: "ja" }, { handle: "x", buiten_schaal: "nee" }, { handle: "", buiten_schaal: "ja" }])], ["big.one"]);
+  assert.equal(lib.median([5, 1, 3]), 3);
+  assert.equal(lib.median([4, 1, 3, 2]), 2.5);
+  assert.equal(lib.median([]), null);
+});
+
+test("signals: likes per view, step growth, silent videos and follower jumps, relative to the class", () => {
+  const S = CFG.signals;
+  const v = (id, handle, views, likes, comments = 5, shares = 1) => ({ video_id: id, handle, views, likes, comments, shares });
+  const posts = [
+    v("1", "a", 2000, 200), v("2", "b", 3000, 300), v("3", "c", 4000, 400), v("4", "d", 5000, 500), // ratio 0.10
+    v("5", "e", 6000, 6),          // 0.001: far below
+    v("6", "f", 1500, 900),        // 0.6: far above
+    v("7", "g", 500, 1),           // too small to judge
+    v("8", "h", 8000, 800, 0, 0),  // many views, no comments or shares
+    v("9", "i", 10000, 1000),      // step: 1,000 -> 9,500 in 2 h, then flat
+  ];
+  const h = 3600e3, t0 = Date.parse("2026-10-05T08:00:00Z");
+  const byVideo = new Map([["9", [{ t: t0, views: 1000 }, { t: t0 + 2 * h, views: 9500 }, { t: t0 + 4 * h, views: 9700 },
+    { t: t0 + 8 * h, views: 9900 }, { t: t0 + 14 * h, views: 10000 }]],
+    // Natural growth: spread over many runs, never one big step.
+    ["1", [{ t: t0, views: 200 }, { t: t0 + 2 * h, views: 700 }, { t: t0 + 4 * h, views: 1300 }, { t: t0 + 6 * h, views: 2000 }]]]);
+  const series = new Map([
+    ["a", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 24 * h, views: 2000, followers: 30 }]],  // 100 views per follower
+    ["b", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 24 * h, views: 3000, followers: 40 }]],
+    ["c", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 2 * h, views: 50, followers: 400 }]],    // +390 followers, 50 views
+  ]);
+  const flags = lib.signals(S, posts, byVideo, series);
+  const kinds = (k) => flags.filter((f) => f.kind === k).map((f) => f.video || f.handle).sort();
+  assert.deepEqual(kinds("likes"), ["5", "6"]);
+  assert.equal(flags.find((f) => f.video === "6").high, true);
+  assert.deepEqual(kinds("step"), ["9"]);
+  assert.ok(flags.find((f) => f.kind === "step").share > 0.8);
+  assert.deepEqual(kinds("silent"), ["8"]);
+  assert.deepEqual(kinds("followers"), ["c"]);
+  assert.equal(flags.find((f) => f.kind === "followers").followers, 390);
+  assert.ok(!flags.some((f) => f.video === "7"), "small videos are never flagged");
 });

@@ -142,11 +142,22 @@ class BudgetTests(unittest.TestCase):
     def test_remaining_profile_runs(self):
         now = local(2026, 10, 23, 8, 45)  # Friday refresh time; the 08u window already ran
         done = {"2026-10-23/08u"}
-        # 10u..22u on the 23rd (7) + 12 on each of the 24th, 25th and 26th = 43 runs;
-        # collection stops after 26 Oct.
-        self.assertEqual(model.remaining_profile_runs(CFG, now, done), 43)
+        # 10u..22u on the 23rd (7) + 12 on each of the 24th to the 30th (84) = 91 runs;
+        # collection stops after 30 Oct.
+        self.assertEqual(model.remaining_profile_runs(CFG, now, done), 91)
         # Without the 08u run it is still open (ends 08:59), so it counts too.
-        self.assertEqual(model.remaining_profile_runs(CFG, now, set()), 44)
+        self.assertEqual(model.remaining_profile_runs(CFG, now, set()), 92)
+
+    def test_campaign_end_and_cap(self):
+        self.assertEqual((CAMP.end, CAMP.collect_until), (dt.date(2026, 10, 30), dt.date(2026, 10, 30)))
+        self.assertEqual(CFG.monthly_cap, 23000)
+        # 26-30 Oct are normal school days; the Herfstvakantie stays 19-23 Oct.
+        self.assertFalse(any(CFG.off_days.contains(dt.date(2026, 10, d)) for d in range(26, 31)))
+        self.assertTrue(CFG.off_days.contains(dt.date(2026, 10, 23)))
+        # Every profile window of the last day is still collected; none on 31 Oct.
+        last = local(2026, 10, 30, 21, 0)
+        self.assertEqual(model.remaining_profile_runs(CFG, last, set()), 1)  # 22u (20u ended at 20:59)
+        self.assertEqual(model.remaining_profile_runs(CFG, local(2026, 10, 31, 1, 0), set()), 0)
 
     def test_window_state(self):
         rows = [{"window": "k1", "status": "failed", "dry_run": False},
@@ -347,6 +358,19 @@ class OffDayTests(unittest.TestCase):
         self.assertFalse(off.contains(dt.date(2026, 10, 26)))  # Monday after
         self.assertFalse(off.contains(dt.date(2026, 10, 16)))  # Friday before
 
+    def test_fixed_tab_id_matches_the_website(self):
+        site = (config.ROOT / "site" / "config.js").read_text(encoding="utf-8")
+        self.assertIn(f"outliers: {model.FIXED_SHEET_IDS['outliers']}", site)
+        self.assertIn("outliers", model.SCHEMA_DATA)
+        self.assertLess(model.FIXED_SHEET_IDS["outliers"], 2 ** 31)  # Sheets tab ids are int32
+        from collector import worker_config
+        out = worker_config.build(config.load())
+        self.assertEqual(out["fixedGids"], {"outliers": model.FIXED_SHEET_IDS["outliers"]})
+        self.assertEqual(out["todayCheck"], {"cooldownMinutes": 10})
+        self.assertEqual(out["signals"]["minViews"], CFG.signals["min_views"])
+        self.assertEqual(set(out["signals"]), {"minViews", "likeRatioFactor", "stepShare", "stepMaxHours", "flatHours",
+                                               "flatShare", "zeroEngagementMinViews", "followerJumpMin", "followerJumpFactor"})
+
     def test_worker_config_and_validation(self):
         from collector import worker_config
         out = worker_config.build(config.load())["offDays"]
@@ -358,16 +382,121 @@ class OffDayTests(unittest.TestCase):
 
 
 class FakeSheet:
-    """In-memory stand-in for Spreadsheet (read/append only)."""
+    """In-memory stand-in for Spreadsheet."""
 
     def __init__(self, tabs):
         self.tabs = {k: list(v) for k, v in tabs.items()}
 
     def read(self, tab):
-        return list(self.tabs.get(tab, []))
+        return [dict(r) for r in self.tabs.get(tab, [])]
 
     def append(self, tab, rows):
         self.tabs.setdefault(tab, []).extend(rows)
+
+    def rewrite(self, tab, rows):
+        self.tabs[tab] = [dict(r) for r in rows]
+
+    def ensure_columns(self, tab, columns):
+        pass
+
+    def ensure_tabs(self, schema, sheet_ids=None):
+        for tab in schema:
+            self.tabs.setdefault(tab, [])
+
+
+class FakeBrightData:
+    """Returns one profile record per requested URL; remembers what was asked."""
+
+    def __init__(self, records):
+        self.records = records
+        self.asked = []
+
+    def trigger(self, dataset, inputs, **params):
+        self.asked.append([i["url"].split("@")[1] for i in inputs])
+        return "sd_test"
+
+    def wait(self, snapshot):
+        return {"status": "ready", "records": len(self.asked[-1])}
+
+    def download(self, snapshot):
+        return [self.records[h] for h in self.asked[-1] if h in self.records]
+
+
+class TodayCheckTests(unittest.TestCase):
+    """Vandaag tab: "Controleer nu" checks only some accounts."""
+    NOW = dt.datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
+
+    def setUp(self):
+        accounts = [{"student_name": n, "tiktok_handle": h, "active": "ja"}
+                    for n, h in [("A", "aa"), ("B", "bb"), ("C", "cc"), ("D", "dd")]]
+        self.admin = FakeSheet({"accounts": accounts, "run_log": [], "profile_window": []})
+        old = {"is_private": False, "followers": 5, "last_scraped": "2026-10-07T10:00:00Z", "last_status": "ok",
+               "status_since": "2026-09-28T06:00:00Z"}
+        self.data = FakeSheet({
+            "handles": [{"handle": "aa", **old}, {"handle": "bb", **old}, {"handle": "cc", **old},
+                        {"handle": "dd", **old, "is_private": True, "last_status": "privé", "status_since": ""}],
+            "posts_latest": [], "history": [], "profile_snapshots": [
+                {"timestamp": "2026-10-01T10:00:00Z", "handle": "dd", "is_private": False},
+                {"timestamp": "2026-10-03T10:00:00Z", "handle": "dd", "is_private": True},
+                {"timestamp": "2026-10-05T10:00:00Z", "handle": "dd", "is_private": True}],
+        })
+        self.bd = FakeBrightData({h: profile_record(h, [(str(700 + i), "2026-10-07T09:00:00.000Z", 40)])
+                                  for i, h in enumerate(["aa", "bb", "cc", "dd"])})
+
+    def check(self, handles, dry=False):
+        col = Collector(CFG, self.admin, self.data, self.bd, dry_run=dry, now=self.NOW)
+        col.run_today_check("2026-10-07/today-1400", handles)
+        return self.admin.tabs["run_log"][-1]
+
+    def test_only_requested_accounts_are_fetched_and_updated(self):
+        row = self.check(["bb", "dd", "zz", "cc"])  # dd is private, zz is not in accounts
+        self.assertEqual(self.bd.asked, [["bb", "cc"]])
+        self.assertEqual((row["run_type"], row["status"], row["expected_records"], row["actual_records"]),
+                         ("today_check", "ok", 2, 2))
+        self.assertIn("@dd, @zz", row["notes"])
+        # History rows only for the two fetched accounts; handles keeps every row.
+        self.assertEqual(sorted(r["handle"] for r in self.data.tabs["history"]), ["bb", "cc"])
+        handles = {r["handle"]: r for r in self.data.tabs["handles"]}
+        self.assertEqual(sorted(handles), ["aa", "bb", "cc", "dd"])
+        self.assertEqual(handles["aa"]["last_scraped"], "2026-10-07T10:00:00Z")   # untouched
+        self.assertEqual(handles["bb"]["last_scraped"], "2026-10-07T12:00:00Z")
+        self.assertEqual(handles["bb"]["status_since"], "2026-09-28T06:00:00Z")   # still ok: unchanged
+        # The private account was not fetched, but its new status_since column is filled in from the
+        # snapshots: private since 3 Oct.
+        self.assertEqual(handles["dd"]["status_since"], "2026-10-03T10:00:00Z")
+        self.assertEqual({p["handle"] for p in self.data.tabs["posts_latest"]}, {"bb", "cc"})
+        self.assertIn("outliers", self.data.tabs)  # public "buiten schaal" tab created on the first run
+
+    def test_a_check_never_counts_as_a_full_profiles_run(self):
+        self.check(["aa"])
+        log = self.admin.tabs["run_log"]
+        self.assertIsNone(model.last_profiles_run(log))
+        # So the next scheduled window still runs (no 60-minute skip).
+        col = Collector(CFG, self.admin, self.data, self.bd, now=self.NOW + dt.timedelta(minutes=10))
+        col.run_scheduled_profiles("2026-10-07/14u")
+        self.assertEqual(self.admin.tabs["run_log"][-1]["status"], "ok")
+        self.assertEqual(self.bd.asked[-1], ["aa", "bb", "cc", "dd"])
+
+    def test_dry_run_and_budget(self):
+        row = self.check(["aa", "bb"], dry=True)
+        self.assertEqual((row["status"], row["expected_records"], self.bd.asked), ("dry-run", 2, []))
+        self.assertIn("would check: @aa, @bb", row["notes"])
+        # Refused when the month (plus the profile runs still to come) would go over the cap.
+        self.admin.tabs["run_log"].append({"timestamp": "2026-10-07T08:00:00Z", "dry_run": False,
+                                           "actual_records": CFG.monthly_cap - 100})
+        row = self.check(["aa", "bb"])
+        self.assertEqual((row["status"], self.bd.asked), ("refused", []))
+        self.assertIn("reserved for remaining profile runs", row["notes"])
+
+    def test_status_since_changes_with_the_status(self):
+        self.bd.records["cc"] = {"error": "Profile does not exist", "error_code": "dead_page",
+                                 "input": {"url": "https://www.tiktok.com/@cc"}}
+        self.check(["cc"])
+        cc = next(r for r in self.data.tabs["handles"] if r["handle"] == "cc")
+        self.assertTrue(cc["last_status"].startswith("fout"))
+        self.assertEqual(cc["status_since"], "2026-10-07T12:00:00Z")
+        self.assertEqual(model.status_kind("privé"), "privé")
+        self.assertEqual(model.private_since([{"timestamp": "t1", "handle": "x", "is_private": "TRUE"}], "x"), "t1")
 
 
 class ForceRefreshTests(unittest.TestCase):

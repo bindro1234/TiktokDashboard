@@ -1,6 +1,6 @@
 # TikTok-campagne tracker
 
-Houdt de TikTok-statistieken bij van de klas tijdens de Social Media Campagne (28 sept – 26 okt 2026) en toont de stand op een website.
+Houdt de TikTok-statistieken bij van de klas tijdens de Social Media Campagne (28 sept – 30 okt 2026) en toont de stand op een website.
 
 ```
 Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Sheets  →  website (site/, GitHub Pages, alleen handles)
@@ -33,7 +33,9 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | privé | `activity_log` | wie (e-mail) wat deed op de beheerpagina en wanneer: geopend (1× per dag), nu verversen, leerling toegevoegd/(de)geactiveerd, finale gestart/gewijzigd/gestopt, export. Wordt vanzelf aangemaakt |
 | privé | `finale` | per finale: start, wie, deadline, status (`active`, `stopped` = vroeg gestopt, `cancelled` = geannuleerd), wanneer gestopt en door wie. De laatste rij telt |
-| openbaar | `handles` | actieve handles, privé ja/nee, laatste status |
+| privé | `dagopdrachten` | per dagopdracht: `date`, `min_posts`, `label`, `active` (verwijderen = `nee`, rijen blijven staan), wanneer en door wie gewijzigd. Wordt vanzelf aangemaakt op Beheer |
+| openbaar | `handles` | actieve handles, privé ja/nee, laatste status, en `status_since`: sinds wanneer die status (ok / privé / niet gevonden) geldt |
+| openbaar | `outliers` | *buiten schaal*: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Heeft een vaste `gid` (702500001), zodat de site hem zonder extra stap vindt |
 | openbaar | `profile_snapshots` | volgers, volgend, likes, aantal video's per run |
 | openbaar | `posts_latest` | één rij per video (`video_id`), steeds bijgewerkt met de nieuwste cijfers, plus `hashtags`, `missing_since` en `hist_*` (laatste `post_history`-rij) |
 | openbaar | `history` | per run per account: totaal weergaven, volgers, likes en posts in de campagne (voor de grafieken) |
@@ -47,22 +49,22 @@ Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `na
 ## Kosten en budget
 
 - Bright Data rekent per record: 1 profiel = 1 record, 1 post = 1 record. 5.000 records per kalendermaand zijn gratis, daarna ca. $1,50 per 1.000.
-- **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **17.500**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
+- **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **23.000**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
 - Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen, zodat de hoofdbron nooit zonder budget komt te zitten.
 - De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu **40**). Dat is ook de bovengrens die de dry-run gebruikt en die wordt gereserveerd.
-- **Schatting oktober** (profielen elke 2 uur, 26 dagen × 12 runs):
+- **Schatting oktober** (profielen elke 2 uur, 1 t/m 30 oktober = 30 dagen × 12 runs):
 
-  | | 40 accounts | 45 accounts |
+  | | 40 accounts | 48 accounts |
   |---|---|---|
-  | profielruns | 12.480 | 14.040 |
-  | weekrefreshes (4×) | ≈ 600–1.150 | ≈ 700–1.300 |
-  | Nu verversen (≈ 5×) | ≈ 200 | ≈ 225 |
-  | **totaal zonder finale** | **≈ 13.300–13.800** | **≈ 15.000–15.600** |
-  | finale van 2 uur (+7 runs) | +280 | +315 |
-  | finale van 8 uur, het maximum (+28 runs) | +1.120 | +1.260 |
+  | profielruns | 14.400 | 17.280 |
+  | weekrefreshes (5×, verbruik) | ≈ 700–1.400 | ≈ 850–1.650 |
+  | Nu verversen (≈ 5×) | ≈ 200 | ≈ 240 |
+  | Controleer nu (Vandaag, ≈ 15× een deel van de klas) | ≈ 300 | ≈ 360 |
+  | **totaal zonder finale** | **≈ 15.600–16.300** | **≈ 18.700–19.500** |
+  | finale van 8 uur, het maximum (+28 runs) | +1.120 | +1.344 |
 
-  Boven de gratis 5.000 kost dat bij 45 accounts ≈ $15–17 (≈ €14–16).
-- **Waarom 17.500:** de weekrefreshes van 16 en 23 oktober reserveren eerst alle resterende profielruns van de maand. Bij meer dan ~42 accounts passen ze dan niet binnen 16.000 (ze zouden `refused` worden); met 17.500 passen ze bij 45 accounts, en is er ook ruimte voor een finale van 8 uur (≈ 15.600 + 1.260 = 16.860). De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
+  Boven de gratis 5.000 kost dat bij 48 accounts ≈ $22–24 (≈ €20–22).
+- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand plus max. 40 posts per account (48 × 40 = 1.920). Met 48 accounts komt dat samen met een finale van 8 uur op ≈ 20.500; 23.000 laat ruimte voor de *Controleer nu*-checks. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
 
 ## Schema
 
@@ -74,10 +76,11 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 | Weekrefresh | vrijdag 08:30 – 10:00 |
 | Eenmalige controle | 5 okt, direct na de run van 22:00 |
 | Finale | alleen als je hem start op de beheerpagina: elke 15 minuten tot de deadline |
+| Controle *Vandaag* | alleen als je op de beheerpagina op **Controleer nu** klikt: alleen wie vandaag nog niet gepost heeft |
 
 **Twee timers.** GitHub-cron (`collect.yml`) vuurt elk uur om :10, :30 en :50. Omdat die niet betrouwbaar is, heeft de beheerpagina-Worker een eigen *Cron Trigger* (`[triggers]` in `private/wrangler.toml`): **elke 5 minuten**. Die kijkt naar de tijdvakken uit `config.yaml`, naar een lopende finale (tab `finale` in de privésheet) en naar `run_log`. Staat er een tijdvak of een finale-run open die nog niet gedraaid heeft, en loopt de collector nog niet, dan start de Worker *Collect TikTok stats* met `auto` (via `GH_DISPATCH_TOKEN`). De collector controleert dat daarna zelf nog een keer. Starten ze allebei, dan doet de tweede niets en kost niets: elk tijdvak draait maar één keer. Zomer- en wintertijd: beide timers vuren elk uur, dus ook de dag van de klokwissel (25 okt) gaat goed; de tests controleren dat voor beide. Wat de timer deed staat in de Worker-logs (Cloudflare → Workers & Pages → tiktok-beheer → Logs).
 
-**Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun was, bijvoorbeeld via *Nu verversen* om 13:30 (dan vervalt de run van 14:00; de volgende is om 16:00). Finale-runs worden nooit overgeslagen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`.
+**Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun was, bijvoorbeeld via *Nu verversen* om 13:30 (dan vervalt de run van 14:00; de volgende is om 16:00). Finale-runs worden nooit overgeslagen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`. Een controle via *Vandaag* (`today_check` in `run_log`) telt hier **niet** mee: die haalt maar een deel van de klas op, dus de volgende geplande run gaat gewoon door.
 
 Alles staat in **`config.yaml`**. Pas je tijden aan, controleer dan ook de cron-regels in `.github/workflows/collect.yml` en `private/wrangler.toml` (de test `test_crons_cover_every_window` controleert dat).
 
@@ -101,6 +104,7 @@ In GitHub: **Actions → Collect TikTok stats → Run workflow**. Kies een comma
 | `profiles` | profielen nu ophalen (zonder 30-minutengrens) |
 | `refresh` | weekrefresh nu |
 | `check` | eenmalige controle nu (optioneel eigen lijst handles) |
+| `today` | *Controleer nu* van het tabblad Vandaag: profielen van alleen de opgegeven handles (veld *handles*, met komma's). Normaal start de beheerpagina dit |
 | `auto` | wat een geplande run ook doet |
 | `setup` | tabbladen en kopregels aanmaken (veilig om opnieuw te draaien) |
 
@@ -135,7 +139,7 @@ Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**,
 - **Finale:** loopt er een finale, dan staat onderaan een **aftelklok** tot de deadline en staat er **LIVE** bij de titels; de cijfers verversen dan elke 2 minuten. Na de deadline toont de presentatie alleen nog de **Eindstand**: het podium en de hele stand, bevroren op de laatste meting vóór de deadline.
 - Standaard een **licht** thema (beamers maken donkere achtergronden flets). Donker: `?present&donker`.
 - Rechtsonder staat klein *Bijgewerkt: …*. De gegevens verversen vanzelf (elke 10 minuten); nieuwe cijfers komen in de volgende dia.
-- Testen hoe de finale eruitziet kan met `?nu=2026-10-26T15:30` (doet alsof het dat moment is, alleen in jouw browser).
+- Testen hoe de finale eruitziet kan met `?nu=2026-10-30T15:30` (doet alsof het dat moment is, alleen in jouw browser).
 - Instellen in `site/config.js` onder `present`: seconden per dia (`slideSeconds`), accounts per pagina (`pageSize`), accounts in de grafiek (`graphAccounts`, max. 8) en rijen bij de stijgers (`risers`). Tijdelijk een andere snelheid: `?present&sec=20`.
 
 ## Nu verversen (alleen beheerder)
@@ -159,13 +163,15 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 
 | Tabblad | Wat |
 |---|---|
-| **Overzicht** | alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen*. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
-| **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks en gemiste dagen (zie *Vrije dagen* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, gem. weergaven per post, beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts |
-| **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam |
-| **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt |
+| **Overzicht** | bovenaan **Actie nodig**: wie vandaag nog niet gepost heeft, privé, niet gevonden en dagopdracht niet gehaald, elk met een link naar de leerling. Daaronder alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen*, *opdracht 2 okt: 3/5*. **Klik op een waarschuwing** voor de details: welke video verdwenen is en sinds wanneer, sinds wanneer een account privé of niet gevonden is. De kaart *Weergaven* toont naast het totaal de **mediaan per leerling**. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
+| **Vandaag** | wie vandaag nog niet gepost heeft en wie wel (met tijd en link), plus *laatst gecontroleerd*, en de knop **Controleer nu** (zie hieronder) |
+| **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks, gemiste dagen en **opdrachten niet gehaald** (zie *Vrije dagen* en *Dagopdrachten* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, dagopdrachten, gem. weergaven per post, beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts |
+| **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam. Met *zonder buiten schaal* |
+| **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt. Met *zonder buiten schaal* |
+| **Opvallend** | video's en accounts om even naar te kijken (zie hieronder) |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
-| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), leerling toevoegen, leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
-| **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling |
+| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen, leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
+| **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling, ook met `opdrachten_niet_gehaald` |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).
 
@@ -179,11 +185,48 @@ Op vrije dagen hoeft niemand te posten. Ze staan in `config.yaml` onder `campaig
 - Alleen de privé-site gebruikt dit (reeks, gemiste dagen, waarschuwingen, Export). Het ophalen van cijfers loopt op vrije dagen gewoon door.
 - Een extra vrije periode toevoegen: nog een regel onder `periods`, bijv. `- {name: Studiedag, from: 2026-10-09, to: 2026-10-09}`. Na de merge zet de deploy het vanzelf in de privé-site.
 
+### Vandaag en *Controleer nu*
+
+Sommige docenten laten leerlingen eerder gaan als hun video van vandaag online staat. Het tabblad **Vandaag** toont twee lijsten: *nog niet gepost* en *gepost* (met tijd en link naar de video), plus *laatst gecontroleerd* (de laatste ophaalrun). Op een dag met een dagopdracht staat er bijv. **2/5** in plaats van een vinkje, en is iemand pas klaar bij het minimum. Privé-accounts staan apart onder *kan niet gecontroleerd worden (privé)*.
+
+- **Controleer nu** haalt meteen de profielen op van alleen de actieve, openbare accounts die vandaag nog niet (genoeg) gepost hebben. 1 record per account: hoe korter de lijst, hoe goedkoper. Vóór het starten zie je wat het kost (bijv. *18 accounts, 18 records*).
+- Het duurt ongeveer **5–7 minuten** voordat de nieuwe cijfers er staan; het tabblad ververst vanzelf als de run klaar is.
+- Regels: maximaal één keer per **10 minuten** (`today_check.cooldown_minutes`), niet terwijl er al een ophaalrun loopt, en alleen als het binnen de maandlimiet past (met de resterende geplande runs van de maand gereserveerd). De lijst wordt op de server gemaakt, niet in de browser.
+- Eigen run-type in `run_log`: `today_check`. Die telt niet als volledige profielrun, dus de volgende geplande run wordt er niet door overgeslagen. Zo'n gedeeltelijke run werkt alleen de opgehaalde accounts bij (posts, status) en schrijft alleen voor hen een rij in `history`; de rest blijft precies zoals het was.
+
+### Dagopdrachten
+
+Op **Beheer → Dagopdrachten**: een dag waarop elke leerling minimaal een aantal posts moet plaatsen (2 of meer), met een optionele omschrijving. Toevoegen, wijzigen en verwijderen kan zonder deploy; het staat in de privétab `dagopdrachten` en elke wijziging komt in het activiteitenlog.
+
+- In de kalender (Leerlingen) staat op zo'n dag **3/5** (posts/minimum), met een **oranje rand** als het niet gehaald is. Op Overzicht komt een waarschuwing (*opdracht 2 okt: 3/5*) en de leerling staat bij *Actie nodig*.
+- Kolom *opdrachten niet gehaald* in de tabel van Leerlingen en in de Export.
+- Een dagopdracht **breekt de reeks niet** en telt niet als *gemist* zolang er die dag minstens één post is. Nul posts is gewoon een gemiste dag (behalve op een vrije dag).
+- Vandaag telt pas als *niet gehaald* als de dag voorbij is, net als gemiste dagen.
+
+### Buiten schaal (uitschieter)
+
+Heeft één account bijv. 2,3 miljoen weergaven en de rest minder dan 100.000, dan is elke grafiek één lijn met een platte vloer. Zet dat account op **Beheer → Alle leerlingen → Buiten schaal**.
+
+- **Grafieken** (openbaar *Grafiek* en *Groei*, de grafiek in de presentatie): de y-as schaalt zonder dat account. Het staat als grijs **▲** bovenaan met de handle en het echte getal. Ook de balkjes van *Stijgers* (presentatie) en *Video's* schalen zonder het account; dat van het account loopt grijs door tot het eind.
+- **Plaats, podium en tabellen veranderen niet**: het account staat gewoon op zijn echte plaats met zijn echte cijfers.
+- Op de beheerpagina kun je bij *Stijgers* en *Hashtags* het account weglaten met **zonder buiten schaal** (staat standaard aan zodra er een account gemarkeerd is).
+- Opgeslagen in de openbare tab `outliers` (alleen handles), zodat de openbare site, de beheerpagina en de presentatie het allemaal volgen. Weer aanzetten: dezelfde knop (*In schaal*).
+
+### Opvallend (geen oordeel)
+
+Het tabblad **Opvallend** (alleen op de beheerpagina) laat cijfers zien die veel afwijken van de rest van de klas. Er staat nergens "bot": elke melding toont de cijfers erachter en een link naar de video of het profiel, en de docent beoordeelt zelf. Het wordt in de browser berekend uit `posts_latest`, `post_history` en `history`; er wordt niets opgeslagen en niets komt in de openbare sheet of de Actions-logs.
+
+- **Likes per weergave** veel lager of hoger (3×) dan de mediaan van de klas.
+- **Groei in één sprong**: 60% of meer van de weergaven van een video kwam binnen in één stap (binnen 2,5 uur) en daarna 6 uur bijna niets.
+- **Geen reacties of shares** bij 5.000 of meer weergaven.
+- **Volgers-sprong**: 100 of meer volgers erbij tussen twee runs, met 5× minder nieuwe weergaven per nieuwe volger dan de klas.
+- Kleine video's (onder 1.000 weergaven) worden nooit gemeld. Alle drempels staan in `config.yaml` onder `signals`.
+
 ### Finale (laatste les)
 
 Op **Beheer → Finale**:
 
-1. Kies de **deadline** (datum + tijd, Nederlandse tijd) en klik **▶ Start finale**. Je ziet vooraf wat het kost: 4 runs per uur × het aantal actieve accounts (bij 40 accounts ≈ 160 records per uur), en of het binnen de maandlimiet past; zo niet, dan start hij niet.
+1. Kies de **deadline** (dag + tijd, Nederlandse tijd, 24-uursklok) en klik **▶ Start finale**. Je ziet vooraf wat het kost: 4 runs per uur × het aantal actieve accounts (bij 40 accounts ≈ 160 records per uur), en of het binnen de maandlimiet past; zo niet, dan start hij niet.
 2. Tijdens de finale: profielen **elke 15 minuten** (de 2-uurlijkse runs vervallen dan), op de presentatie (openbaar en privé) en bovenaan beide sites een **aftelklok** en **LIVE**-labels. De eerste run start meteen.
 3. Bij de deadline stopt hij vanzelf; hij duurt **nooit langer dan 8 uur** (`finale.max_hours`). Daarna tonen de sites en de presentatie de **Eindstand**, bevroren op de laatste meting vóór de deadline.
 4. **Deadline wijzigen** kan zolang hij loopt (binnen die 8 uur). **Stop finale nu** beëindigt hem meteen (Eindstand vanaf nu). **Annuleer finale** stopt zonder Eindstand; ook achteraf, als de Eindstand weg moet.
@@ -267,10 +310,10 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 
 ## Website
 
-Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history`, `posts_latest` en `finale`, en ververst zichzelf elke 10 minuten (tijdens een finale elke 2 minuten). `post_history` wordt alleen geladen voor *Video's* en accountpagina's.
+Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history`, `posts_latest`, `finale` en `outliers`, en ververst zichzelf elke 10 minuten (tijdens een finale elke 2 minuten). `post_history` wordt alleen geladen voor *Video's* en accountpagina's.
 
 - **Stand**: ranglijst op totaal weergaven, met `+ 24 uur` (vergeleken met de meting van 24 uur eerder; met runs elke 2 uur schuift dat mee en springt het niet terug om middernacht), stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
-- **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen weergaven, volgers, posts en likes, en tussen **Alles / 7 dagen / 48 uur** (met 12 metingen per dag zie je zo het verloop binnen een dag; bij korte periodes staan er ook uren op de as). Overige accounts kunnen grijs erbij.
+- **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen weergaven, volgers, posts en likes, en tussen **Alles / 7 dagen / 48 uur** (met 12 metingen per dag zie je zo het verloop binnen een dag; bij korte periodes staan er ook uren op de as). Overige accounts kunnen grijs erbij. Een account *buiten schaal* staat als grijs ▲ bovenaan met zijn echte getal.
 - **Groei**: erbij per dag of per week (per dag = laatste meting van die dag min die van de dag ervoor), plus de grootste stijgers.
 - **Video's**: *Snelste stijgers*, de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur.
 - **Hashtags**: de meest gebruikte hashtags en de hashtags met de meeste weergaven (van campagneposts), met het aantal accounts. Klik op een hashtag om te zien welke accounts hem gebruiken.
@@ -280,6 +323,6 @@ Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `h
 
 **Snelheid** (getest met 4× langzamere processor en 10 Mbit/s, met data van het einde van de campagne): presentatie eerste dia ≈ 1,8 s, verversen ≈ 1,2 s; site ≈ 1,7 s. De presentatie laadt `post_history` nooit. Het tabblad *Video's* laadt het wel: aan het eind van de campagne ≈ 5–6 MB, ≈ 7 s de eerste keer (daarna 10 minuten in het geheugen). Wordt dat te traag, dan kan de collector een klein voorberekend tabblad (`video_trends`) schrijven.
 
-**Na het toevoegen van een nieuw openbaar tabblad** (nu `post_history` en `finale`): draai eenmalig **Actions → Collect TikTok stats → `setup`** (geen dry-run). Die maakt de tabbladen aan en zet in de samenvatting hun `gid`; die horen in `site/config.js` onder `gids`.
+**Na het toevoegen van een nieuw openbaar tabblad** (eerder `post_history` en `finale`; `outliers` heeft een vaste `gid` en wordt door de collector zelf aangemaakt, dus daarvoor hoeft niets): draai eenmalig **Actions → Collect TikTok stats → `setup`** (geen dry-run). Die maakt de tabbladen aan en zet in de samenvatting hun `gid`; die horen in `site/config.js` onder `gids`.
 
 De site leest de CSV via de "Publiceren op internet"-link: `publishedId` in `site/config.js` is het deel van die link dat met `2PACX-` begint. Publiceer je de sheet opnieuw en verandert de link, pas het dan daar aan. De workflow *Check website* controleert na elke deploy of de links en de site werken, ook de presentatiemodus op 1920×1080 en 1280×720.

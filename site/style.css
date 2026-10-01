@@ -120,6 +120,10 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
   position: absolute; right: 0; top: 18%; bottom: 18%; width: var(--w); max-width: 100%;
   background: var(--s1); opacity: 0.16; border-radius: 4px 0 0 4px;
 }
+/* "Buiten schaal": bar capped at full width, grey, with a ▲ */
+.cell-bar.out { background: var(--muted); }
+.out-mark, .p-out { color: var(--muted); font-weight: 700; }
+.p-out { font-size: 0.6em; }
 .tag-detail td { background: var(--surface-2); }
 .tag-detail .chip { margin: 2px 4px 2px 0; text-decoration: none; font-size: 0.85rem; }
 .board tbody tr.tag-detail { cursor: default; }
@@ -265,9 +269,14 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 .p-chg { font-size: 0.7em; font-weight: 700; }
 .p-handle { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-gain { color: var(--text-2); }
-.p-risers .p-row { grid-template-columns: calc(var(--u) * 7) minmax(0, 1.2fr) minmax(0, 1fr) calc(var(--u) * 20); }
-.p-track { height: 45%; overflow: hidden; background: var(--surface-2); border-radius: calc(var(--u) * 0.6); }
+/* Number columns wide enough for 7 digits (a 2-million account gains 6 digits a day); fixed, so rows line up. */
+.p-row { grid-template-columns: calc(var(--u) * 7) calc(var(--u) * 9) minmax(0, 1fr) calc(var(--u) * 28) calc(var(--u) * 26); }
+.p-risers .p-row { grid-template-columns: calc(var(--u) * 7) minmax(0, 1.2fr) minmax(0, 1fr) calc(var(--u) * 26); }
+.p-track { position: relative; height: 45%; overflow: hidden; background: var(--surface-2); border-radius: calc(var(--u) * 0.6); }
+.p-track-out { overflow: visible; }
+.p-out-mark { position: absolute; right: calc(var(--u) * -0.6); top: 50%; transform: translate(100%, -50%); color: var(--muted); font-size: calc(var(--u) * 2.6); line-height: 1; }
 .p-bar { display: block; height: 100%; background: var(--s1); border-radius: 0 calc(var(--u) * 0.6) calc(var(--u) * 0.6) 0; }
+.p-bar.p-bar-out { background: var(--muted); border-radius: 0; }
 
 /* Graph */
 .p-graph { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) calc(var(--u) * 42); gap: calc(var(--u) * 3); }

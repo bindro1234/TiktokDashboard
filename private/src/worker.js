@@ -18,6 +18,11 @@ const FINALE_TAB = "finale";
 const FINALE_HEADER = ["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"];
 const PUBLIC_FINALE_HEADER = ["started_at", "deadline", "status", "ended_at"]; // no emails: public sheet
 const MIN_FINALE_MINUTES = 15;
+const TASKS_TAB = "dagopdrachten";
+const TASKS_HEADER = ["date", "min_posts", "label", "active", "updated_at", "updated_by"];
+const OUTLIERS_TAB = "outliers"; // public sheet: handles only
+const OUTLIERS_HEADER = ["handle", "buiten_schaal", "updated_at"];
+const MAX_TASK_POSTS = 20;
 
 const SECURITY_HEADERS = {
   "cache-control": "no-store",
@@ -124,6 +129,9 @@ export async function handle(request, env, ctx, fetchImpl = fetch) {
       case "POST /api/finale/start": return json(await api.finaleStart(await request.json()));
       case "POST /api/finale/deadline": return json(await api.finaleDeadline(await request.json()));
       case "POST /api/finale/stop": return json(await api.finaleStop(await request.json()));
+      case "POST /api/outliers": return json(await api.setOutlier(await request.json()));
+      case "POST /api/tasks": return json(await api.saveTask(await request.json()));
+      case "POST /api/today/check": return json(await api.todayCheck());
       default: return json({ error: "Onbekende route" }, 404);
     }
   } catch (err) {
@@ -162,8 +170,8 @@ class Api {
 
   async data() {
     const [admin, data] = await Promise.all([
-      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB]),
-      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest"]),
+      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB, TASKS_TAB]),
+      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB]),
     ]);
     const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
     const runLog = lib.rowsToObjects(admin.run_log);
@@ -190,7 +198,7 @@ class Api {
       config: {
         campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: CONFIG.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
-        finale: CONFIG.finale, offDays: CONFIG.offDays,
+        finale: CONFIG.finale, offDays: CONFIG.offDays, todayCheck: CONFIG.todayCheck, signals: CONFIG.signals,
       },
       finale: finale && { ...finale, row: undefined },
       // Any finale that really ran (not cancelled): hides the "start the finale" reminder.
@@ -203,6 +211,9 @@ class Api {
       activity: activity.slice(-80).reverse().map(strip),
       budget: lib.budget(CONFIG, runLog, tracked, now),
       lastProfilesRun: last,
+      lastTodayCheck: lib.lastTodayCheck(runLog, activity),
+      tasks: lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])),
+      outliers: [...lib.parseOutliers(lib.rowsToObjects(data[OUTLIERS_TAB]))],
     };
   }
 
@@ -413,6 +424,115 @@ class Api {
     await this.log(cancel ? "finale geannuleerd" : "finale gestopt", cancel ? "geen Eindstand" : `Eindstand vanaf ${lib.localTime(now)}`);
     return { ok: true, message: cancel ? "Finale geannuleerd: geen Eindstand, alles loopt weer gewoon door."
       : "Finale gestopt. De Eindstand staat vast op de laatste meting." };
+  }
+
+  // ---------- buiten schaal (public sheet, handles only) ----------
+
+  async setOutlier(body) {
+    const { handle } = lib.normalizeHandle(body?.handle);
+    const on = body?.on === true;
+    if (!handle) throw new HttpError(400, "Ongeldige handle");
+    const { accounts } = await this.sheets.readTabs(this.admin, ["accounts"]);
+    if (!lib.parseAccounts(lib.rowsToObjects(accounts)).some((a) => a.tracked && a.handle === handle)) {
+      throw new HttpError(409, `@${handle} wordt niet gevolgd.`);
+    }
+    await this.sheets.ensureTab(this.dataId, OUTLIERS_TAB, OUTLIERS_HEADER, CONFIG.fixedGids?.[OUTLIERS_TAB] ?? null);
+    const { [OUTLIERS_TAB]: values } = await this.sheets.readTabs(this.dataId, [OUTLIERS_TAB]);
+    const row = lib.rowsToObjects(values).find((r) => lib.normalizeHandle(r.handle).handle === handle);
+    const cells = [handle, on ? "ja" : "nee", nowIso()];
+    // One row per handle, updated in place (never deleted).
+    if (row) await this.sheets.update(this.dataId, OUTLIERS_TAB, `A${row._row}:C${row._row}`, [cells]);
+    else await this.sheets.append(this.dataId, OUTLIERS_TAB, [cells]);
+    await this.log(on ? "buiten schaal aan" : "buiten schaal uit", `@${handle}`);
+    return { ok: true, message: on ? `@${handle} staat nu buiten de schaal van de grafieken (plaats en cijfers blijven gelijk).`
+      : `@${handle} telt weer mee in de schaal van de grafieken.` };
+  }
+
+  // ---------- dagopdrachten (private sheet) ----------
+
+  async saveTask(body) {
+    const action = body?.action;
+    if (!["add", "edit", "remove"].includes(action)) throw new HttpError(400, "Onbekende actie");
+    await this.sheets.ensureTab(this.admin, TASKS_TAB, TASKS_HEADER);
+    const { [TASKS_TAB]: values } = await this.sheets.readTabs(this.admin, [TASKS_TAB]);
+    const rows = lib.rowsToObjects(values);
+    const active = lib.parseAssignments(rows);
+    const at = nowIso();
+    const short = (d) => `${Number(d.slice(8, 10))}-${Number(d.slice(5, 7))}`;
+    let target = null;
+    if (action !== "add") {
+      const rowNo = Number(body?.row);
+      target = active.find((a) => a.row === rowNo);
+      if (!target || target.date !== body?.was) throw new HttpError(409, "De dagopdrachten zijn intussen veranderd. Laad de pagina opnieuw.");
+    }
+    if (action === "remove") {
+      await this.sheets.update(this.admin, TASKS_TAB, `D${target.row}:F${target.row}`, [["nee", at, this.email]]);
+      await this.log("dagopdracht verwijderd", `${target.date}: ${target.min} posts${target.label ? ` (${target.label})` : ""}`);
+      return { ok: true, message: `Dagopdracht van ${short(target.date)} verwijderd.` };
+    }
+    const date = lib.sheetDate(body?.date);
+    const min = Number(body?.min);
+    const label = String(body?.label ?? "").trim().replace(/\s+/g, " ");
+    if (!date || date < CONFIG.campaign.start || date > CONFIG.campaign.end) {
+      throw new HttpError(400, `Kies een dag in de campagne (${CONFIG.campaign.start} t/m ${CONFIG.campaign.end}).`);
+    }
+    if (!Number.isInteger(min) || min < 2 || min > MAX_TASK_POSTS) throw new HttpError(400, `Minimum: een heel getal van 2 t/m ${MAX_TASK_POSTS}.`);
+    if (label.length > 60) throw new HttpError(400, "Omschrijving is te lang (max. 60 tekens).");
+    const clash = active.find((a) => a.date === date && (!target || a.row !== target.row));
+    if (clash) throw new HttpError(409, `Er staat al een dagopdracht op ${short(date)}. Pas die aan.`);
+    const cells = [date, min, label, "ja", at, this.email];
+    if (action === "add") {
+      await this.sheets.append(this.admin, TASKS_TAB, [cells]);
+      await this.log("dagopdracht toegevoegd", `${date}: ${min} posts${label ? ` (${label})` : ""}`);
+      return { ok: true, message: `Dagopdracht toegevoegd: ${short(date)}, minimaal ${min} posts.` };
+    }
+    await this.sheets.update(this.admin, TASKS_TAB, `A${target.row}:F${target.row}`, [cells]);
+    await this.log("dagopdracht gewijzigd", `${target.date}: ${target.min} → ${date}: ${min} posts${label ? ` (${label})` : ""}`);
+    return { ok: true, message: `Dagopdracht aangepast: ${short(date)}, minimaal ${min} posts.` };
+  }
+
+  // ---------- Vandaag: "Controleer nu" ----------
+
+  async todayCheck() {
+    const [admin, data] = await Promise.all([
+      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, TASKS_TAB]),
+      this.sheets.readTabs(this.dataId, ["handles", "posts_latest"]),
+    ]);
+    const now = Date.now();
+    const runLog = lib.rowsToObjects(admin.run_log);
+    const last = lib.lastTodayCheck(runLog, lib.rowsToObjects(admin[ACTIVITY_TAB]));
+    const cool = CONFIG.todayCheck.cooldownMinutes;
+    if (last !== null && now - last < cool * 60e3) {
+      const left = Math.ceil(cool - (now - last) / 60e3);
+      throw new HttpError(409, `De vorige controle was om ${lib.localTime(last)}. Controleren kan weer over ${left} min.`);
+    }
+    // The target list is made here, not taken from the page: active, not private, not done today.
+    const tracked = lib.parseAccounts(lib.rowsToObjects(admin.accounts)).filter((a) => a.tracked);
+    const info = new Map(lib.rowsToObjects(data.handles).map((h) => [String(h.handle), h]));
+    const posts = new Map();
+    for (const p of lib.rowsToObjects(data.posts_latest)) {
+      const h = String(p.handle);
+      if (!posts.has(h)) posts.set(h, []);
+      posts.get(h).push(p);
+    }
+    const status = lib.todayStatus(CONFIG, tracked.map((a) => ({ handle: a.handle, posts: posts.get(a.handle) || [],
+      isPrivate: lib.truthy(info.get(a.handle)?.is_private) })), lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
+    const targets = lib.todayTargets(status);
+    if (!targets.length) throw new HttpError(409, "Iedereen die gecontroleerd kan worden heeft vandaag al gepost.");
+    const b = lib.budget(CONFIG, runLog, tracked.length, now);
+    if (b.projected + targets.length > CONFIG.budget.monthlyCap) {
+      throw new HttpError(409, `Past niet in het budget: ${b.used} gebruikt + ${b.reserved} nodig voor de resterende profielruns `
+        + `+ ${targets.length} voor deze controle is meer dan ${CONFIG.budget.monthlyCap}.`);
+    }
+    const busy = await Promise.all([CONFIG.workflows.collect, CONFIG.workflows.force].map((wf) =>
+      this.github(`/actions/workflows/${wf}/runs?per_page=5`).then((d) => (d.workflow_runs || []).some((r) => RUNNING.has(r.status)))));
+    if (busy.some(Boolean)) throw new HttpError(409, "Er loopt al een ophaalrun. Probeer het over een paar minuten opnieuw.");
+    await this.github(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`, { method: "POST",
+      body: JSON.stringify({ ref: "main", inputs: { command: "today", dry_run: "false", handles: targets.join(",") } }) });
+    await this.log(lib.TODAY_CHECK_ACTION, `${targets.length} account${targets.length === 1 ? "" : "s"}, ${targets.length} records`);
+    return { ok: true, count: targets.length, startedAt: now,
+      message: `Controle gestart voor ${targets.length} account${targets.length === 1 ? "" : "s"} (${targets.length} records). `
+        + "Nieuwe cijfers staan er over ongeveer 5–7 minuten; deze pagina ververst vanzelf zodra de run klaar is." };
   }
 
   async logClient(body) {

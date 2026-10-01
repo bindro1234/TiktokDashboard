@@ -98,7 +98,7 @@ const Present = (() => {
       <div class="p-graph">
         <div class="p-chart"><canvas id="p-chart" aria-label="Weergaven over tijd, top ${top.length}"></canvas></div>
         <ol class="p-legend">${top.map((h, i) => `
-          <li><span class="p-dot" style="background:${color(h)}"></span><span class="p-legend-rank">${i + 1}</span><span class="p-legend-name">${who(h)}</span></li>`).join("")}
+          <li><span class="p-dot" style="background:${data.outliers.has(h) ? cssVar("--muted") : color(h)}"></span><span class="p-legend-rank">${i + 1}</span><span class="p-legend-name">${who(h)}${data.outliers.has(h) ? ` <span class="p-out">▲ buiten schaal</span>` : ""}</span></li>`).join("")}
         </ol>
       </div>`;
   }
@@ -108,11 +108,9 @@ const Present = (() => {
     const opts = timeAxis(baseOptions());
     opts.plugins.tooltip.enabled = false;
     opts.layout = { padding: { right: 8 } };
-    drawChart("p-chart", {
-      type: "line",
-      data: { datasets: top.map((h) => ({ ...lineDataset("@" + h, points(h, "total_views"), color(h), false), borderWidth: 3 })) },
-      options: opts,
-    });
+    const datasets = applyOutliers(top.map((h) => ({ ...lineDataset("@" + h, points(h, "total_views"), color(h), false), borderWidth: 3, handle: h })));
+    outlierPadding(opts, datasets);
+    drawChart("p-chart", { type: "line", data: { datasets }, options: opts, plugins: [outlierMarks] });
   }
 
   function risers() {
@@ -122,14 +120,16 @@ const Present = (() => {
       .slice(0, P.risers);
     const head = title("Stijgers", "weergaven erbij in de laatste 24 uur");
     if (!rows.length) return head + `<p class="p-message">Nog geen vergelijking met 24 uur geleden. Morgen staan hier de grootste stijgers.</p>`;
-    const max = Math.max(1, ...rows.map((r) => r.gain));
+    // Bars scale without "buiten schaal" accounts; theirs runs off the end, grey with a ▲.
+    const scaled = rows.filter((r) => !data.outliers.has(r.handle));
+    const max = Math.max(1, ...(scaled.length ? scaled : rows).map((r) => r.gain));
     return head + `
       <div class="p-table p-risers" style="--rows:${P.risers}">
         ${rows.map((r, i) => `
           <div class="p-row">
             <span class="p-rank">${i + 1}</span>
             <span class="p-handle">${who(r.handle)}${badge(r)}</span>
-            <span class="p-track"><span class="p-bar" style="width:${(Math.max(0, r.gain) / max) * 100}%"></span></span>
+            <span class="p-track${r.gain > max ? " p-track-out" : ""}"><span class="p-bar${r.gain > max ? " p-bar-out" : ""}" style="width:${Math.min(1, Math.max(0, r.gain) / max) * 100}%"></span>${r.gain > max ? `<span class="p-out-mark">▲</span>` : ""}</span>
             <span class="p-views">${signed(r.gain)}</span>
           </div>`).join("")}
       </div>`;

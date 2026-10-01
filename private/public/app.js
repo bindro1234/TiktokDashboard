@@ -21,6 +21,10 @@ const state = {
   sort: { key: "rank", dir: 1 }, search: "", onlyWarn: false,
   tagSort: "posts", tagOpen: null, accSearch: "", format: "nl",
   videoRange: 24, postHistory: null, finaleCardKey: null,
+  warnOpen: null,        // Overzicht: handle whose warning details are shown
+  hideOutliers: null,    // Stijgers/Hashtags "zonder buiten schaal"; null = on when any account is marked
+  taskEdit: null,        // Beheer: dagopdracht being edited (row)
+  todayRun: null,        // Vandaag: { startedAt, count } while a "Controleer nu" run is on its way
 };
 const hourFmt = new Intl.DateTimeFormat("nl-NL", { timeZone: lib.TZ, hour: "2-digit", minute: "2-digit" });
 const longDate = new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" });
@@ -68,6 +72,8 @@ function build(raw) {
     latest = Math.max(latest, t);
   }
   for (const s of history.values()) s.sort((a, b) => a.t - b.t);
+  const tasks = raw.tasks || [];
+  const outliers = new Set(raw.outliers || []);
   const posts = new Map();
   for (const p of raw.posts) {
     const h = String(p.handle);
@@ -82,35 +88,61 @@ function build(raw) {
     const cur = series.at(-1) || null;
     let base = null;
     for (let i = series.length - 1; i >= 0; i--) if (series[i].t <= target) { base = series[i]; break; }
-    const stats = lib.studentStats(posts.get(a.handle) || [], cfg, now);
+    const stats = lib.studentStats(posts.get(a.handle) || [], cfg, now, tasks);
     const s = {
       ...a, info, cur, stats, posts: posts.get(a.handle) || [],
       views: cur ? cur.views : 0, gain: cur && base ? cur.views - base.views : null,
       followers: cur ? cur.followers : null,
       isPrivate: info ? lib.truthy(info.is_private) : false,
+      isOutlier: outliers.has(a.handle),
     };
     s.warnings = warnings(s, cfg, now);
     return s;
   });
   const sorted = [...students].sort((x, y) => y.views - x.views || x.handle.localeCompare(y.handle));
   sorted.forEach((s, i) => { s.rank = i > 0 && sorted[i - 1].views === s.views ? sorted[i - 1].rank : i + 1; });
-  return { cfg, now, latest, final, students, posts, tags: lib.hashtagStats(posts), byHandle: new Map(students.map((s) => [s.handle, s])) };
+  return { cfg, now, latest, final, students, posts, tags: lib.hashtagStats(posts), tasks, outliers, series: history,
+    taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle: new Map(students.map((s) => [s.handle, s])) };
 }
 
+// Warnings per student. `detail` (HTML) is what a click on the badge shows: which video, since when.
 function warnings(s, cfg, now) {
   const out = [];
   const status = String(s.info?.last_status ?? "");
-  if (s.isPrivate) out.push({ cls: "bad", text: "privé" });
-  if (status.startsWith("fout")) out.push({ cls: "bad", text: "niet gevonden", title: status });
-  if (!s.info) out.push({ cls: "info", text: "nog niet opgehaald" });
+  const sinceTs = lib.parseTs(s.info?.status_since);
+  const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend (vóór deze versie niet bijgehouden)";
+  if (s.isPrivate) {
+    out.push({ cls: "bad", kind: "private", text: "privé",
+      detail: `Staat op privé ${since}. Nieuwe weergaven tellen pas weer mee als het account openbaar is.` });
+  }
+  if (status.startsWith("fout")) {
+    out.push({ cls: "bad", kind: "notfound", text: "niet gevonden", title: status,
+      detail: `Niet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
+  }
+  if (!s.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald", detail: "Wordt opgehaald bij de volgende profielrun." });
   const today = lib.localDay(now);
   // Counted in days on which posting is expected: weekends and holidays (off_days) are left out.
   if (s.info && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
-    out.push({ cls: "warn", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
-      title: "Weekenden en vakantiedagen tellen niet mee" });
+    out.push({ cls: "warn", kind: "quiet", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
+      title: "Weekenden en vakantiedagen tellen niet mee",
+      detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}. Weekenden en vakantiedagen tellen niet mee.`
+        : "Nog geen enkele campagnepost gezien." });
   }
-  if (s.stats.missing) out.push({ cls: "warn", text: `${s.stats.missing} video${s.stats.missing > 1 ? "'s" : ""} verdwenen`,
-    title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?" });
+  if (s.stats.missing) {
+    const gone = s.posts.filter((p) => String(p.missing_since || "").trim())
+      .sort((a, b) => String(a.missing_since).localeCompare(String(b.missing_since)));
+    out.push({ cls: "warn", kind: "missing", text: `${s.stats.missing} video${s.stats.missing > 1 ? "'s" : ""} verdwenen`,
+      title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?",
+      detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.<ul>${gone.map((p) => {
+        const c = lib.parseTs(p.created_at), m = lib.parseTs(p.missing_since);
+        return `<li>Video van ${c ? stampFmt.format(c) : "?"}, ${fmt(lib.toNum(p.views))} weergaven: verdwenen sinds ${m ? stampFmt.format(m) : esc(p.missing_since)}.
+          <a href="${tiktok(s.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></li>`;
+      }).join("")}</ul>` });
+  }
+  for (const t of s.stats.tasks.filter((x) => x.status === "missed")) {
+    out.push({ cls: "warn", kind: "task", text: `opdracht ${shortDay(t.date)}: ${t.count}/${t.min}`,
+      detail: `Dagopdracht ${dayLabel(t.date)}${t.label ? ` (${esc(t.label)})` : ""}: minimaal ${t.min} posts, gepost: ${t.count}.` });
+  }
   return out;
 }
 
@@ -118,6 +150,14 @@ function warnings(s, cfg, now) {
 const byName = (a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", "nl") || a.handle.localeCompare(b.handle);
 const nameCell = (s) => (s.name ? esc(s.name) : `<mark class="unknown">onbekend</mark>`);
 const badges = (list) => list.map((w) => `<span class="badge ${w.cls}"${w.title ? ` title="${esc(w.title)}"` : ""}>${esc(w.text)}</span>`).join("");
+// Clickable badges (Overzicht): a click shows the details under the row.
+const warnButtons = (s) => s.warnings.map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
+  aria-expanded="${state.warnOpen === s.handle}" title="${esc(w.title || "Klik voor details")}">${esc(w.text)}</button>`).join("");
+const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.detail)
+  .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
+const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
+const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
+  <span class="meta">@${esc(s.handle)}</span>${extra}</a>`;
 
 // ---------- Overzicht ----------
 
@@ -134,7 +174,8 @@ function renderOverview(m) {
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   $("ov-tiles").innerHTML =
     tile("Leerlingen gevolgd", fmt(all.length), `${m.cfg.campaign.start} t/m ${m.cfg.campaign.end}`)
-    + tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)))
+    + tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)),
+      all.length ? `mediaan per leerling: <strong>${fmt(Math.round(lib.median(all.map((s) => s.views))))}</strong>` : "")
     + tile("Posts", fmt(all.reduce((n, s) => n + s.stats.posts, 0)))
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
 
@@ -154,10 +195,11 @@ function renderOverview(m) {
     if (on) th.setAttribute("aria-sort", dir > 0 ? "ascending" : "descending"); else th.removeAttribute("aria-sort");
     th.querySelector("button").dataset.arrow = on ? (dir > 0 ? "▲" : "▼") : "";
   }
+  renderActions(m);
   $("ov-body").innerHTML = rows.map((s) => `
-    <tr class="link${s.warnings.length ? "" : ""}" tabindex="0" data-handle="${esc(s.handle)}">
+    <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.rank}</td>
-      <td>${nameCell(s)}<span class="phone-only meta">@${esc(s.handle)}</span><span class="phone-only">${badges(s.warnings)}</span></td>
+      <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">@${esc(s.handle)}</span><span class="phone-only">${warnButtons(s)}</span></td>
       <td class="handle wide-only">@${esc(s.handle)}</td>
       <td class="num strong">${fmt(s.views)}</td>
       <td class="num opt">${signed(s.gain)}</td>
@@ -165,8 +207,47 @@ function renderOverview(m) {
       <td class="num">${fmt(s.stats.posts)}</td>
       <td class="num opt">${fmt(s.stats.likes)}</td>
       <td class="opt">${s.stats.lastDay ? dayLabel(s.stats.lastDay) : "–"}</td>
-      <td class="wide-only">${badges(s.warnings)}</td>
-    </tr>`).join("") || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
+      <td class="wide-only">${warnButtons(s)}</td>
+    </tr>${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
+    || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
+}
+
+// Vandaag (Amsterdam) for every tracked student: posts today, required (1 or the dagopdracht), done.
+function todayOf(m) {
+  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.posts, isPrivate: s.isPrivate })),
+    m.tasks, m.now);
+  st.byHandle = new Map(st.rows.map((r) => [r.handle, r]));
+  st.inCampaign = st.day >= m.cfg.campaign.start && st.day <= m.cfg.campaign.end && !m.final;
+  return st;
+}
+
+// "Actie nodig": what the teacher should look at now, each line linking to the student.
+function renderActions(m) {
+  const box = $("ov-actions");
+  const groups = [];
+  const today = todayOf(m);
+  if (today.inCampaign && (!today.offDay || today.task)) {
+    const todo = m.students.filter((s) => { const r = today.byHandle.get(s.handle); return r && !r.done && !r.private; }).sort(byName);
+    if (todo.length) {
+      groups.push({ title: today.task ? `Dagopdracht vandaag nog niet gehaald (minimaal ${today.task.min})` : "Nog niet gepost vandaag",
+        more: `<a href="#vandaag">Naar Vandaag →</a>`,
+        items: todo.map((s) => studentLink(s, today.task ? ` <span class="chip-n">${today.byHandle.get(s.handle).count}/${today.task.min}</span>` : "")) });
+    }
+  }
+  const pick = (kind) => m.students.filter((s) => s.warnings.some((w) => w.kind === kind)).sort(byName);
+  for (const [kind, title] of [["private", "Privé"], ["notfound", "Niet gevonden"]]) {
+    const list = pick(kind);
+    if (list.length) groups.push({ title, items: list.map((s) => studentLink(s)) });
+  }
+  const missedTasks = m.students.filter((s) => s.stats.tasksMissed).sort(byName);
+  if (missedTasks.length) {
+    groups.push({ title: "Dagopdracht niet gehaald", items: missedTasks.map((s) => studentLink(s,
+      ` <span class="chip-n">${s.stats.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)}: ${t.count}/${t.min}`).join(", ")}</span>`)) });
+  }
+  box.innerHTML = groups.length
+    ? `<h2>Actie nodig</h2>${groups.map((g) => `<div class="action-group"><h3>${esc(g.title)} <span class="meta">(${g.items.length})</span>${g.more ? ` <span class="meta">${g.more}</span>` : ""}</h3>
+        <div class="chips">${g.items.join("")}</div></div>`).join("")}`
+    : `<h2>Actie nodig</h2><p class="meta">Niets: iedereen is bij. 🎉</p>`;
 }
 
 // ---------- Leerlingen ----------
@@ -176,14 +257,25 @@ const heatClass = (n) => (n >= 3 ? "p3" : n === 2 ? "p2" : n === 1 ? "p1" : "");
 function dayCellClass(s, day, today, cfg) {
   const n = s.stats.perDay.get(day) || 0;
   const off = lib.isOffDay(cfg, day);
-  if (day > today) return off ? "future off" : "future";
-  return [n ? heatClass(n) : off ? "off" : day < today ? "miss" : "", day === today ? "today" : ""].filter(Boolean).join(" ");
+  const task = s.stats.tasks.find((t) => t.date === day);
+  const taskCls = task ? (task.status === "missed" ? " task task-miss" : " task") : "";
+  if (day > today) return (off ? "future off" : "future") + taskCls;
+  return [n ? heatClass(n) : off ? "off" : day < today ? "miss" : "", day === today ? "today" : ""].filter(Boolean).join(" ") + taskCls;
 }
 
-// Title text of a calendar cell: date, number of posts and, on a free day, why it is free.
-function dayTitle(cfg, day, n) {
+// Cell text: number of posts (2+), or "posts/minimum" on a dagopdracht day.
+function dayCellText(s, day, today, always = false) {
+  const n = s.stats.perDay.get(day) || 0;
+  const task = s.stats.tasks.find((t) => t.date === day);
+  if (task) return day > today ? `/${task.min}` : `${n}/${task.min}`;
+  return day > today ? "" : always || n > 1 ? String(n) : "";
+}
+
+// Title text of a calendar cell: date, number of posts, a dagopdracht and, on a free day, why it is free.
+function dayTitle(cfg, day, n, task = null) {
   const free = lib.offDayName(cfg, day);
-  return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${free ? ` (vrij: ${free})` : ""}`;
+  return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${free ? ` (vrij: ${free})` : ""}`
+    + (task ? ` · dagopdracht: minimaal ${task.min}${task.label ? ` (${task.label})` : ""}` : "");
 }
 
 // "Vrij: weekenden, Herfstvakantie 19 okt – 23 okt" for the legend.
@@ -211,21 +303,24 @@ function renderStudents(m) {
     <div class="legend-row">
       <span><span class="sw p1"></span>1 post</span><span><span class="sw p2"></span>2</span><span><span class="sw p3"></span>3+</span>
       <span><span class="sw miss"></span>gemist</span><span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
+      ${m.tasks.length ? `<span><span class="sw task-miss"></span>dagopdracht niet gehaald (posts/minimum)</span>` : ""}
       <span>Dagen volgens Nederlandse tijd. Vandaag telt nog niet als gemist.</span>
       ${offDaysText(m.cfg) ? `<span>Vrij (posten mag, hoeft niet; telt wel mee voor de reeks, overslaan breekt de reeks niet): ${offDaysText(m.cfg)}.</span>` : ""}
     </div>
     <div class="table-wrap">
       <table class="heat">
-        <thead><tr><th class="name">Leerling</th>${head}<th class="num" title="Huidige reeks dagen achter elkaar">Reeks</th><th class="num">Gemist</th><th class="num">Posts</th></tr></thead>
+        <thead><tr><th class="name">Leerling</th>${head}<th class="num" title="Huidige reeks dagen achter elkaar">Reeks</th><th class="num">Gemist</th>
+          ${m.tasks.length ? `<th class="num" title="Dagopdrachten niet gehaald">Opdr. niet gehaald</th>` : ""}<th class="num">Posts</th></tr></thead>
         <tbody>${list.map((s) => `
           <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
             <td class="name">${nameCell(s)} <span class="meta">@${esc(s.handle)}</span></td>
             ${days.map((d) => {
               const n = s.stats.perDay.get(d) || 0;
-              return `<td class="day ${dayCellClass(s, d, today, m.cfg)}" title="${dayTitle(m.cfg, d, n)}">${n > 1 ? n : ""}</td>`;
+              return `<td class="day ${dayCellClass(s, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${dayCellText(s, d, today)}</td>`;
             }).join("")}
             <td class="num"><strong>${s.stats.streak}</strong></td>
             <td class="num">${s.stats.missedDays}</td>
+            ${m.tasks.length ? `<td class="num">${s.stats.tasksMissed}</td>` : ""}
             <td class="num">${s.stats.posts}</td>
           </tr>`).join("")}
         </tbody>
@@ -249,7 +344,7 @@ function renderStudent(m, handle) {
   const lead = (new Date(days[0] + "T00:00:00Z").getUTCDay() + 6) % 7;
   const cells = [...Array(lead).fill(`<div class="d out"></div>`), ...days.map((d) => {
     const n = st.perDay.get(d) || 0;
-    return `<div class="d ${dayCellClass(s, d, today, m.cfg)}" title="${dayTitle(m.cfg, d, n)}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${d > today ? "" : n}</b></div>`;
+    return `<div class="d ${dayCellClass(s, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${dayCellText(s, d, today, true)}</b></div>`;
   })];
   const posts = [...s.posts].sort((a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0));
   box.innerHTML = `
@@ -259,12 +354,15 @@ function renderStudent(m, handle) {
       <a href="${tiktok(s.handle)}" target="_blank" rel="noopener">@${esc(s.handle)} op TikTok ↗</a>
       ${badges(s.warnings)}
     </div>
+    ${s.warnings.some((w) => w.detail) ? warnDetails(s) : ""}
     <div class="tiles">
       ${tile("Positie", s.rank, `van ${m.students.length}`)}
       ${tile("Weergaven", fmt(s.views), s.gain == null ? "" : `${signed(s.gain)} in 24 uur`)}
       ${tile("Posts", fmt(st.posts), `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}`)}
       ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren, zonder vrije dagen")}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
+      ${st.tasks.length ? tile("Dagopdrachten", `${st.tasks.filter((t) => t.status === "reached").length}/${st.tasks.filter((t) => t.status !== "pending").length}`,
+        st.tasksMissed ? `niet gehaald: ${st.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : "gehaald") : ""}
       ${tile("Gem. weergaven/post", fmt(st.avgViews))}
       ${tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven")}
       ${tile("Volgers", fmt(s.followers))}
@@ -317,10 +415,21 @@ function renderStudent(m, handle) {
 
 // ---------- Hashtags ----------
 
+// "Zonder buiten schaal" (Stijgers, Hashtags): on by default as soon as an account is marked.
+const hidingOutliers = (m) => m.outliers.size > 0 && (state.hideOutliers ?? true);
+function outlierToggle(m, id) {
+  const wrap = $(`${id}-wrap`);
+  wrap.hidden = !m.outliers.size;
+  $(id).checked = hidingOutliers(m);
+  wrap.title = `Buiten schaal: ${[...m.outliers].map((h) => "@" + h).join(", ")}`;
+}
+
 function renderHashtags(m) {
   for (const b of $("tag-sort").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.v === state.tagSort));
+  outlierToggle(m, "tag-out");
   const by = state.tagSort;
-  const rows = [...m.tags].sort((a, b) => b[by] - a[by] || (by === "posts" ? b.views - a.views : b.posts - a.posts) || a.tag.localeCompare(b.tag));
+  const tags = hidingOutliers(m) ? lib.hashtagStats(new Map([...m.posts].filter(([h]) => !m.outliers.has(h)))) : m.tags;
+  const rows = [...tags].sort((a, b) => b[by] - a[by] || (by === "posts" ? b.views - a.views : b.posts - a.posts) || a.tag.localeCompare(b.tag));
   $("tags-meta").textContent = `${rows.length} verschillende hashtags`;
   $("tags-body").innerHTML = rows.map((t, i) => {
     const open = state.tagOpen === t.tag;
@@ -370,15 +479,20 @@ function renderAdmin(m) {
   const accounts = raw.accounts.filter((a) => !q || (a.name || "").toLowerCase().includes(q) || (a.handle || a.rawHandle).toLowerCase().includes(q));
   $("acc-count").textContent = `(${raw.accounts.filter((a) => a.tracked).length} actief, ${raw.accounts.filter((a) => a.active === false).length} inactief)`;
   $("acc-body").innerHTML = accounts.map((a) => {
-    const status = a.issue ? `<span class="badge bad">${esc(a.issue)}</span>`
-      : a.active ? `<span class="badge good">actief</span>` : `<span class="badge info">inactief</span>`;
+    const out = a.tracked && m.outliers.has(a.handle);
+    const status = (a.issue ? `<span class="badge bad">${esc(a.issue)}</span>`
+      : a.active ? `<span class="badge good">actief</span>` : `<span class="badge info">inactief</span>`)
+      + (out ? ` <span class="badge info">buiten schaal</span>` : "");
+    const scale = a.tracked ? `<button type="button" class="btn small" data-outlier="${esc(a.handle)}" data-on="${!out}"
+      title="${out ? "Weer meetellen in de schaal van de grafieken" : "Uit de schaal van de grafieken halen (plaats en cijfers blijven gelijk)"}">${out ? "In schaal" : "Buiten schaal"}</button>` : "";
     const btn = !a.handle ? "" : a.active
       ? `<button type="button" class="btn small" data-row="${a.row}" data-handle="${esc(a.handle)}" data-active="false">Deactiveren</button>`
       : a.active === false ? `<button type="button" class="btn small" data-row="${a.row}" data-handle="${esc(a.handle)}" data-active="true">Activeren</button>` : "";
     return `<tr class="${a.active === false ? "inactive" : ""}${a.issue ? " issue-row" : ""}">
       <td class="num">${a.row}</td><td>${a.name ? esc(a.name) : `<mark class="unknown">onbekend</mark>`}</td>
-      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || "–"}</td><td>${status}</td><td>${btn}</td></tr>`;
+      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || "–"}</td><td>${status}</td><td class="buttons-cell">${btn} ${scale}</td></tr>`;
   }).join("") || `<tr><td colspan="5">Geen rijen.</td></tr>`;
+  renderTasks(m);
 
   const issues = raw.accounts.filter((a) => a.issue);
   const unknown = raw.accounts.filter((a) => a.tracked && !a.name);
@@ -405,6 +519,53 @@ function renderAdmin(m) {
     const t = lib.parseTs(a.timestamp);
     return `<tr><td>${t ? stampFmt.format(t) : esc(a.timestamp)}</td><td>${esc(a.email)}</td><td>${esc(a.action)}</td><td>${esc(a.details)}</td></tr>`;
   }).join("") || `<tr><td colspan="4">Nog geen activiteit.</td></tr>`;
+}
+
+// ---------- Dagopdrachten (Beheer) ----------
+
+// <option>s for the campaign days, Dutch labels ("di 6 okt").
+const dayOptions = (days, selected) => days.map((d) => `<option value="${d}"${d === selected ? " selected" : ""}>${esc(dayLabel(d))}</option>`).join("");
+
+function renderTasks(m) {
+  const tasks = m.tasks;
+  const today = lib.localDay(Date.now());
+  $("task-body").innerHTML = tasks.map((t) => {
+    const judged = m.students.map((s) => s.stats.tasks.find((x) => x.date === t.date)).filter(Boolean);
+    const missed = judged.filter((x) => x.status === "missed").length;
+    const result = t.date < today ? `${judged.length - missed} gehaald, ${missed} niet` : t.date === today ? "vandaag" : "komt nog";
+    return `<tr${state.taskEdit === t.row ? ' class="editing"' : ""}><td>${esc(dayLabel(t.date))}</td><td class="num">${t.min}</td><td>${esc(t.label) || "–"}</td>
+      <td class="meta">${result}</td>
+      <td class="buttons-cell"><button type="button" class="btn small" data-task-edit="${t.row}">Wijzig</button>
+        <button type="button" class="btn small" data-task-remove="${t.row}">Verwijder</button></td></tr>`;
+  }).join("") || `<tr><td colspan="5" class="meta">Nog geen dagopdrachten.</td></tr>`;
+  const form = $("task-form");
+  const editing = tasks.find((t) => t.row === state.taskEdit) || null;
+  const key = `${editing ? editing.row : "new"}|${m.cfg.campaign.start}|${m.cfg.campaign.end}`;
+  if (form.dataset.key !== key) {
+    form.dataset.key = key;
+    const days = lib.campaignDays(m.cfg);
+    const def = editing ? editing.date : days.find((d) => d >= today && !m.taskByDay.has(d)) || days.at(-1);
+    form.querySelector("[name=date]").innerHTML = dayOptions(days, def);
+    form.querySelector("[name=min]").value = editing ? editing.min : 2;
+    form.querySelector("[name=label]").value = editing ? editing.label : "";
+    form.querySelector("button[type=submit]").textContent = editing ? "Opslaan" : "Toevoegen";
+    $("task-cancel").hidden = !editing;
+  }
+}
+
+async function taskAction(body) {
+  const msg = $("task-msg");
+  try {
+    const res = await api("/api/tasks", body);
+    state.taskEdit = null;
+    $("task-form").dataset.key = "";
+    msg.className = "status ok";
+    msg.textContent = res.message;
+    await load();
+  } catch (err) {
+    msg.className = "status err";
+    msg.textContent = err.message;
+  }
 }
 
 async function loadRuns() {
@@ -442,16 +603,25 @@ function renderFinaleCard(m) {
   const cfg = m.cfg.finale;
   const perHour = (60 / cfg.everyMinutes) * m.students.length;
   const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${m.students.length} actieve accounts), bovenop de gewone 2-uurlijkse runs die dan vervallen.`;
+  // Dutch day names and 24-hour selects (the browser's own date/time inputs follow its language: "02:00 AM").
   const deadlineForm = (label, defMs, id) => {
     const v = inputValues(defMs);
     const max = inputValues((f && phase === "live" ? f.start : Date.now()) + cfg.maxHours * 3600e3);
+    const days = [];
+    for (let d = lib.localDay(Date.now()); d <= max.date; d = lib.addDays(d, 1)) days.push(d);
+    const [hh, mm] = v.time.split(":");
+    const minutes = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, "0"));
+    if (!minutes.includes(mm)) minutes.push(mm);
+    const opts = (list, sel) => list.map((x) => `<option${x === sel ? " selected" : ""}>${x}</option>`).join("");
     return `<form class="add-form" id="${id}">
-      <label>Deadline (datum) <input type="date" name="date" value="${v.date}" min="${lib.localDay(Date.now())}" max="${max.date}" required></label>
-      <label>Tijd <input type="time" name="time" value="${v.time}" step="300" required></label>
+      <label>Deadline <select name="date">${dayOptions(days, v.date)}</select></label>
+      <label>Tijd (24 uur) <span class="hm"><select name="hour" aria-label="Uur">${opts(Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0")), hh)}</select>
+        : <select name="minute" aria-label="Minuten">${opts(minutes.sort(), mm)}</select></span></label>
       <button type="submit" class="btn primary">${label}</button>
     </form>
     <p class="meta" id="${id}-estimate"></p>`;
   };
+  const formTime = (form) => `${form.querySelector("[name=hour]").value}:${form.querySelector("[name=minute]").value}`;
   const quarter = (ms) => Math.ceil(ms / (15 * 60e3)) * 15 * 60e3;
   let html = `<h2>Finale</h2>
     <p>Voor de laatste les. Tijdens de finale worden de profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
@@ -480,7 +650,7 @@ function renderFinaleCard(m) {
     const form = $(id);
     if (!form) continue;
     const update = () => {
-      const t = lib.amsMs(form.querySelector("[name=date]").value, form.querySelector("[name=time]").value);
+      const t = lib.amsMs(form.querySelector("[name=date]").value, formTime(form));
       const est = finaleEstimate(m, t);
       $(`${id}-estimate`).textContent = Number.isFinite(t) && t > Date.now()
         ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${m.students.length} accounts ≈ ${fmt(est.records)} records`
@@ -491,9 +661,9 @@ function renderFinaleCard(m) {
     update();
     form.addEventListener("submit", (ev) => {
       ev.preventDefault();
-      const deadline = `${form.querySelector("[name=date]").value}T${form.querySelector("[name=time]").value}`;
+      const deadline = `${form.querySelector("[name=date]").value}T${formTime(form)}`;
       const start = id === "finale-start";
-      if (start && !confirm(`Finale starten tot ${deadline.replace("T", " ")}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers.`)) return;
+      if (start && !confirm(`Finale starten tot ${dayLabel(deadline.slice(0, 10))} ${deadline.slice(11)}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers.`)) return;
       finaleAction(start ? "/api/finale/start" : "/api/finale/deadline", { deadline });
     });
   }
@@ -592,15 +762,17 @@ function renderRisers(m) {
   for (const b of $("vid-range").querySelectorAll("button")) b.setAttribute("aria-pressed", String(Number(b.dataset.v) === state.videoRange));
   const body = $("vid-body");
   if (!state.postHistory) {
+    outlierToggle(m, "vid-out");
     body.innerHTML = `<tr><td colspan="6">Geschiedenis per video laden…</td></tr>`;
     loadPostHistory().then(() => state.view === "stijgers" && renderRisers(m))
       .catch((err) => { body.innerHTML = `<tr><td colspan="6">Kon niet laden: ${esc(err.message)}</td></tr>`; });
     return;
   }
+  outlierToggle(m, "vid-out");
   const ref = m.latest || Date.now();
   const list = [];
   for (const [h, posts] of m.posts) {
-    if (!m.byHandle.has(h)) continue;
+    if (!m.byHandle.has(h) || (hidingOutliers(m) && m.outliers.has(h))) continue;
     for (const p of posts) list.push({ s: m.byHandle.get(h), p, gain: videoGain(p, state.postHistory.byVideo.get(String(p.video_id)), state.videoRange, ref) });
   }
   const rows = list.filter((x) => x.gain > 0).sort((a, b) => b.gain - a.gain).slice(0, 30);
@@ -658,16 +830,141 @@ function renderStudentVideos(m, s) {
   });
 }
 
+// ---------- Vandaag ----------
+
+function renderToday(m) {
+  const st = todayOf(m);
+  const raw = state.raw;
+  const cool = m.cfg.todayCheck?.cooldownMinutes ?? 10;
+  const day = longDate.format(Date.parse(st.day + "T00:00:00Z"));
+  const post = (s) => {
+    const list = s.posts.map((p) => ({ p, t: lib.parseTs(p.created_at) })).filter((x) => x.t !== null && lib.localDay(x.t) === st.day)
+      .sort((a, b) => b.t - a.t);
+    return list[0] || null;
+  };
+  const sorted = [...m.students].sort(byName);
+  const todo = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return !r.done && !r.private; });
+  const done = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return r.done && !r.private; });
+  const priv = sorted.filter((s) => st.byHandle.get(s.handle).private);
+  const mark = (s) => {
+    const r = st.byHandle.get(s.handle);
+    return st.task ? `<span class="badge ${r.done ? "good" : "warn"}">${r.count}/${st.task.min}</span>` : r.done ? `<span class="tick" aria-label="gepost">✓</span>` : "";
+  };
+  const item = (s) => {
+    const last = post(s);
+    return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">@${esc(s.handle)}</span>
+      ${last ? `<span class="meta">· ${hourFmt.format(last.t)}</span> <a href="${tiktok(s.handle, last.p.video_id)}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
+  };
+  $("td-title").textContent = `Vandaag, ${day}`;
+  $("td-info").innerHTML = !st.inCampaign ? "Vandaag is geen campagnedag."
+    : st.task ? `<strong>Dagopdracht:</strong> minimaal ${st.task.min} posts${st.task.label ? ` (${esc(st.task.label)})` : ""}. Klaar = ${st.task.min} posts vandaag.`
+    : st.offDay ? `Vrije dag (${esc(lib.offDayName(m.cfg, st.day))}): posten hoeft vandaag niet.` : "Klaar = vandaag minstens één post.";
+  $("td-checked").textContent = m.latest ? hourFmt.format(m.latest) : "nog niet";
+  $("td-todo-title").textContent = st.task ? `Nog niet klaar (minder dan ${st.task.min} posts)` : "Nog niet gepost";
+  $("td-done-title").textContent = st.task ? "Klaar" : "Gepost";
+  $("td-todo-n").textContent = todo.length;
+  $("td-done-n").textContent = done.length;
+  $("td-priv-n").textContent = priv.length;
+  $("td-todo").innerHTML = todo.map(item).join("") || `<li class="meta">Iedereen is klaar.</li>`;
+  $("td-done").innerHTML = done.map(item).join("") || `<li class="meta">Nog niemand.</li>`;
+  $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">@${esc(s.handle)}</span></li>`).join("")
+    || `<li class="meta">Geen.</li>`;
+  $("td-priv-card").hidden = !priv.length;
+  // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
+  const n = lib.todayTargets(st).length;
+  const next = raw.lastTodayCheck ? raw.lastTodayCheck + cool * 60e3 : 0;
+  const btn = $("td-check");
+  const waiting = Boolean(state.todayRun);
+  btn.disabled = waiting || !n || Date.now() < next || !st.inCampaign;
+  btn.textContent = waiting ? "⏳ Controle loopt…" : "🔎 Controleer nu";
+  $("td-cost").textContent = !st.inCampaign ? "" : !n ? "Niemand om te controleren."
+    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)`
+    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}`;
+}
+
+// After "Controleer nu": wait for the collector run, then reload (it takes about 5-7 minutes).
+async function pollTodayRun() {
+  const run = state.todayRun;
+  if (!run) return;
+  try {
+    const { runs } = await api("/api/runs");
+    const mine = runs.filter((r) => r.workflow === "collect.yml" && Date.parse(r.created) >= run.startedAt - 60e3);
+    if (mine.length && mine.every((r) => r.status === "completed")) {
+      state.todayRun = null;
+      await load();
+      const ok = mine.every((r) => r.conclusion === "success");
+      todayMsg(ok ? `Klaar (${hourFmt.format(Date.now())}): de lijsten zijn bijgewerkt.` : "De run is klaar maar niet gelukt; zie Beheer → Laatste runs.", ok);
+      return;
+    }
+  } catch { /* try again next time */ }
+  if (Date.now() - run.startedAt > 25 * 60e3) {
+    state.todayRun = null;
+    todayMsg("Dit duurt langer dan verwacht. Kijk bij Beheer → Laatste GitHub-runs.", false);
+    if (model && state.view === "vandaag") renderToday(model);
+    return;
+  }
+  setTimeout(pollTodayRun, 20000);
+}
+
+function todayMsg(text, ok = true) {
+  const msg = $("td-msg");
+  msg.className = "status " + (ok ? "ok" : "err");
+  msg.textContent = text;
+}
+
+// ---------- Opvallend ----------
+
+const SIGNAL_NAMES = { likes: "Likes per weergave", step: "Groei in één sprong", silent: "Geen reacties of shares", followers: "Volgers-sprong" };
+
+function renderSignals(m) {
+  const body = $("sig-body");
+  const s = m.cfg.signals;
+  if (!s) { body.innerHTML = `<tr><td colspan="4">Geen instellingen (signals in config.yaml).</td></tr>`; return; }
+  if (!state.postHistory) {
+    body.innerHTML = `<tr><td colspan="4">Geschiedenis per video laden…</td></tr>`;
+    loadPostHistory().then(() => state.view === "opvallend" && renderSignals(m))
+      .catch((err) => { body.innerHTML = `<tr><td colspan="4">Kon niet laden: ${esc(err.message)}</td></tr>`; });
+    return;
+  }
+  const posts = [...m.posts].filter(([h]) => m.byHandle.has(h)).flatMap(([, list]) => list);
+  const flags = lib.signals(s, posts, state.postHistory.byVideo, m.series);
+  const order = Object.keys(SIGNAL_NAMES);
+  flags.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || (b.views || b.followers || 0) - (a.views || a.followers || 0));
+  const p1 = new Intl.NumberFormat("nl-NL", { style: "percent", maximumFractionDigits: 2 });
+  const numbers = (f) => ({
+    likes: () => `${p1.format(f.ratio)} likes per weergave (${fmt(f.likes)} likes, ${fmt(f.views)} weergaven); klas: ${p1.format(f.median)}. ${f.high ? "Veel hoger" : "Veel lager"} dan normaal.`,
+    step: () => `${pct.format(f.share)} van de weergaven in één stap: ${fmt(f.from.views)} → ${fmt(f.to.views)} tussen ${stampFmt.format(f.from.t)} en ${hourFmt.format(f.to.t)}; daarna in ${s.flatHours} uur nog maar ${signed(f.after)}.`,
+    silent: () => `${fmt(f.views)} weergaven en ${fmt(f.likes)} likes, maar 0 reacties en 0 keer gedeeld.`,
+    followers: () => `${signed(f.followers)} volgers tussen ${stampFmt.format(f.from)} en ${hourFmt.format(f.to)}, met maar ${signed(f.views)} weergaven erbij `
+      + `(${fmt(Math.round(f.per))} weergaven per nieuwe volger${f.median ? `; klas: ${fmt(Math.round(f.median))}` : ""}).`,
+  })[f.kind]();
+  $("sig-meta").textContent = `${flags.length} ding${flags.length === 1 ? "" : "en"} om naar te kijken`;
+  body.innerHTML = flags.map((f) => {
+    const st = m.byHandle.get(f.handle);
+    return `<tr>
+      <td><strong>${SIGNAL_NAMES[f.kind]}</strong></td>
+      <td><a href="#leerlingen/${encodeURIComponent(f.handle)}">${st ? nameCell(st) : ""}</a> <span class="meta">@${esc(f.handle)}</span></td>
+      <td>${numbers(f)}</td>
+      <td>${f.video ? `<a href="${tiktok(f.handle, f.video)}" target="_blank" rel="noopener">video ↗</a>` : `<a href="${tiktok(f.handle)}" target="_blank" rel="noopener">profiel ↗</a>`}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="4">Niets opvallends gevonden.</td></tr>`;
+  $("sig-rules").innerHTML = `Drempels (in <code>config.yaml</code>, onder <code>signals</code>): alleen video's vanaf ${fmt(s.minViews)} weergaven;
+    likes per weergave ${s.likeRatioFactor}× lager of hoger dan de mediaan van de klas; sprong = ${pct.format(s.stepShare)}+ van de weergaven binnen
+    ${String(s.stepMaxHours).replace(".", ",")} uur en daarna ${s.flatHours} uur bijna niets (&lt; ${pct.format(s.flatShare)} van die sprong);
+    ${fmt(s.zeroEngagementMinViews)}+ weergaven zonder reacties en shares; ${s.followerJumpMin}+ volgers tussen twee runs met ${s.followerJumpFactor}× minder
+    weergaven per nieuwe volger dan de klas.`;
+}
+
 // ---------- Export ----------
 
-const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen",
+const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen", "opdrachten_niet_gehaald",
   "huidige_reeks", "langste_reeks", "gem_weergaven_per_post", "likes", "reacties", "gedeeld", "engagement_pct",
   "beste_video", "beste_video_weergaven", "laatste_post", "hashtags", "privé", "let_op"];
 
 function exportRows(m) {
   return [...m.students].sort(byName).map((s) => {
     const st = s.stats;
-    return [s.name || "onbekend", "@" + s.handle, s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays,
+    return [s.name || "onbekend", "@" + s.handle, s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.tasksMissed,
       st.streak, st.longest, st.avgViews, st.likes, st.comments, st.shares,
       st.engagement == null ? null : Math.round(st.engagement * 1000) / 10,
       st.best ? tiktok(s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
@@ -717,6 +1014,8 @@ function render() {
   if (state.view === "beheer") renderAdmin(model);
   if (state.view === "export") renderExport(model);
   if (state.view === "stijgers") renderRisers(model);
+  if (state.view === "vandaag") renderToday(model);
+  if (state.view === "opvallend") renderSignals(model);
   if (state.view === "leerlingen" && state.detail && model.byHandle.has(state.detail)) {
     renderStudentVideos(model, model.byHandle.get(state.detail));
   }
@@ -727,7 +1026,7 @@ function route() {
   const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
   const [view, arg] = hash.split("/");
   const prev = state.view;
-  state.view = ["overzicht", "leerlingen", "hashtags", "stijgers", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
+  state.view = ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
   state.detail = state.view === "leerlingen" && arg ? arg : null;
   if (state.detail) window.scrollTo(0, 0);
   render();
@@ -761,6 +1060,51 @@ $("ov-table").querySelector("thead").addEventListener("click", (ev) => {
   state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (DEFAULT_DIR[key] || -1) };
   renderOverview(model);
 });
+// A warning badge in Overzicht opens its details under the row (instead of opening the student).
+$("ov-body").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-warn]");
+  if (!b) return;
+  state.warnOpen = state.warnOpen === b.dataset.warn ? null : b.dataset.warn;
+  renderOverview(model);
+});
+for (const id of ["tag-out", "vid-out"]) {
+  $(id).addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
+}
+$("td-check").addEventListener("click", async () => {
+  const st = todayOf(model);
+  const n = lib.todayTargets(st).length;
+  if (!confirm(`Nu ${n} account${n === 1 ? "" : "s"} controleren die vandaag nog niet ${st.task ? "klaar zijn" : "gepost hebben"}? `
+    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer 5–7 minuten voordat de nieuwe cijfers er staan.`)) return;
+  $("td-check").disabled = true;
+  try {
+    const res = await api("/api/today/check", {});
+    state.todayRun = { startedAt: res.startedAt || Date.now(), count: res.count };
+    todayMsg(res.message);
+    await load();
+    setTimeout(pollTodayRun, 30000);
+  } catch (err) {
+    todayMsg(err.message, false);
+    renderToday(model);
+  }
+});
+$("task-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  const f = ev.currentTarget;
+  const editing = model.tasks.find((t) => t.row === state.taskEdit);
+  taskAction({ action: editing ? "edit" : "add", row: editing?.row, was: editing?.date,
+    date: f.querySelector("[name=date]").value, min: Number(f.querySelector("[name=min]").value), label: f.querySelector("[name=label]").value });
+});
+$("task-cancel").addEventListener("click", () => { state.taskEdit = null; renderTasks(model); });
+$("task-body").addEventListener("click", (ev) => {
+  const edit = ev.target.closest("button[data-task-edit]");
+  const remove = ev.target.closest("button[data-task-remove]");
+  if (edit) { state.taskEdit = Number(edit.dataset.taskEdit); renderTasks(model); $("task-form").scrollIntoView({ block: "nearest" }); }
+  if (remove) {
+    const t = model.tasks.find((x) => x.row === Number(remove.dataset.taskRemove));
+    if (t && confirm(`Dagopdracht van ${dayLabel(t.date)} (minimaal ${t.min} posts) verwijderen?`)) taskAction({ action: "remove", row: t.row, was: t.date });
+  }
+});
+
 for (const [id, attr, go] of [
   ["ov-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["ll-content", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
@@ -798,6 +1142,19 @@ $("bh-refresh").addEventListener("click", async (ev) => {
 });
 
 $("acc-body").addEventListener("click", async (ev) => {
+  const scale = ev.target.closest("button[data-outlier]");
+  if (scale) {
+    scale.disabled = true;
+    try {
+      const res = await api("/api/outliers", { handle: scale.dataset.outlier, on: scale.dataset.on === "true" });
+      flash(res.message, true);
+      await load();
+    } catch (err) {
+      flash(err.message, false);
+      scale.disabled = false;
+    }
+    return;
+  }
   const btn = ev.target.closest("button[data-row]");
   if (!btn) return;
   const active = btn.dataset.active === "true";

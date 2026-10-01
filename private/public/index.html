@@ -18,9 +18,11 @@
       </div>
       <nav class="tabs" aria-label="Onderdelen">
         <a href="#overzicht" data-view="overzicht">Overzicht</a>
+        <a href="#vandaag" data-view="vandaag">Vandaag</a>
         <a href="#leerlingen" data-view="leerlingen">Leerlingen</a>
         <a href="#hashtags" data-view="hashtags">Hashtags</a>
         <a href="#stijgers" data-view="stijgers">Stijgers</a>
+        <a href="#opvallend" data-view="opvallend">Opvallend</a>
         <a href="#presentatie" data-view="presentatie">Presentatie</a>
         <a href="#beheer" data-view="beheer">Beheer</a>
         <a href="#export" data-view="export">Export</a>
@@ -35,6 +37,7 @@
     <section id="view-overzicht" class="view" hidden>
       <h2 class="final-title" id="ov-final" hidden></h2>
       <div class="tiles" id="ov-tiles"></div>
+      <div class="card actions" id="ov-actions"></div>
       <div class="controls">
         <input type="search" id="ov-search" placeholder="Zoek op naam of handle" aria-label="Zoeken">
         <label class="check"><input type="checkbox" id="ov-warn"> Alleen met waarschuwing</label>
@@ -58,7 +61,23 @@
           <tbody id="ov-body"></tbody>
         </table>
       </div>
-      <p class="hint">Klik op een kolomkop om te sorteren (nog een keer: omgekeerd), of op een leerling voor alle details. <mark class="unknown">onbekend</mark> = geen naam ingevuld in de sheet.</p>
+      <p class="hint">Klik op een kolomkop om te sorteren (nog een keer: omgekeerd), of op een leerling voor alle details. Klik op een waarschuwing voor de details (welke video, sinds wanneer). <mark class="unknown">onbekend</mark> = geen naam ingevuld in de sheet.</p>
+    </section>
+
+    <section id="view-vandaag" class="view" hidden>
+      <div class="card">
+        <h2 id="td-title">Vandaag</h2>
+        <p id="td-info"></p>
+        <p class="meta">Laatst gecontroleerd: <strong id="td-checked"></strong> (de laatste ophaalrun). Geplande runs elke 2 uur.</p>
+        <p class="buttons"><button type="button" class="btn primary" id="td-check">🔎 Controleer nu</button> <span class="meta" id="td-cost"></span></p>
+        <p class="hint">Haalt nu alleen de profielen op van wie vandaag nog niet (genoeg) gepost heeft: 1 record per account, dus goedkoper naarmate de lijst korter wordt. Een controle duurt ongeveer <strong>5–7 minuten</strong> voordat de cijfers hier staan; de pagina ververst vanzelf als de run klaar is.</p>
+        <p class="status" id="td-msg" role="status"></p>
+      </div>
+      <div class="grid2">
+        <div class="card"><h3 style="margin-top:0"><span id="td-todo-title">Nog niet gepost</span> <span class="meta">(<span id="td-todo-n"></span>)</span></h3><ul class="today-list" id="td-todo"></ul></div>
+        <div class="card"><h3 style="margin-top:0"><span id="td-done-title">Gepost</span> <span class="meta">(<span id="td-done-n"></span>)</span></h3><ul class="today-list" id="td-done"></ul></div>
+      </div>
+      <div class="card" id="td-priv-card"><h3 style="margin-top:0">Kan niet gecontroleerd worden (privé) <span class="meta">(<span id="td-priv-n"></span>)</span></h3><ul class="today-list" id="td-priv"></ul></div>
     </section>
 
     <section id="view-leerlingen" class="view" hidden>
@@ -71,6 +90,7 @@
           <button type="button" data-v="posts">Meest gebruikt</button>
           <button type="button" data-v="views">Meeste weergaven</button>
         </div>
+        <label class="check" id="tag-out-wrap" hidden><input type="checkbox" id="tag-out"> Zonder buiten schaal</label>
         <span class="meta" id="tags-meta"></span>
       </div>
       <div class="table-wrap">
@@ -90,6 +110,7 @@
           <button type="button" data-v="6">6 uur</button>
           <button type="button" data-v="24">24 uur</button>
         </div>
+        <label class="check" id="vid-out-wrap" hidden><input type="checkbox" id="vid-out"> Zonder buiten schaal</label>
         <span class="meta" id="vid-meta"></span>
       </div>
       <div class="table-wrap">
@@ -99,6 +120,18 @@
         </table>
       </div>
       <p class="hint">Video's met de meeste nieuwe weergaven. Klik op een rij voor de leerling.</p>
+    </section>
+
+    <section id="view-opvallend" class="view" hidden>
+      <h2 style="margin-top:0">Opvallend <span class="meta" id="sig-meta"></span></h2>
+      <p>Dingen om even naar te kijken: cijfers die veel afwijken van de rest van de klas. <strong>Geen oordeel</strong>: ook een echte video kan zo'n patroon hebben (bijv. door een virale share). Bekijk de video en beslis zelf.</p>
+      <div class="table-wrap">
+        <table class="board small">
+          <thead><tr><th>Wat</th><th>Leerling</th><th>Cijfers</th><th></th></tr></thead>
+          <tbody id="sig-body"></tbody>
+        </table>
+      </div>
+      <p class="hint" id="sig-rules"></p>
     </section>
 
     <section id="view-presentatie" class="view" hidden>
@@ -135,6 +168,25 @@
       </div>
 
       <div class="card">
+        <h2>Dagopdrachten</h2>
+        <p>Een dag waarop elke leerling <strong>minimaal een aantal posts</strong> moet plaatsen (2 of meer). In de kalender staat dan bijv. <strong>3/5</strong>, met een oranje rand als het niet gehaald is; op Overzicht komt een waarschuwing. Een dagopdracht breekt de reeks niet en telt niet als gemist zolang er die dag minstens één post is. Vandaag telt pas als niet gehaald als de dag voorbij is.</p>
+        <div class="table-wrap">
+          <table class="board small">
+            <thead><tr><th>Dag</th><th class="num">Minimaal</th><th>Omschrijving</th><th>Resultaat</th><th></th></tr></thead>
+            <tbody id="task-body"></tbody>
+          </table>
+        </div>
+        <form id="task-form" class="add-form" autocomplete="off" style="margin-top:12px">
+          <label>Dag <select name="date"></select></label>
+          <label>Minimaal posts <input name="min" type="number" min="2" max="20" step="1" value="2" required style="min-width:80px;width:90px"></label>
+          <label>Omschrijving (optioneel) <input name="label" maxlength="60" placeholder="bijv. Halloween-week"></label>
+          <button type="submit" class="btn primary">Toevoegen</button>
+          <button type="button" class="btn" id="task-cancel" hidden>Annuleren</button>
+        </form>
+        <p class="status" id="task-msg" role="status"></p>
+      </div>
+
+      <div class="card">
         <h2>Leerling toevoegen</h2>
         <form id="add-form" class="add-form" autocomplete="off">
           <label>Naam <input name="name" required maxlength="80"></label>
@@ -148,6 +200,7 @@
       <div class="card">
         <h2>Alle leerlingen <span class="meta" id="acc-count"></span></h2>
         <p class="hint">Verwijderen kan niet: zet een leerling op inactief (active = nee). De rij blijft in de sheet staan en kan altijd weer aan.</p>
+        <p class="hint"><strong>Buiten schaal</strong>: voor een uitschieter (bijv. 2,3 miljoen weergaven terwijl de rest onder de 100.000 zit). De grafieken (openbaar, hier en in de presentatie) schalen dan zonder dit account; het staat als grijs pijltje ▲ bovenaan, met de handle en het echte getal. Plaats, podium en tabellen blijven precies gelijk.</p>
         <div class="controls"><input type="search" id="acc-search" placeholder="Zoek" aria-label="Zoek leerling"></div>
         <div class="table-wrap">
           <table class="board small">
