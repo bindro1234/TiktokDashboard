@@ -125,7 +125,12 @@ async function fetchCsv(tab, signal) {
   const base = (CFG.csvUrls && CFG.csvUrls[tab]) || CFG.csvUrl(tab);
   const url = base + (base.includes("?") ? "&" : "?") + "t=" + Date.now();
   const res = await fetch(url, { cache: "no-store", signal });
-  if (!res.ok) throw new Error(`Tabblad '${tab}' niet te laden (HTTP ${res.status}). Is de sheet gepubliceerd?`);
+  if (!res.ok) {
+    // Read the error page anyway: an unread body keeps the connection open (a tab that doesn't
+    // exist yet, like outliers before its first run, answers 400).
+    await res.text().catch(() => {});
+    throw new Error(`Tabblad '${tab}' niet te laden (HTTP ${res.status}). Is de sheet gepubliceerd?`);
+  }
   const text = await res.text();
   if (text.trimStart().startsWith("<")) throw new Error(`Tabblad '${tab}' gaf geen CSV terug. Is de sheet gepubliceerd?`);
   return Papa.parse(text, { header: true, skipEmptyLines: true }).data;
