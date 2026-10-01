@@ -34,8 +34,9 @@ tracked.forEach((h, i) => {
     if (rnd() < 0.25) continue;               // missed days
     const n = rnd() < 0.2 ? 2 : 1;
     for (let k = 0; k < n; k++) {
-      // test_11 is the outlier ("buiten schaal"): ~50x the views of the rest.
-      const views = Math.round((200 + rnd() * 3000 * (1 + i / 4)) * (i === 10 ? 50 : 1));
+      // test_11 is the outlier ("buiten schaal"): ~200x the views of the rest, so it gains
+      // 7-digit numbers a day (like the real 2.3M account: "+1.863.580").
+      const views = Math.round((200 + rnd() * 3000 * (1 + i / 4)) * (i === 10 ? 200 : 1));
       posts.push({
         video_id: String(7600000000000000000n + BigInt(i * 1000 + d * 10 + k)), handle: h,
         created_at: new Date(start + d * DAY + k * 3 * 3600e3).toISOString(), views,

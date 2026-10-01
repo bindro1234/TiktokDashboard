@@ -61,11 +61,16 @@ const Present = (() => {
     return title("Top 3") + `<div class="p-podium">${[1, 0, 2].map(place).join("")}</div>`;
   }
 
+  // Characters of the longest number in a column, so its width fits 7-digit numbers (the
+  // 2-million account) and stays the same in every row.
+  const chars = (list) => Math.max(0, ...list.map((s) => String(s).length));
+
   function ranking(from) {
     const rows = data.standings.slice(from, from + P.pageSize);
     const to = from + rows.length;
+    const vw = chars(rows.map((r) => fmt(r.views))), gw = chars(rows.map((r) => (r.gain == null ? "" : signed(r.gain))));
     return title("Stand", `plaats ${from + 1}–${to} van ${data.standings.length}`) + `
-      <div class="p-table" style="--rows:${P.pageSize}">
+      <div class="p-table" style="--rows:${P.pageSize}; --vw:${vw}; --gw:${gw}">
         <div class="p-row p-head"><span>#</span><span>±</span><span>Account</span><span>Weergaven</span><span>+ 24 uur</span></div>
         ${rows.map((r) => `
           <div class="p-row">
@@ -124,7 +129,7 @@ const Present = (() => {
     const scaled = rows.filter((r) => !data.outliers.has(r.handle));
     const max = Math.max(1, ...(scaled.length ? scaled : rows).map((r) => r.gain));
     return head + `
-      <div class="p-table p-risers" style="--rows:${P.risers}">
+      <div class="p-table p-risers" style="--rows:${P.risers}; --gw:${chars(rows.map((r) => signed(r.gain)))}">
         ${rows.map((r, i) => `
           <div class="p-row">
             <span class="p-rank">${i + 1}</span>
