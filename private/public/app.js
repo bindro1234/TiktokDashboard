@@ -22,9 +22,12 @@ const state = {
   tagSort: "posts", tagOpen: null, accSearch: "", format: "nl",
   videoRange: 24, postHistory: null, finaleCardKey: null,
   warnOpen: null,        // Overzicht: handle whose warning details are shown
+  open: new Set(),       // students with two accounts whose per-account rows are shown (Overzicht, Leerlingen)
+  account: null,         // student page: one account of a student with two ("" or null = both together)
   hideOutliers: null,    // Stijgers/Hashtags "zonder buiten schaal"; null = on when any account is marked
   taskEdit: null,        // Beheer: dagopdracht being edited (row)
   todayRun: null,        // Vandaag: { startedAt, count } while a "Controleer nu" run is on its way
+  addFor: null,          // Beheer: account row with the "+ account" form open
 };
 const hourFmt = new Intl.DateTimeFormat("nl-NL", { timeZone: lib.TZ, hour: "2-digit", minute: "2-digit" });
 const longDate = new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" });
@@ -82,47 +85,66 @@ function build(raw) {
   }
   // "+ 24 uur": compared with the run of ~24 hours earlier (rolling, runs are every 2 hours).
   const target = latest - DAY_MS + 45 * 60 * 1000;
-  const students = raw.accounts.filter((a) => a.tracked).map((a) => {
-    const info = handleInfo.get(a.handle) || null;
-    const series = history.get(a.handle) || [];
+  // Numbers of one series (an account, or a student's accounts added up).
+  const numbers = (series, postList) => {
     const cur = series.at(-1) || null;
     let base = null;
     for (let i = series.length - 1; i >= 0; i--) if (series[i].t <= target) { base = series[i]; break; }
-    const stats = lib.studentStats(posts.get(a.handle) || [], cfg, now, tasks);
+    return { series, cur, views: cur ? cur.views : 0, gain: cur && base ? cur.views - base.views : null,
+      followers: cur ? cur.followers : null, posts: postList, stats: lib.studentStats(postList, cfg, now, tasks) };
+  };
+  // One row per student; a student with two accounts (main_account) gets both added up. Every
+  // student keeps `accounts`: the numbers per account, for the "per account" dropdowns.
+  const students = [...lib.groupAccounts(raw.accounts).values()].map((g) => {
+    const accounts = g.accounts.map((a) => {
+      const info = handleInfo.get(a.handle) || null;
+      return { ...a, info, ...numbers(history.get(a.handle) || [], posts.get(a.handle) || []),
+        isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: outliers.has(a.handle) };
+    });
+    const main = accounts[0];
+    const multi = accounts.length > 1;
     const s = {
-      ...a, info, cur, stats, posts: posts.get(a.handle) || [],
-      views: cur ? cur.views : 0, gain: cur && base ? cur.views - base.views : null,
-      followers: cur ? cur.followers : null,
-      isPrivate: info ? lib.truthy(info.is_private) : false,
-      isOutlier: outliers.has(a.handle),
+      ...main, name: g.name, handle: g.key, handles: accounts.map((a) => a.handle), accounts, multi,
+      ...(multi ? numbers(lib.mergeSeries(accounts.map((a) => a.series)), accounts.flatMap((a) => a.posts)) : {}),
+      isPrivate: accounts.some((a) => a.isPrivate), isOutlier: accounts.some((a) => a.isOutlier),
     };
     s.warnings = warnings(s, cfg, now);
     return s;
   });
   const sorted = [...students].sort((x, y) => y.views - x.views || x.handle.localeCompare(y.handle));
   sorted.forEach((s, i) => { s.rank = i > 0 && sorted[i - 1].views === s.views ? sorted[i - 1].rank : i + 1; });
+  // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account).
+  const byHandle = new Map(students.flatMap((s) => s.handles.map((h) => [h, s])));
   return { cfg, now, latest, final, students, posts, tags: lib.hashtagStats(posts), tasks, outliers, series: history,
-    taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle: new Map(students.map((s) => [s.handle, s])) };
+    taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle };
 }
+
+// "@a + @b" for a student with two accounts.
+const handlesText = (s) => s.handles.map((h) => "@" + h).join(" + ");
 
 // Warnings per student. `detail` (HTML) is what a click on the badge shows: which video, since when.
 function warnings(s, cfg, now) {
   const out = [];
-  const status = String(s.info?.last_status ?? "");
-  const sinceTs = lib.parseTs(s.info?.status_since);
-  const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend (vóór deze versie niet bijgehouden)";
-  if (s.isPrivate) {
-    out.push({ cls: "bad", kind: "private", text: "privé",
-      detail: `Staat op privé ${since}. Nieuwe weergaven tellen pas weer mee als het account openbaar is.` });
+  // Status per account; with two accounts the badge says which one.
+  for (const a of s.accounts) {
+    const which = s.multi ? ` (@${a.handle})` : "";
+    const status = String(a.info?.last_status ?? "");
+    const sinceTs = lib.parseTs(a.info?.status_since);
+    const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend (vóór deze versie niet bijgehouden)";
+    if (a.isPrivate) {
+      out.push({ cls: "bad", kind: "private", text: "privé" + which,
+        detail: `${s.multi ? `@${esc(a.handle)} staat` : "Staat"} op privé ${since}. Nieuwe weergaven tellen pas weer mee als het account openbaar is.` });
+    }
+    if (status.startsWith("fout")) {
+      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden" + which, title: status,
+        detail: `${s.multi ? `@${esc(a.handle)}: n` : "N"}iet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
+    }
+    if (!a.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald" + which, detail: "Wordt opgehaald bij de volgende profielrun." });
   }
-  if (status.startsWith("fout")) {
-    out.push({ cls: "bad", kind: "notfound", text: "niet gevonden", title: status,
-      detail: `Niet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
-  }
-  if (!s.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald", detail: "Wordt opgehaald bij de volgende profielrun." });
+  const anyInfo = s.accounts.some((a) => a.info);
   const today = lib.localDay(now);
   // Counted in days on which posting is expected: weekends and holidays (off_days) are left out.
-  if (s.info && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
+  if (anyInfo && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
     out.push({ cls: "warn", kind: "quiet", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
       title: "Weekenden en vakantiedagen tellen niet mee",
       detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}. Weekenden en vakantiedagen tellen niet mee.`
@@ -135,8 +157,8 @@ function warnings(s, cfg, now) {
       title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?",
       detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.<ul>${gone.map((p) => {
         const c = lib.parseTs(p.created_at), m = lib.parseTs(p.missing_since);
-        return `<li>Video van ${c ? stampFmt.format(c) : "?"}, ${fmt(lib.toNum(p.views))} weergaven: verdwenen sinds ${m ? stampFmt.format(m) : esc(p.missing_since)}.
-          <a href="${tiktok(s.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></li>`;
+        return `<li>Video van ${c ? stampFmt.format(c) : "?"}${s.multi ? ` (@${esc(p.handle)})` : ""}, ${fmt(lib.toNum(p.views))} weergaven: verdwenen sinds ${m ? stampFmt.format(m) : esc(p.missing_since)}.
+          <a href="${tiktok(p.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></li>`;
       }).join("")}</ul>` });
   }
   for (const t of s.stats.tasks.filter((x) => x.status === "missed")) {
@@ -157,7 +179,7 @@ const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.d
   .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
-  <span class="chip-handle">@${esc(s.handle)}</span>${extra}</a>`;
+  <span class="chip-handle">${esc(s.handles.map((h) => "@" + h).join(" + "))}</span>${extra}</a>`;
 
 // ---------- Overzicht ----------
 
@@ -181,7 +203,7 @@ function renderOverview(m) {
 
   const q = state.search.trim().toLowerCase().replace(/^@/, "");
   let rows = all.filter((s) => (!state.onlyWarn || s.warnings.length)
-    && (!q || s.handle.includes(q) || (s.name || "onbekend").toLowerCase().includes(q)));
+    && (!q || s.handles.some((h) => h.includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
   const { key, dir } = state.sort;
   const val = SORTS[key];
   rows = rows.sort((a, b) => {
@@ -199,8 +221,8 @@ function renderOverview(m) {
   $("ov-body").innerHTML = rows.map((s) => `
     <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.rank}</td>
-      <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">@${esc(s.handle)}</span><span class="phone-only">${warnButtons(s)}</span></td>
-      <td class="handle wide-only">@${esc(s.handle)}</td>
+      <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${esc(handlesText(s))}</span>${accToggle(s, "phone-only")}<span class="phone-only">${warnButtons(s)}</span></td>
+      <td class="handle wide-only">${esc(handlesText(s))}${accToggle(s)}</td>
       <td class="num strong">${fmt(s.views)}</td>
       <td class="num opt">${signed(s.gain)}</td>
       <td class="num opt">${fmt(s.followers)}</td>
@@ -208,13 +230,34 @@ function renderOverview(m) {
       <td class="num opt">${fmt(s.stats.likes)}</td>
       <td class="opt">${s.stats.lastDay ? dayLabel(s.stats.lastDay) : "–"}</td>
       <td class="wide-only">${warnButtons(s)}</td>
-    </tr>${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
+    </tr>${state.open.has(s.handle) ? s.accounts.map((a) => `
+    <tr class="link sub-row" tabindex="0" data-handle="${esc(a.handle)}">
+      <td></td>
+      <td><span class="sub-mark">↳</span> <span class="meta">${a.handle === s.handle ? "eerste account" : "tweede account"}</span><span class="phone-only meta">@${esc(a.handle)}</span></td>
+      <td class="handle wide-only">@${esc(a.handle)}</td>
+      <td class="num">${fmt(a.views)}</td>
+      <td class="num opt">${signed(a.gain)}</td>
+      <td class="num opt">${fmt(a.followers)}</td>
+      <td class="num">${fmt(a.stats.posts)}</td>
+      <td class="num opt">${fmt(a.stats.likes)}</td>
+      <td class="opt">${a.stats.lastDay ? dayLabel(a.stats.lastDay) : "–"}</td>
+      <td class="wide-only">${accountBadges(a)}</td>
+    </tr>`).join("") : ""}${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
     || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
 }
 
+// "▸ 2 accounts": shows or hides the per-account rows of a student with two accounts.
+const accToggle = (s, cls = "") => (s.multi ? `<button type="button" class="acc-toggle ${cls}" data-open="${esc(s.handle)}"
+  aria-expanded="${state.open.has(s.handle)}" title="Cijfers per account">${state.open.has(s.handle) ? "▾" : "▸"} ${s.accounts.length} accounts</button>` : "");
+// Status of one account (per-account rows).
+const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">privé</span>` : "",
+  String(a.info?.last_status ?? "").startsWith("fout") ? `<span class="badge bad" title="${esc(a.info.last_status)}">niet gevonden</span>` : "",
+  !a.info ? `<span class="badge info">nog niet opgehaald</span>` : ""].join("");
+
 // Vandaag (Amsterdam) for every tracked student: posts today, required (1 or the dagopdracht), done.
 function todayOf(m) {
-  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.posts, isPrivate: s.isPrivate })),
+  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.posts,
+    accounts: s.accounts.map((a) => ({ handle: a.handle, isPrivate: a.isPrivate })) })),
     m.tasks, m.now);
   st.byHandle = new Map(st.rows.map((r) => [r.handle, r]));
   st.inCampaign = st.day >= m.cfg.campaign.start && st.day <= m.cfg.campaign.end && !m.final;
@@ -311,22 +354,28 @@ function renderStudents(m) {
       <table class="heat">
         <thead><tr><th class="name">Leerling</th>${head}<th class="num" title="Huidige reeks dagen achter elkaar">Reeks</th><th class="num">Gemist</th>
           ${m.tasks.length ? `<th class="num" title="Dagopdrachten niet gehaald">Opdr. niet gehaald</th>` : ""}<th class="num">Posts</th></tr></thead>
-        <tbody>${list.map((s) => `
-          <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
-            <td class="name">${nameCell(s)} <span class="meta">@${esc(s.handle)}</span></td>
+        <tbody>${list.map((s) => {
+          // A student with two accounts: one row (a post on either account counts), plus a row per account when opened.
+          const row = (x, sub) => `
+          <tr class="link${sub ? " sub-row" : ""}" tabindex="0" data-handle="${esc(x.handle)}">
+            <td class="name">${sub ? `<span class="sub-mark">↳</span> <span class="meta">@${esc(x.handle)}</span>`
+              : `${nameCell(s)}${accToggle(s)} <span class="meta" title="${esc(handlesText(s))}">${esc(handlesText(s))}</span>`}</td>
             ${days.map((d) => {
-              const n = s.stats.perDay.get(d) || 0;
-              return `<td class="day ${dayCellClass(s, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${dayCellText(s, d, today)}</td>`;
+              const n = x.stats.perDay.get(d) || 0;
+              return `<td class="day ${dayCellClass(x, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${dayCellText(x, d, today)}</td>`;
             }).join("")}
-            <td class="num"><strong>${s.stats.streak}</strong></td>
-            <td class="num">${s.stats.missedDays}</td>
-            ${m.tasks.length ? `<td class="num">${s.stats.tasksMissed}</td>` : ""}
-            <td class="num">${s.stats.posts}</td>
-          </tr>`).join("")}
+            <td class="num">${sub ? x.stats.streak : `<strong>${x.stats.streak}</strong>`}</td>
+            <td class="num">${x.stats.missedDays}</td>
+            ${m.tasks.length ? `<td class="num">${x.stats.tasksMissed}</td>` : ""}
+            <td class="num">${x.stats.posts}</td>
+          </tr>`;
+          return row(s, false) + (state.open.has(s.handle) ? s.accounts.map((a) => row(a, true)).join("") : "");
+        }).join("")}
         </tbody>
       </table>
     </div>
-    <p class="hint">Klik op een leerling voor de details. Weekgrenzen (maandag) hebben een lijntje.</p>`;
+    <p class="hint">Klik op een leerling voor de details. Weekgrenzen (maandag) hebben een lijntje.
+      Twee accounts: een dag is blauw en telt voor de reeks als op één van de twee gepost is; met <em>▸ 2 accounts</em> zie je ze apart.</p>`;
 }
 
 function renderStudent(m, handle) {
@@ -336,7 +385,11 @@ function renderStudent(m, handle) {
     box.innerHTML = `<a class="back" href="#leerlingen">← Alle leerlingen</a><p>@${esc(handle)} wordt niet (meer) gevolgd.</p>`;
     return;
   }
-  const st = s.stats;
+  // Two accounts: all together (default), or one of them (dropdown; opening the page via an
+  // account's own row selects that account).
+  if (s.multi && handle !== s.handle && state.account === null) state.account = handle;
+  const v = (s.multi && s.accounts.find((a) => a.handle === state.account)) || s;
+  const st = v.stats;
   const today = lib.localDay(m.now);
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   // Week calendar (Mon-Sun) over the campaign.
@@ -344,20 +397,23 @@ function renderStudent(m, handle) {
   const lead = (new Date(days[0] + "T00:00:00Z").getUTCDay() + 6) % 7;
   const cells = [...Array(lead).fill(`<div class="d out"></div>`), ...days.map((d) => {
     const n = st.perDay.get(d) || 0;
-    return `<div class="d ${dayCellClass(s, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${dayCellText(s, d, today, true)}</b></div>`;
+    return `<div class="d ${dayCellClass(v, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${dayCellText(v, d, today, true)}</b></div>`;
   })];
-  const posts = [...s.posts].sort((a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0));
+  const posts = [...v.posts].sort((a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0));
   box.innerHTML = `
     <a class="back" href="#leerlingen">← Alle leerlingen</a>
     <div class="detail-head">
       <h2>${nameCell(s)}</h2>
-      <a href="${tiktok(s.handle)}" target="_blank" rel="noopener">@${esc(s.handle)} op TikTok ↗</a>
+      ${s.handles.map((h) => `<a href="${tiktok(h)}" target="_blank" rel="noopener">@${esc(h)} op TikTok ↗</a>`).join("")}
       ${badges(s.warnings)}
     </div>
+    ${s.multi ? `<div class="controls"><label class="acc-select">Cijfers van <select id="st-account">
+      <option value="">beide accounts samen</option>${s.accounts.map((a) => `<option value="${esc(a.handle)}"${v === a ? " selected" : ""}>alleen @${esc(a.handle)}</option>`).join("")}
+    </select></label>${v !== s ? `<span class="meta">Positie en waarschuwingen gelden voor de leerling (beide accounts samen).</span>` : ""}</div>` : ""}
     ${s.warnings.some((w) => w.detail) ? warnDetails(s) : ""}
     <div class="tiles">
       ${tile("Positie", s.rank, `van ${m.students.length}`)}
-      ${tile("Weergaven", fmt(s.views), s.gain == null ? "" : `${signed(s.gain)} in 24 uur`)}
+      ${tile("Weergaven", fmt(v.views), v.gain == null ? "" : `${signed(v.gain)} in 24 uur`)}
       ${tile("Posts", fmt(st.posts), `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}`)}
       ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren, zonder vrije dagen")}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
@@ -366,9 +422,9 @@ function renderStudent(m, handle) {
       ${tile("Gem. weergaven/post", fmt(st.avgViews))}
       ${tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee")}
       ${tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven")}
-      ${tile("Volgers", fmt(s.followers))}
-      ${tile("Beste video", st.best ? `<a href="${tiktok(s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
-        st.best ? `geplaatst ${stampFmt.format(st.best.created)}` : "")}
+      ${tile("Volgers", fmt(v.followers), v === s && s.multi ? "beide accounts opgeteld" : "")}
+      ${tile("Beste video", st.best ? `<a href="${tiktok(st.best.handle || s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
+        st.best ? `geplaatst ${stampFmt.format(st.best.created)}${s.multi ? ` op @${esc(st.best.handle)}` : ""}` : "")}
     </div>
     <div class="grid2">
       <div class="card">
@@ -407,7 +463,7 @@ function renderStudent(m, handle) {
             <td class="num opt">${fmt(lib.toNum(p.shares))}</td>
             <td class="num opt">${eng == null ? "–" : pct.format(eng)}</td>
             <td>${String(p.hashtags || "").split(/\s+/).filter(Boolean).map((x) => "#" + esc(x)).join(" ")}</td>
-            <td><a href="${tiktok(s.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></td>
+            <td>${s.multi && v === s ? `<span class="meta">@${esc(p.handle)}</span> ` : ""}<a href="${tiktok(p.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></td>
           </tr>`;
         }).join("") || `<tr><td colspan="8">Nog geen posts gezien.</td></tr>`}</tbody>
       </table>
@@ -429,7 +485,7 @@ function renderHashtags(m) {
   for (const b of $("tag-sort").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.v === state.tagSort));
   outlierToggle(m, "tag-out");
   const by = state.tagSort;
-  const tags = hidingOutliers(m) ? lib.hashtagStats(new Map([...m.posts].filter(([h]) => !m.outliers.has(h)))) : m.tags;
+  const tags = hidingOutliers(m) ? lib.hashtagStats(new Map([...m.posts].filter(([h]) => !m.byHandle.get(h)?.isOutlier))) : m.tags;
   const rows = [...tags].sort((a, b) => b[by] - a[by] || (by === "posts" ? b.views - a.views : b.posts - a.posts) || a.tag.localeCompare(b.tag));
   $("tags-meta").textContent = `${rows.length} verschillende hashtags`;
   $("tags-body").innerHTML = rows.map((t, i) => {
@@ -481,9 +537,15 @@ function renderAdmin(m) {
   $("acc-count").textContent = `(${raw.accounts.filter((a) => a.tracked).length} actief, ${raw.accounts.filter((a) => a.active === false).length} inactief)`;
   $("acc-body").innerHTML = accounts.map((a) => {
     const out = a.tracked && m.outliers.has(a.handle);
+    const extra = a.tracked && a.group !== a.handle;
     const status = (a.issue ? `<span class="badge bad">${esc(a.issue)}</span>`
       : a.active ? `<span class="badge good">actief</span>` : `<span class="badge info">inactief</span>`)
+      + (extra ? ` <span class="badge info" title="Telt samen met het eerste account">tweede account van @${esc(a.group)}</span>` : "")
+      + (a.groupIssue ? ` <span class="badge warn" title="${esc(a.groupIssue)}">telt apart</span>` : "")
       + (out ? ` <span class="badge info">buiten schaal</span>` : "");
+    // "+ account": a second account for this student (only on a tracked first account).
+    const add = a.tracked && !extra && !a.main ? `<button type="button" class="btn small" data-add-for="${esc(a.handle)}"
+      title="Tweede TikTok-account van deze leerling toevoegen; de weergaven tellen samen">+ account</button>` : "";
     const scale = a.tracked ? `<button type="button" class="btn small" data-outlier="${esc(a.handle)}" data-on="${!out}"
       title="${out ? "Weer meetellen in de schaal van de grafieken" : "Uit de schaal van de grafieken halen (plaats en cijfers blijven gelijk)"}">${out ? "In schaal" : "Buiten schaal"}</button>` : "";
     const btn = !a.handle ? "" : a.active
@@ -491,7 +553,15 @@ function renderAdmin(m) {
       : a.active === false ? `<button type="button" class="btn small" data-row="${a.row}" data-handle="${esc(a.handle)}" data-active="true">Activeren</button>` : "";
     return `<tr class="${a.active === false ? "inactive" : ""}${a.issue ? " issue-row" : ""}">
       <td class="num">${a.row}</td><td>${a.name ? esc(a.name) : `<mark class="unknown">onbekend</mark>`}</td>
-      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || "–"}</td><td>${status}</td><td class="buttons-cell">${btn} ${scale}</td></tr>`;
+      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || "–"}</td><td>${status}</td><td class="buttons-cell">${btn} ${scale} ${add}</td></tr>
+      ${state.addFor === a.handle ? `<tr class="add-row"><td></td><td colspan="4">
+        <form class="add-form" data-add-form="${esc(a.handle)}" autocomplete="off">
+          <label>Tweede TikTok-account van ${a.name ? esc(a.name) : "deze leerling"} <input name="handle" required placeholder="@naam of tiktok.com/@naam"></label>
+          <button type="submit" class="btn primary">Toevoegen</button>
+          <button type="button" class="btn" data-add-cancel>Annuleren</button>
+        </form>
+        <p class="hint">Wordt apart opgehaald (1 record per run extra) en telt overal samen met @${esc(a.handle)}: weergaven, posts, reeks en
+          kalender. Op de openbare site staan de twee handles dan samen in één rij (zonder naam).</p></td></tr>` : ""}`;
   }).join("") || `<tr><td colspan="5">Geen rijen.</td></tr>`;
   renderTasks(m);
 
@@ -500,6 +570,7 @@ function renderAdmin(m) {
   $("acc-issues").innerHTML = [
     ...issues.map((a) => `<li>Rij ${a.row} (${a.name ? esc(a.name) : "geen naam"}): <strong>${esc(a.rawHandle || "–")}</strong> — ${esc(a.issue)}. Wordt niet gevolgd.</li>`),
     ...unknown.map((a) => `<li>Rij ${a.row}: @${esc(a.handle)} heeft geen naam (<mark class="unknown">onbekend</mark>).</li>`),
+    ...raw.accounts.filter((a) => a.groupIssue).map((a) => `<li>Rij ${a.row}: @${esc(a.handle)} — ${esc(a.groupIssue)} (kolom <code>main_account</code>).</li>`),
   ].join("") || `<li>Geen problemen gevonden.</li>`;
 
   $("run-body").innerHTML = raw.runLog.slice(0, 30).map((r) => {
@@ -773,18 +844,18 @@ function renderRisers(m) {
   const ref = m.latest || Date.now();
   const list = [];
   for (const [h, posts] of m.posts) {
-    if (!m.byHandle.has(h) || (hidingOutliers(m) && m.outliers.has(h))) continue;
+    if (!m.byHandle.has(h) || (hidingOutliers(m) && m.byHandle.get(h).isOutlier)) continue;
     for (const p of posts) list.push({ s: m.byHandle.get(h), p, gain: videoGain(p, state.postHistory.byVideo.get(String(p.video_id)), state.videoRange, ref) });
   }
   const rows = list.filter((x) => x.gain > 0).sort((a, b) => b.gain - a.gain).slice(0, 30);
   $("vid-meta").textContent = `Weergaven erbij in de laatste ${state.videoRange} uur tot ${m.latest ? stampFmt.format(m.latest) : "nu"}`;
   body.innerHTML = rows.map((x, i) => {
     const t = lib.parseTs(x.p.created_at);
-    return `<tr class="link" tabindex="0" data-handle="${esc(x.s.handle)}">
-      <td class="num">${i + 1}</td><td>${nameCell(x.s)} <span class="meta">@${esc(x.s.handle)}</span></td>
+    return `<tr class="link" tabindex="0" data-handle="${esc(x.p.handle)}">
+      <td class="num">${i + 1}</td><td>${nameCell(x.s)} <span class="meta">@${esc(x.p.handle)}</span></td>
       <td class="num strong">${signed(x.gain)}</td><td class="num opt">${fmt(lib.toNum(x.p.views))}</td>
       <td class="opt">${t ? stampFmt.format(t) : "–"}</td>
-      <td><a href="${tiktok(x.s.handle, x.p.video_id)}" target="_blank" rel="noopener">open ↗</a></td></tr>`;
+      <td><a href="${tiktok(x.p.handle, x.p.video_id)}" target="_blank" rel="noopener">open ↗</a></td></tr>`;
   }).join("") || `<tr><td colspan="6">Geen video's met nieuwe weergaven in deze periode.</td></tr>`;
 }
 
@@ -793,18 +864,19 @@ function renderStudentVideos(m, s) {
   const box = $("st-videos");
   if (!box || typeof Chart === "undefined") return;
   if (!state.postHistory) {
-    loadPostHistory().then(() => state.view === "leerlingen" && state.detail === s.handle && renderStudentVideos(m, s)).catch(() => {});
+    loadPostHistory().then(() => state.view === "leerlingen" && m.byHandle.get(state.detail) === s && renderStudentVideos(m, s)).catch(() => {});
     return;
   }
   const ref = m.latest || Date.now();
-  const series = s.posts.map((p) => ({ p, pts: (state.postHistory.byVideo.get(String(p.video_id)) || []).filter((x) => x.t <= ref) }))
+  const shown = (s.multi && s.accounts.find((a) => a.handle === state.account)) || s;
+  const series = shown.posts.map((p) => ({ p, pts: (state.postHistory.byVideo.get(String(p.video_id)) || []).filter((x) => x.t <= ref) }))
     .filter((x) => x.pts.length);
   if (!series.length) return;
   const gains = series.map((x) => ({ ...x, gain: videoGain(x.p, x.pts, 24, ref) })).sort((a, b) => b.gain - a.gain);
   const top = gains[0].gain > 0 ? gains[0] : null;
   box.hidden = false;
   $("st-videos-note").innerHTML = top
-    ? `🚀 Snelste stijger (24 uur): video van ${stampFmt.format(lib.parseTs(top.p.created_at))}, <strong>${signed(top.gain)}</strong>. <a href="${tiktok(s.handle, top.p.video_id)}" target="_blank" rel="noopener">open ↗</a>`
+    ? `🚀 Snelste stijger (24 uur): video van ${stampFmt.format(lib.parseTs(top.p.created_at))}, <strong>${signed(top.gain)}</strong>. <a href="${tiktok(top.p.handle, top.p.video_id)}" target="_blank" rel="noopener">open ↗</a>`
     : "Geen nieuwe weergaven in de laatste 24 uur.";
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const isTop = (x) => top && x.p.video_id === top.p.video_id;
@@ -853,8 +925,8 @@ function renderToday(m) {
   };
   const item = (s) => {
     const last = post(s);
-    return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">@${esc(s.handle)}</span>
-      ${last ? `<span class="meta">· ${hourFmt.format(last.t)}</span> <a href="${tiktok(s.handle, last.p.video_id)}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
+    return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span>
+      ${last ? `<span class="meta">· ${hourFmt.format(last.t)}${s.multi ? ` op @${esc(last.p.handle)}` : ""}</span> <a href="${tiktok(last.p.handle, last.p.video_id)}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
   };
   $("td-title").textContent = `Vandaag, ${day}`;
   $("td-info").innerHTML = !st.inCampaign ? "Vandaag is geen campagnedag."
@@ -868,7 +940,7 @@ function renderToday(m) {
   $("td-priv-n").textContent = priv.length;
   $("td-todo").innerHTML = todo.map(item).join("") || `<li class="meta">Iedereen is klaar.</li>`;
   $("td-done").innerHTML = done.map(item).join("") || `<li class="meta">Nog niemand.</li>`;
-  $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">@${esc(s.handle)}</span></li>`).join("")
+  $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span></li>`).join("")
     || `<li class="meta">Geen.</li>`;
   $("td-priv-card").hidden = !priv.length;
   // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
@@ -965,10 +1037,10 @@ const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "pos
 function exportRows(m) {
   return [...m.students].sort(byName).map((s) => {
     const st = s.stats;
-    return [s.name || "onbekend", "@" + s.handle, s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.tasksMissed,
+    return [s.name || "onbekend", s.handles.map((h) => "@" + h).join(", "), s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.tasksMissed,
       st.streak, st.longest, st.avgViews, st.medianViews, st.likes, st.comments, st.shares,
       st.engagement == null ? null : Math.round(st.engagement * 1000) / 10,
-      st.best ? tiktok(s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
+      st.best ? tiktok(st.best.handle || s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
       st.tags.slice(0, 10).map(([t]) => "#" + t).join(" "), s.isPrivate ? "ja" : "nee",
       s.warnings.map((w) => w.text).join("; ")];
   });
@@ -1029,6 +1101,7 @@ function route() {
   const prev = state.view;
   state.view = ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
   state.detail = state.view === "leerlingen" && arg ? arg : null;
+  state.account = null; // student page: back to "beide accounts samen" (or the account in the link)
   if (state.detail) window.scrollTo(0, 0);
   render();
   if (state.view === "beheer" && prev !== "beheer") loadRuns();
@@ -1061,6 +1134,22 @@ $("ov-table").querySelector("thead").addEventListener("click", (ev) => {
   state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (DEFAULT_DIR[key] || -1) };
   renderOverview(model);
 });
+// "▸ 2 accounts" (Overzicht, Leerlingen) shows the rows per account; the student page has a dropdown.
+for (const id of ["ov-body", "ll-content"]) {
+  $(id).addEventListener("click", (ev) => {
+    const b = ev.target.closest("button[data-open]");
+    if (!b) return;
+    const key = b.dataset.open;
+    if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
+    render();
+  });
+}
+$("ll-content").addEventListener("change", (ev) => {
+  if (ev.target.id !== "st-account") return;
+  state.account = ev.target.value; // "" = both accounts (chosen), null = not chosen yet
+  render();
+});
+
 // A warning badge in Overzicht opens its details under the row (instead of opening the student).
 $("ov-body").addEventListener("click", (ev) => {
   const b = ev.target.closest("button[data-warn]");
@@ -1142,16 +1231,42 @@ $("bh-refresh").addEventListener("click", async (ev) => {
   }
 });
 
+// "+ account": open the form under that row, or close it.
+$("acc-body").addEventListener("click", (ev) => {
+  const open = ev.target.closest("button[data-add-for]");
+  const cancel = ev.target.closest("button[data-add-cancel]");
+  if (!open && !cancel) return;
+  state.addFor = open && state.addFor !== open.dataset.addFor ? open.dataset.addFor : null;
+  renderAdmin(model);
+  if (state.addFor) $("acc-body").querySelector("[data-add-form] input").focus();
+});
+$("acc-body").addEventListener("submit", async (ev) => {
+  const f = ev.target.closest("form[data-add-form]");
+  if (!f) return;
+  ev.preventDefault();
+  const btn = f.querySelector("button[type=submit]");
+  btn.disabled = true;
+  try {
+    const res = await api("/api/accounts", { handle: f.querySelector("[name=handle]").value, main: f.dataset.addForm, active: true });
+    state.addFor = null;
+    flash(res.message, true, "acc-msg");
+    await load();
+  } catch (err) {
+    flash(err.message, false, "acc-msg");
+    btn.disabled = false;
+  }
+});
+
 $("acc-body").addEventListener("click", async (ev) => {
   const scale = ev.target.closest("button[data-outlier]");
   if (scale) {
     scale.disabled = true;
     try {
       const res = await api("/api/outliers", { handle: scale.dataset.outlier, on: scale.dataset.on === "true" });
-      flash(res.message, true);
+      flash(res.message, true, "acc-msg");
       await load();
     } catch (err) {
-      flash(err.message, false);
+      flash(err.message, false, "acc-msg");
       scale.disabled = false;
     }
     return;
@@ -1163,10 +1278,10 @@ $("acc-body").addEventListener("click", async (ev) => {
   btn.disabled = true;
   try {
     const res = await api("/api/accounts/active", { row: Number(btn.dataset.row), handle: btn.dataset.handle, active });
-    flash(res.message, true);
+    flash(res.message, true, "acc-msg");
     await load();
   } catch (err) {
-    flash(err.message, false);
+    flash(err.message, false, "acc-msg");
     btn.disabled = false;
   }
 });
@@ -1196,11 +1311,11 @@ form.addEventListener("submit", async (ev) => {
   }
 });
 
-function flash(text, ok) {
-  const p = $("add-preview");
+function flash(text, ok, id = "add-preview") {
+  const p = $(id);
   p.className = "status " + (ok ? "ok" : "err");
   p.textContent = text;
-  if (state.view === "beheer" && !ok) p.scrollIntoView({ block: "nearest" });
+  if (state.view === "beheer") p.scrollIntoView({ block: "nearest" });
 }
 
 window.addEventListener("hashchange", route);

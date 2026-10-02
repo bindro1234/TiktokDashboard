@@ -15,7 +15,8 @@ HASHTAG_RE = re.compile(r"#([^\s#.,!?;:()\[\]{}\"'@]+)")
 NO_POSTS_MESSAGE = "no public posts in the profile for the specified period"
 
 SCHEMA_ADMIN = {
-    "accounts": ["student_name", "tiktok_handle", "active"],
+    # main_account (optional): for a student's second account, the handle of their first account.
+    "accounts": ["student_name", "tiktok_handle", "active", "main_account"],
     "run_log": ["timestamp", "run_type", "window", "dry_run", "expected_records", "actual_records",
                 "errors", "status", "snapshot_ids", "notes"],
     "profile_window": ["handle", "checked_at", "videos_count", "window_count", "pinned_in_window",
@@ -31,7 +32,9 @@ SCHEMA_ADMIN = {
 }
 SCHEMA_DATA = {
     # status_since: when last_status last changed between ok / privé / fout (shown as "since when").
-    "handles": ["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"],
+    # group: the student's main account handle (= handle, or the first account of a student with
+    # two accounts); the sites add up the accounts of one group. Handles only, no names.
+    "handles": ["handle", "is_private", "followers", "last_scraped", "last_status", "status_since", "group"],
     "profile_snapshots": ["timestamp", "handle", "followers", "following", "likes", "video_count", "is_private"],
     "posts_latest": ["video_id", "handle", "created_at", "views", "likes", "comments", "shares", "post_type",
                      "pinned", "first_seen", "last_seen", "source", "hashtags", "missing_since",

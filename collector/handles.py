@@ -67,5 +67,33 @@ def parse_accounts(rows: list[dict]) -> tuple[list[str], list[str]]:
     return handles, issues
 
 
+def account_groups(rows: list[dict]) -> tuple[dict[str, str], list[str]]:
+    """Students with more than one account (e.g. a brand account and one for ads).
+
+    An extra account has the handle of the student's first account in the optional column
+    main_account. Returns ({active handle: group}, issues): the group is the main account's handle,
+    or the handle itself. An extra account whose main account isn't active (or is an extra itself)
+    counts on its own and is reported. Same rules as parseAccounts in private/public/lib.js.
+    """
+    handles, _ = parse_accounts(rows)
+    active = set(handles)
+    mains: dict[str, str | None] = {}
+    for row in rows:
+        handle, _ = normalize_handle(row.get("tiktok_handle"))
+        if handle in active and handle not in mains:
+            main, _ = normalize_handle(row.get("main_account")) if str(row.get("main_account") or "").strip() else (None, None)
+            mains[handle] = main if main != handle else None
+    groups, issues = {}, []
+    for handle in handles:
+        main = mains.get(handle)
+        if main and main in active and not mains.get(main):
+            groups[handle] = main
+        else:
+            groups[handle] = handle
+            if main:
+                issues.append(f"@{handle}: main_account @{main} is not an active main account, counted on its own")
+    return groups, issues
+
+
 def profile_url(handle: str) -> str:
     return f"https://www.tiktok.com/@{handle}"

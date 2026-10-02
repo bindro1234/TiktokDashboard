@@ -40,7 +40,7 @@ const Present = (() => {
   // The private dashboard passes first names as labels; the public site only has handles.
   const who = (handle) => {
     const label = data.labels && data.labels[handle];
-    return label ? `${esc(label)} <span class="p-at">@${esc(handle)}</span>` : `@${esc(handle)}`;
+    return label ? `${esc(label)} <span class="p-at">${esc(who2(handle))}</span>` : esc(who2(handle));
   };
 
   function podium() {
@@ -113,7 +113,7 @@ const Present = (() => {
     const opts = timeAxis(baseOptions());
     opts.plugins.tooltip.enabled = false;
     opts.layout = { padding: { right: 8 } };
-    const datasets = applyOutliers(top.map((h) => ({ ...lineDataset("@" + h, points(h, "total_views"), color(h), false), borderWidth: 3, handle: h })));
+    const datasets = applyOutliers(top.map((h) => ({ ...lineDataset(who2(h), points(h, "total_views"), color(h), false), borderWidth: 3, handle: h })));
     outlierPadding(opts, datasets);
     drawChart("p-chart", { type: "line", data: { datasets }, options: opts, plugins: [outlierMarks] });
   }

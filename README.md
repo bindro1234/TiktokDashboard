@@ -28,13 +28,13 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 
 | Sheet | Tabblad | Inhoud |
 |---|---|---|
-| privé | `accounts` | `student_name`, `tiktok_handle`, `active` (ja/nee) — **dit vul je zelf in** |
+| privé | `accounts` | `student_name`, `tiktok_handle`, `active` (ja/nee), en optioneel `main_account` (alleen bij een tweede account: de handle van het hoofdaccount) — **dit vul je zelf in** |
 | privé | `run_log` | per run: tijd, type, venster, dry-run, verwachte en echte records, fouten, status, notities |
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | privé | `activity_log` | wie (e-mail) wat deed op de beheerpagina en wanneer: geopend (1× per dag), nu verversen, leerling toegevoegd/(de)geactiveerd, finale gestart/gewijzigd/gestopt, export. Wordt vanzelf aangemaakt |
 | privé | `finale` | per finale: start, wie, deadline, status (`active`, `stopped` = vroeg gestopt, `cancelled` = geannuleerd), wanneer gestopt en door wie. De laatste rij telt |
 | privé | `dagopdrachten` | per dagopdracht: `date`, `min_posts`, `label`, `active` (verwijderen = `nee`, rijen blijven staan), wanneer en door wie gewijzigd. Wordt vanzelf aangemaakt op Beheer |
-| openbaar | `handles` | actieve handles, privé ja/nee, laatste status, en `status_since`: sinds wanneer die status (ok / privé / niet gevonden) geldt |
+| openbaar | `handles` | actieve handles, privé ja/nee, laatste status, en `status_since`: sinds wanneer die status (ok / privé / niet gevonden) geldt, en `group`: de handle van het hoofdaccount (bij één account de eigen handle; zie *Twee accounts*) |
 | openbaar | `outliers` | *buiten schaal*: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Heeft een vaste `gid` (702500001), zodat de site hem zonder extra stap vindt |
 | openbaar | `profile_snapshots` | volgers, volgend, likes, aantal video's per run |
 | openbaar | `posts_latest` | één rij per video (`video_id`), steeds bijgewerkt met de nieuwste cijfers, plus `hashtags`, `missing_since` en `hist_*` (laatste `post_history`-rij) |
@@ -45,6 +45,17 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 ### Accounts toevoegen
 
 Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `naam`, `https://www.tiktok.com/@naam`, met hoofdletters of spaties. Ongeldige handles (bijv. een korte `vm.tiktok.com`-link) worden overgeslagen en gemeld in `run_log`; de run gaat gewoon door. Zet `active` op `nee` om een account niet meer te volgen (leeg = ja).
+
+### Twee accounts per leerling
+
+Sommige leerlingen hebben twee accounts (bijv. één voor hun merk en één voor reclame en alles wat daar niet bij past). Voeg het tweede account toe via **Beheer → Alle leerlingen → + account** bij de leerling, of zet zelf een rij in `accounts` met dezelfde naam en in `main_account` de handle van het hoofdaccount. Het hoofdaccount zelf laat `main_account` leeg.
+
+- **Overal samengeteld**: weergaven, volgers, posts en likes van beide accounts tellen op tot één leerling (stand, grafieken, Export, mediaan, presentatie). Bij gedeeltelijke runs telt per account steeds de laatste meting.
+- **Uitsplitsen**: in **Overzicht** en de **Leerlingen**-kalender opent ▸ *2 accounts* een rij per account; op de leerlingpagina kies je *beide accounts samen* of *alleen @…*. Op de openbare site hetzelfde: ▸ in de stand en een keuzemenu op de accountpagina.
+- **Reeks en kalender**: een dag is blauw (gepost) als **één van beide** accounts iets postte. *Vandaag*, *Controleer nu* (haalt alleen de openbare accounts op van wie nog niet gepost heeft), dagopdrachten en *X dagen geen post* werken ook per leerling. *Privé* en *niet gevonden* worden per account gemeld, met de handle erbij.
+- Is het hoofdaccount niet (meer) actief, of zelf een tweede account, dan telt het tweede account apart en staat er een melding op Beheer (*telt apart*).
+- **Let op, openbaar:** de kolom `group` in de openbare tab `handles` laat zien dat twee handles bij dezelfde deelnemer horen (zonder naam). De openbare site toont ze samen als `@merk + @reclame`. Op de openbare site gebeurt het samenvoegen pas na de volgende ophaalrun; op de beheerpagina meteen.
+- **Kosten:** elk extra account is een extra profiel per run: ≈ 12 records per dag, ≈ 360 per maand.
 
 ## Kosten en budget
 
@@ -163,14 +174,14 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 
 | Tabblad | Wat |
 |---|---|
-| **Overzicht** | bovenaan **Actie nodig**: wie vandaag nog niet gepost heeft, privé, niet gevonden en dagopdracht niet gehaald, elk met een link naar de leerling. Daaronder alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen*, *opdracht 2 okt: 3/5*. **Klik op een waarschuwing** voor de details: welke video verdwenen is en sinds wanneer, sinds wanneer een account privé of niet gevonden is. De kaart *Weergaven* toont naast het totaal de **mediaan per leerling**. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
+| **Overzicht** | bij twee accounts staat er `@merk + @reclame` met ▸ *2 accounts* om ze apart te zien (zie *Twee accounts*). Bovenaan **Actie nodig**: wie vandaag nog niet gepost heeft, privé, niet gevonden en dagopdracht niet gehaald, elk met een link naar de leerling. Daaronder alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen*, *opdracht 2 okt: 3/5*. **Klik op een waarschuwing** voor de details: welke video verdwenen is en sinds wanneer, sinds wanneer een account privé of niet gevonden is. De kaart *Weergaven* toont naast het totaal de **mediaan per leerling**. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
 | **Vandaag** | wie vandaag nog niet gepost heeft en wie wel (met tijd en link), plus *laatst gecontroleerd*, en de knop **Controleer nu** (zie hieronder) |
 | **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks, gemiste dagen en **opdrachten niet gehaald** (zie *Vrije dagen* en *Dagopdrachten* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, dagopdrachten, gem. weergaven per post, **mediaan per video** (de gewone video: één virale video trekt het gemiddelde omhoog, de mediaan nauwelijks), beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts |
 | **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam. Met *zonder buiten schaal* |
 | **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt. Met *zonder buiten schaal* |
 | **Opvallend** | video's en accounts om even naar te kijken (zie hieronder) |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
-| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen, leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
+| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
 | **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling, ook met `opdrachten_niet_gehaald` en `mediaan_weergaven_per_video` |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).
@@ -317,6 +328,7 @@ Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `h
 - **Groei**: erbij per dag of per week (per dag = laatste meting van die dag min die van de dag ervoor), plus de grootste stijgers.
 - **Video's**: *Snelste stijgers*, de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur.
 - **Hashtags**: de meest gebruikte hashtags en de hashtags met de meeste weergaven (van campagneposts), met het aantal accounts. Klik op een hashtag om te zien welke accounts hem gebruiken.
+- **Twee accounts**: een deelnemer met twee accounts staat als `@merk + @reclame` in de stand, met ▸ *2 accounts* voor de cijfers per account; op de accountpagina kies je *beide accounts samen* of één account.
 - **Account**: klik op een account voor details, de eigen hashtags, **weergaven per video over tijd** (de snelste stijger van de laatste 24 uur in oranje) en alle posts.
 - **Finale**: bovenaan een aftelklok met LIVE; na de deadline *Eindstand* boven de stand.
 - Knop **▶ Presentatie** rechtsboven: opent de presentatiemodus in een nieuw tabblad.

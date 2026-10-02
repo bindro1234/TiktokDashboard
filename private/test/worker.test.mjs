@@ -438,3 +438,30 @@ test("Controleer nu: refused when it would not fit in the monthly budget", async
   assert.match((await res.json()).error, /budget/);
   assert.ok(!calls.some((c) => c.url.includes("dispatches")));
 });
+
+test("+ account: a second account gets the student's name and main_account; refused for extra or inactive accounts", async () => {
+  // This sheet has no main_account column yet: it is added to the header.
+  let res = await req("/api/accounts", { body: { handle: "@Anna.Ads", main: "anna_1" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.accounts[0], ["student_name", "tiktok_handle", "active", "main_account"]);
+  assert.deepEqual(sheets.accounts.at(-1), ["Anna", "anna.ads", "ja", "anna_1"]);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "account toegevoegd aan leerling" && r[3].includes("@anna.ads (bij @anna_1)")));
+  const d = await (await req("/api/data")).json();
+  assert.equal(d.accounts.find((a) => a.handle === "anna.ads").group, "anna_1");
+  assert.equal((await req("/api/accounts", { body: { handle: "x3", main: "anna.ads" } })).status, 409); // an extra account
+  assert.equal((await req("/api/accounts", { body: { handle: "x4", main: "bram.b" } })).status, 409);   // inactive
+  assert.equal((await req("/api/accounts", { body: { handle: "anna_1", main: "chris" } })).status, 409); // already there
+});
+
+test("Controleer nu: a student with two accounts is done when either posted; otherwise both are checked", async () => {
+  const now = new Date().toISOString();
+  sheets.accounts[0].push("main_account");
+  sheets.accounts.push(["Anna", "anna.ads", "ja", "anna_1"], ["", "chris.ads", "ja", "chris"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"], ["anna.ads", false, 1, "", "ok"], ["chris.ads", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"], ["1", "anna.ads", now, 5]];
+  sheets._runs = [{ status: "completed" }];
+  const res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+  assert.equal(JSON.parse(dispatch.body).inputs.handles, "chris,chris.ads"); // Anna posted on her second account
+});

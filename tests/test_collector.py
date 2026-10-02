@@ -53,6 +53,23 @@ class HandleTests(unittest.TestCase):
         self.assertFalse(any(name in " ".join(issues) for name in ["'A'", "'B'", "'C'", "'E'"]))
 
 
+    def test_account_groups(self):
+        """A student's second account points at their first one (main_account); the sites add them up."""
+        from collector.handles import account_groups
+        rows = [
+            {"student_name": "Anna", "tiktok_handle": "@anna", "active": "ja", "main_account": ""},
+            {"student_name": "Anna", "tiktok_handle": "anna.ads", "active": "ja", "main_account": "@Anna"},
+            {"student_name": "Bram", "tiktok_handle": "bram", "active": "nee", "main_account": ""},
+            {"student_name": "Bram", "tiktok_handle": "bram2", "active": "ja", "main_account": "bram"},   # main inactive
+            {"student_name": "Cas", "tiktok_handle": "cas3", "active": "ja", "main_account": "anna.ads"},  # chain
+            {"student_name": "Dee", "tiktok_handle": "dee", "active": "ja", "main_account": "dee"},      # itself
+        ]
+        groups, issues = account_groups(rows)
+        self.assertEqual(groups, {"anna": "anna", "anna.ads": "anna", "bram2": "bram2", "cas3": "cas3", "dee": "dee"})
+        self.assertEqual(len(issues), 2)
+        self.assertFalse(any(n in " ".join(issues) for n in ["Anna", "Bram", "Cas"]))  # no names in logs
+
+
 class SheetTests(unittest.TestCase):
     def test_column_letters(self):
         from collector.sheets import _col
@@ -427,8 +444,8 @@ class TodayCheckTests(unittest.TestCase):
     NOW = dt.datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 
     def setUp(self):
-        accounts = [{"student_name": n, "tiktok_handle": h, "active": "ja"}
-                    for n, h in [("A", "aa"), ("B", "bb"), ("C", "cc"), ("D", "dd")]]
+        accounts = [{"student_name": n, "tiktok_handle": h, "active": "ja", "main_account": m}
+                    for n, h, m in [("A", "aa", ""), ("B", "bb", ""), ("C", "cc", "bb"), ("D", "dd", "")]]
         self.admin = FakeSheet({"accounts": accounts, "run_log": [], "profile_window": []})
         old = {"is_private": False, "followers": 5, "last_scraped": "2026-10-07T10:00:00Z", "last_status": "ok",
                "status_since": "2026-09-28T06:00:00Z"}
@@ -466,6 +483,8 @@ class TodayCheckTests(unittest.TestCase):
         self.assertEqual(handles["dd"]["status_since"], "2026-10-03T10:00:00Z")
         self.assertEqual({p["handle"] for p in self.data.tabs["posts_latest"]}, {"bb", "cc"})
         self.assertIn("outliers", self.data.tabs)  # public "buiten schaal" tab created on the first run
+        # cc is bb's second account: the public handles tab says so (handles only).
+        self.assertEqual({h: r["group"] for h, r in handles.items()}, {"aa": "aa", "bb": "bb", "cc": "bb", "dd": "dd"})
 
     def test_a_check_never_counts_as_a_full_profiles_run(self):
         self.check(["aa"])
