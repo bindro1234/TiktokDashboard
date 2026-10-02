@@ -21,8 +21,11 @@ const accountsSheet = [
   ...names.map((n, i) => ({ _row: i + 2, student_name: n, tiktok_handle: `@test_${String(i + 1).padStart(2, "0")}`, active: "ja" })),
   { _row: 14, student_name: "Lot", tiktok_handle: "https://vm.tiktok.com/abc", active: "ja" },
   { _row: 15, student_name: "Mo", tiktok_handle: "test_16", active: "nee" },
+  // Anna has a second account (brand + ads): counted together everywhere.
+  { _row: 16, student_name: "Anna", tiktok_handle: "test_13", active: "ja", main_account: "test_01" },
 ];
 const tracked = lib.parseAccounts(accountsSheet).filter((a) => a.tracked).map((a) => a.handle);
+const students = lib.groupAccounts(lib.parseAccounts(accountsSheet)).size; // rows per student
 const tagsPool = ["fyp", "glu", "schoolproject", "viral", "tiktoknl", "sport"];
 const posts = [], history = [];
 let seed = 7;
@@ -102,7 +105,8 @@ function api(req, body) {
     if (req.url === "/api/refresh") return [409, { error: "De laatste profielrun was 5 min geleden. Verversen kan weer over 25 min." }];
     if (req.url === "/api/accounts") {
       const { handle } = lib.normalizeHandle(body.handle);
-      accountsSheet.push({ _row: accountsSheet.length + 2, student_name: body.name, tiktok_handle: handle, active: body.active ? "ja" : "nee" });
+      // A second account (main) is recorded but not added, so the rest of the check keeps the same class.
+      if (!body.main) accountsSheet.push({ _row: accountsSheet.length + 2, student_name: body.name, tiktok_handle: handle, active: body.active ? "ja" : "nee" });
       return [200, { ok: true, message: `@${handle} toegevoegd.` }];
     }
     if (req.url === "/api/accounts/active") {
@@ -198,7 +202,21 @@ await page.waitForSelector("#ov-body tr[data-handle]");
 const rows = await page.$$eval("#ov-body tr[data-handle]", (r) => r.length);
 const text = await page.textContent("#ov-body");
 console.log(`overzicht: ${rows} rows`);
-if (rows !== tracked.length) fail(`overzicht shows ${rows} rows, expected ${tracked.length}`);
+if (rows !== students) fail(`overzicht shows ${rows} rows, expected ${students} (one per student)`);
+// Anna's two accounts: one row with both handles, and a row per account behind "▸ 2 accounts".
+const annaRow = await page.textContent('#ov-body tr[data-handle="test_01"]');
+if (!annaRow.includes("@test_01 + @test_13")) fail(`overzicht: two accounts not shown together (${annaRow.slice(0, 80)})`);
+await page.click('#ov-body td.wide-only button[data-open="test_01"]');
+const subRows = await page.$$eval("#ov-body tr.sub-row", (r) => r.map((x) => x.dataset.handle));
+console.log(`overzicht: Anna = @test_01 + @test_13, per account: ${subRows.join(", ")}`);
+if (subRows.join() !== "test_01,test_13") fail(`overzicht: per-account rows wrong (${subRows})`);
+const sumOk = await page.evaluate(() => {
+  const num = (tr) => Number(tr.children[3].textContent.replace(/\D/g, ""));
+  const subs = [...document.querySelectorAll("#ov-body tr.sub-row")];
+  return num(document.querySelector('#ov-body tr[data-handle="test_01"]:not(.sub-row)')) === subs.reduce((n, tr) => n + num(tr), 0);
+});
+if (!sumOk) fail("overzicht: Anna's views are not the sum of her two accounts");
+await page.click('#ov-body td.wide-only button[data-open="test_01"]');
 for (const w of ["privé", "niet gevonden", "verdwenen", "geen post"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
 if (!(await page.$("#ov-body mark.unknown"))) fail("overzicht: empty name not highlighted as onbekend");
 await page.click('#ov-table th[data-sort="name"] button');
@@ -243,15 +261,35 @@ const offMissed = await page.$$eval(".heat tbody tr", (rows) => rows.flatMap((r)
   [...r.querySelectorAll("td.day")].filter((c, i) => [5, 6].includes(i % 7) && c.classList.contains("miss"))).length);
 const offCells = await page.$$eval(".heat td.off", (c) => c.length);
 console.log(`leerlingen: ${heatRows} rows x ${days} days, ${missCells} missed cells, ${offCells} free-day cells`);
-if (heatRows !== tracked.length || days !== lib.campaignDays(CFG).length) fail("leerlingen: heatmap has the wrong size");
+if (heatRows !== students || days !== lib.campaignDays(CFG).length) fail("leerlingen: heatmap has the wrong size");
+// Two accounts: open the rows per account; a day is "gemist" for Anna only if neither account posted.
+await page.click('#ll-content button[data-open="test_01"]');
+const merge = await page.evaluate(() => {
+  const cells = (tr) => [...tr.querySelectorAll("td.day")].map((c) => c.classList.contains("miss"));
+  const main = cells(document.querySelector('#ll-content tr[data-handle="test_01"]:not(.sub-row)'));
+  const subs = [...document.querySelectorAll("#ll-content tr.sub-row")].map(cells);
+  const bad = main.filter((miss, i) => miss !== subs.every((s) => s[i])).length;
+  return { subs: subs.length, bad, rescued: main.filter((miss, i) => !miss && subs.some((s) => s[i])).length };
+});
+console.log(`leerlingen: Anna per account ${merge.subs} rows; ${merge.rescued} days only one account posted (still counted); ${merge.bad} wrong`);
+if (merge.subs !== 2 || merge.bad) fail(`leerlingen: two accounts not combined right (${JSON.stringify(merge)})`);
 if (!missCells) fail("leerlingen: no missed days marked");
 if (!offCells || offMissed) fail(`leerlingen: free days wrong (${offCells} vrij, ${offMissed} weekend cells marked gemist)`);
 const taskCells = await page.$$eval(".heat td.task-miss", (c) => c.map((x) => x.textContent));
 console.log(`leerlingen: dagopdracht not reached in ${taskCells.length} cells, e.g. "${taskCells[0]}"`);
 if (!taskCells.length || !taskCells.every((t) => /^[01]\/2$/.test(t))) fail(`leerlingen: dagopdracht cells wrong (${taskCells.join(",")})`);
 if (!(await page.textContent(".heat thead")).includes("Opdr. niet gehaald")) fail("leerlingen: no 'opdrachten niet gehaald' column");
-await page.click(".heat tbody tr:first-child");
+await page.click('#ll-content tr[data-handle="test_01"]:not(.sub-row) td.day');
 await page.waitForSelector(".cal");
+// Anna's page: both accounts together, or one of them.
+const allPosts = await page.$$eval("#ll-content tbody tr", (r) => r.length);
+await page.selectOption("#st-account", "test_13");
+await page.waitForTimeout(200);
+const onePosts = await page.$$eval("#ll-content tbody tr", (r) => r.length);
+const expected13 = posts.filter((p) => p.handle === "test_13").length;
+console.log(`student detail: Anna ${allPosts} posts together, ${onePosts} on @test_13`);
+if (onePosts !== expected13 || allPosts !== expected13 + posts.filter((p) => p.handle === "test_01").length) fail("student detail: account dropdown wrong");
+await page.selectOption("#st-account", "");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
 const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
 for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
@@ -301,9 +339,17 @@ await page.waitForFunction(() => document.getElementById("add-preview").textCont
 const added = posted.find((p) => p.url === "/api/accounts");
 if (!added || added.body.name !== "Nora") fail("beheer: add student did not post");
 page.once("dialog", (d) => d.accept());
-await page.click('#acc-body button[data-active="false"]');
+await page.click('#acc-body button[data-active="false"][data-handle="test_12"]');
 await page.waitForTimeout(500);
 if (!posted.some((p) => p.url === "/api/accounts/active" && p.body.active === false)) fail("beheer: deactivate did not post");
+// "+ account": a second account for a student.
+await page.click('#acc-body button[data-add-for="test_05"]');
+await page.fill("#acc-body form[data-add-form] [name=handle]", "@Eva.Reclame");
+await page.click("#acc-body form[data-add-form] button[type=submit]");
+await page.waitForTimeout(500);
+const second = posted.find((p) => p.url === "/api/accounts" && p.body.main);
+if (!second || second.body.main !== "test_05" || second.body.handle !== "@Eva.Reclame") fail(`beheer: + account did not post right (${JSON.stringify(second && second.body)})`);
+if (await page.$('#acc-body button[data-add-for="test_13"]')) fail("beheer: + account offered on a second account");
 // Dagopdracht toevoegen en buiten schaal.
 if ((await page.$$eval("#task-body tr", (r) => r.length)) !== 2) fail("beheer: dagopdrachten not listed");
 await page.selectOption('#task-form [name="date"]', "2026-10-09");
@@ -328,7 +374,8 @@ console.log(`export: ${download.suggestedFilename()}, ${lines.length - 1} rows, 
 if (!csv.startsWith("﻿naam;handle;")) fail("export: no BOM or wrong separator");
 if (!lines[0].includes("opdrachten_niet_gehaald")) fail("export: no opdrachten_niet_gehaald column");
 if (!lines[0].includes("mediaan_weergaven_per_video")) fail("export: no mediaan_weergaven_per_video column");
-if (lines.length - 1 < tracked.length) fail("export: missing rows");
+if (lines.length - 1 < students - 1) fail("export: missing rows");
+if (!csv.includes("@test_01, @test_13")) fail("export: Anna's two accounts not on one row");
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
 if (page.errors.length) fail(`browser errors: ${page.errors.join(" | ")}`);
@@ -430,6 +477,15 @@ await pres.close();
   await sp.evaluate(() => { location.hash = "stand"; });
   await sp.waitForSelector("#board-body tr[data-handle]");
   if ((await sp.$eval("#board-body tr", (r) => r.dataset.handle)) !== "test_11") fail("site stand: outlier not at its own place");
+  // Anna's two accounts are one participant ("@test_01 + @test_13"), with a row per account behind the toggle.
+  const pRow = await sp.textContent('#board-body tr[data-handle="test_01"]');
+  await sp.click('#board-body button[data-open="test_01"]');
+  const pSubs = await sp.$$eval("#board-body tr.sub-row", (r) => r.map((x) => x.dataset.handle));
+  console.log(`site stand: "${pRow.replace(/\s+/g, " ").trim().slice(0, 50)}…", per account: ${pSubs.join(", ")}`);
+  if (!pRow.includes("@test_01 + @test_13") || pSubs.join() !== "test_01,test_13") fail("site stand: two accounts not combined");
+  await sp.click('#board-body tr.sub-row[data-handle="test_13"]');
+  await sp.waitForSelector("#acc-view");
+  if ((await sp.$eval("#acc-view", (s) => s.value)) !== "test_13") fail("site account page: link to the second account doesn't select it");
   await sp.evaluate(() => { location.hash = "groei"; });
   await sp.waitForTimeout(500);
   if (sp.errors.length) fail(`site: browser errors: ${sp.errors.join(" | ")}`);

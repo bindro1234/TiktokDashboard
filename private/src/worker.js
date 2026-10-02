@@ -43,6 +43,9 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
   status, headers: { "content-type": "application/json; charset=utf-8", ...SECURITY_HEADERS },
 });
 
+// 0 -> A, 26 -> AA (sheet column letters).
+const colName = (i) => (i >= 26 ? colName(Math.floor(i / 26) - 1) : "") + String.fromCharCode(65 + (i % 26));
+
 const nowIso = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
 
 function withHeaders(res) {
@@ -284,14 +287,24 @@ class Api {
     return { header, rows: lib.rowsToObjects(accounts) };
   }
 
+  // A new student, or (body.main = their first account's handle) a second account of a student:
+  // that row gets the student's name and main_account, and the sites add both accounts up.
   async addAccount(body) {
-    const name = String(body?.name ?? "").trim().replace(/\s+/g, " ");
+    let name = String(body?.name ?? "").trim().replace(/\s+/g, " ");
     const active = body?.active !== false;
-    if (!name) throw new HttpError(400, "Vul een naam in.");
-    if (name.length > 80) throw new HttpError(400, "Naam is te lang (max. 80 tekens).");
     const { handle, reason } = lib.normalizeHandle(body?.handle);
     if (!handle) throw new HttpError(400, `Handle: ${reason}.`);
-    const { header, rows } = await this.readAccounts();
+    let { header, rows } = await this.readAccounts();
+    let main = null;
+    if (body?.main) {
+      main = lib.normalizeHandle(body.main).handle;
+      const owner = lib.parseAccounts(rows).find((a) => a.tracked && a.handle === main);
+      if (!owner) throw new HttpError(409, `@${main} is geen actief account. Laad de pagina opnieuw.`);
+      if (owner.main) throw new HttpError(409, `@${main} is zelf al een extra account; voeg het toe aan @${owner.main}.`);
+      name = owner.name; // may be empty ("onbekend"), like the student's first row
+    }
+    if (!name && !main) throw new HttpError(400, "Vul een naam in.");
+    if (name.length > 80) throw new HttpError(400, "Naam is te lang (max. 80 tekens).");
     for (const r of rows) {
       if (lib.normalizeHandle(r.tiktok_handle).handle !== handle) continue;
       const on = lib.parseActive(r.active);
@@ -299,10 +312,20 @@ class Api {
         ? `@${handle} staat al in rij ${r._row} (inactief). Activeer die rij in plaats van een nieuwe toe te voegen.`
         : `@${handle} staat al in rij ${r._row}.`);
     }
-    const row = header.map((h) => ({ student_name: name, tiktok_handle: handle, active: active ? "ja" : "nee" })[h] ?? "");
+    if (main && !header.includes("main_account")) {
+      // Older sheets: add the column at the end of the header row.
+      await this.sheets.update(this.admin, "accounts", `${colName(header.length)}1`, [["main_account"]]);
+      header = [...header, "main_account"];
+    }
+    const cells = { student_name: name, tiktok_handle: handle, active: active ? "ja" : "nee", main_account: main || "" };
+    const row = header.map((h) => cells[h] ?? "");
     const res = await this.sheets.append(this.admin, "accounts", [row]);
     const range = res?.updates?.updatedRange || "";
     const rowNo = Number((range.match(/![A-Z]+(\d+)/) || [])[1]) || null;
+    if (main) {
+      await this.log("account toegevoegd aan leerling", `${name}: @${handle} (bij @${main})${rowNo ? `, rij ${rowNo}` : ""}`);
+      return { ok: true, handle, row: rowNo, message: `@${handle} toegevoegd als tweede account van ${name}. Wordt vanaf de volgende profielrun gevolgd; de weergaven tellen samen.` };
+    }
     await this.log("leerling toegevoegd", `${name} @${handle}${active ? "" : " (inactief)"}${rowNo ? `, rij ${rowNo}` : ""}`);
     return { ok: true, handle, row: rowNo, message: `@${handle} toegevoegd. Wordt vanaf de volgende profielrun gevolgd.` };
   }
@@ -507,7 +530,8 @@ class Api {
       throw new HttpError(409, `De vorige controle was om ${lib.localTime(last)}. Controleren kan weer over ${left} min.`);
     }
     // The target list is made here, not taken from the page: active, not private, not done today.
-    const tracked = lib.parseAccounts(lib.rowsToObjects(admin.accounts)).filter((a) => a.tracked);
+    const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
+    const tracked = accounts.filter((a) => a.tracked);
     const info = new Map(lib.rowsToObjects(data.handles).map((h) => [String(h.handle), h]));
     const posts = new Map();
     for (const p of lib.rowsToObjects(data.posts_latest)) {
@@ -515,8 +539,12 @@ class Api {
       if (!posts.has(h)) posts.set(h, []);
       posts.get(h).push(p);
     }
-    const status = lib.todayStatus(CONFIG, tracked.map((a) => ({ handle: a.handle, posts: posts.get(a.handle) || [],
-      isPrivate: lib.truthy(info.get(a.handle)?.is_private) })), lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
+    // Per student (all their accounts together): one post on either account counts.
+    const students = [...lib.groupAccounts(accounts).values()].map((g) => ({
+      handle: g.key, posts: g.accounts.flatMap((a) => posts.get(a.handle) || []),
+      accounts: g.accounts.map((a) => ({ handle: a.handle, isPrivate: lib.truthy(info.get(a.handle)?.is_private) })),
+    }));
+    const status = lib.todayStatus(CONFIG, students, lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
     const targets = lib.todayTargets(status);
     if (!targets.length) throw new HttpError(409, "Iedereen die gecontroleerd kan worden heeft vandaag al gepost.");
     const b = lib.budget(CONFIG, runLog, tracked.length, now);

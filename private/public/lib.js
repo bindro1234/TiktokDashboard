@@ -59,9 +59,62 @@ export function parseAccounts(rows) {
       seen.set(handle, entry.row);
       entry.tracked = true;
     }
+    const main = String(r.main_account ?? "").trim() ? normalizeHandle(r.main_account).handle : null;
+    entry.main = main && main !== handle ? main : null;
     out.push(entry);
   }
+  // Second accounts (main_account = the handle of the student's first account) join that student's
+  // group. Same rules as collector/handles.py account_groups: the main account must be tracked and
+  // not an extra account itself; otherwise the account counts on its own and gets a note.
+  const tracked = new Map(out.filter((e) => e.tracked).map((e) => [e.handle, e]));
+  for (const e of out) {
+    e.group = e.handle;
+    if (!e.tracked || !e.main) continue;
+    const m = tracked.get(e.main);
+    if (m && !m.main) e.group = m.handle;
+    else e.groupIssue = `hoofdaccount @${e.main} is niet actief (of zelf een extra account): telt nu apart`;
+  }
   return out;
+}
+
+/**
+ * Tracked accounts per student: Map(group -> { key, name, accounts }) with the main account first.
+ * key = the main account's handle; name = the name on the main account's row.
+ */
+export function groupAccounts(accounts) {
+  const groups = new Map();
+  for (const a of accounts.filter((x) => x.tracked)) {
+    if (!groups.has(a.group)) groups.set(a.group, { key: a.group, name: "", accounts: [] });
+    const g = groups.get(a.group);
+    if (a.handle === a.group) g.accounts.unshift(a); else g.accounts.push(a);
+  }
+  for (const g of groups.values()) g.name = g.accounts[0].name || g.accounts.find((a) => a.name)?.name || "";
+  return groups;
+}
+
+/**
+ * Several accounts' history series (each [{ t, views, followers, posts, likes }], sorted) as one:
+ * at every run time, the sum of each account's latest value up to then. Partial runs (Vandaag
+ * checks) only write rows for some accounts, so a plain per-timestamp sum would dip.
+ */
+export function mergeSeries(list) {
+  const series = list.filter((s) => s && s.length);
+  if (series.length <= 1) return series[0] ? [...series[0]] : [];
+  const times = [...new Set(series.flatMap((s) => s.map((p) => p.t)))].sort((a, b) => a - b);
+  const idx = series.map(() => -1);
+  return times.map((t) => {
+    const out = { t, views: 0, followers: null, posts: 0, likes: 0 };
+    series.forEach((s, i) => {
+      while (idx[i] + 1 < s.length && s[idx[i] + 1].t <= t) idx[i]++;
+      const p = s[idx[i]];
+      if (!p) return;
+      out.views += p.views || 0;
+      out.posts += p.posts || 0;
+      out.likes += p.likes || 0;
+      if (p.followers != null) out.followers = (out.followers || 0) + p.followers;
+    });
+    return out;
+  });
 }
 
 // ---------- small helpers ----------
@@ -297,7 +350,7 @@ export function studentStats(posts, cfg, nowMs, assignments = []) {
     likes += toNum(p.likes) || 0;
     comments += toNum(p.comments) || 0;
     shares += toNum(p.shares) || 0;
-    if (!best || v > best.views) best = { id: String(p.video_id), views: v, created: t };
+    if (!best || v > best.views) best = { id: String(p.video_id), handle: String(p.handle ?? ""), views: v, created: t };
     if (last === null || t > last) last = t;
     if (String(p.missing_since ?? "").trim()) missing++;
     for (const tag of new Set(String(p.hashtags ?? "").toLowerCase().split(/\s+/).filter(Boolean))) {
@@ -394,9 +447,10 @@ export function median(values) {
 }
 
 /**
- * Vandaag: per tracked account the campaign posts of today (Amsterdam), how many are needed (1,
- * or the dagopdracht minimum) and whether that is reached. Private accounts can't be checked.
- * students: [{ handle, posts, isPrivate }]. Returns { day, task, offDay, rows }.
+ * Vandaag: per student the campaign posts of today (Amsterdam, all their accounts together), how
+ * many are needed (1, or the dagopdracht minimum) and whether that is reached. Private accounts
+ * can't be checked. students: [{ handle, posts, isPrivate, accounts?: [{ handle, isPrivate }] }].
+ * Returns { day, task, offDay, rows }.
  */
 export function todayStatus(cfg, students, assignments, nowMs) {
   const day = localDay(nowMs);
@@ -404,15 +458,17 @@ export function todayStatus(cfg, students, assignments, nowMs) {
   const required = task ? task.min : 1;
   const rows = students.map((s) => {
     const today = (s.posts || []).map((p) => parseTs(p.created_at)).filter((t) => t !== null && localDay(t) === day).sort((a, b) => a - b);
-    return { handle: s.handle, count: today.length, required, done: today.length >= required, private: Boolean(s.isPrivate),
+    const accounts = s.accounts || [{ handle: s.handle, isPrivate: s.isPrivate }];
+    return { handle: s.handle, count: today.length, required, done: today.length >= required,
+      private: accounts.every((a) => a.isPrivate), checkable: accounts.filter((a) => !a.isPrivate).map((a) => a.handle),
       first: today[0] ?? null, last: today.at(-1) ?? null };
   });
   return { day, task, offDay: isOffDay(cfg, day), rows };
 }
 
-/** Accounts "Controleer nu" fetches: not private and not done yet today. */
+/** Accounts "Controleer nu" fetches: every non-private account of the students not done yet today. */
 export function todayTargets(status) {
-  return status.rows.filter((r) => !r.done && !r.private).map((r) => r.handle);
+  return status.rows.filter((r) => !r.done && !r.private).flatMap((r) => r.checkable);
 }
 
 /** Start time (ms) of the last Vandaag check: its activity_log entry or its run_log row. */

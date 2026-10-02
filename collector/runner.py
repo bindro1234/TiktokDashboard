@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from . import model
 from .brightdata import BrightData
 from .config import UTC, Config
-from .handles import parse_accounts, profile_url
+from .handles import account_groups, parse_accounts, profile_url
 from .sheets import Spreadsheet
 
 log = logging.getLogger(__name__)
@@ -241,6 +241,9 @@ class Collector:
 
         self.data.ensure_columns("handles", model.SCHEMA_DATA["handles"])
         old_handles = {r["handle"]: r for r in self.data.read("handles")}
+        groups, group_issues = account_groups(self.admin.read("accounts"))
+        if only is None:
+            res.notes.extend(group_issues)
         snapshots = None
         rows = []
         for handle in handles:  # every active account keeps its row; only the fetched ones change
@@ -263,6 +266,7 @@ class Collector:
                         snapshots = self.data.read("profile_snapshots")
                     since = model.private_since(snapshots, handle) or self.stamp
                 row["status_since"] = since
+            row["group"] = groups.get(handle, handle)
             rows.append(row)
         self.data.rewrite("handles", rows)
         if "outliers" not in self.sheet_tabs(self.data):  # created once, with its fixed tab id (site/config.js)

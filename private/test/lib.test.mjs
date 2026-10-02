@@ -310,3 +310,49 @@ test("signals: likes per view, step growth, silent videos and follower jumps, re
   assert.equal(flags.find((f) => f.kind === "followers").followers, 390);
   assert.ok(!flags.some((f) => f.video === "7"), "small videos are never flagged");
 });
+
+// ---------- students with two accounts ----------
+
+test("parseAccounts/groupAccounts: a second account joins its student via main_account", () => {
+  const rows = [
+    { _row: 2, student_name: "Anna", tiktok_handle: "@anna", active: "ja", main_account: "" },
+    { _row: 3, student_name: "Anna", tiktok_handle: "anna.ads", active: "ja", main_account: "@Anna" },
+    { _row: 4, student_name: "Bram", tiktok_handle: "bram", active: "nee", main_account: "" },
+    { _row: 5, student_name: "Bram", tiktok_handle: "bram2", active: "ja", main_account: "bram" },     // main inactive
+    { _row: 6, student_name: "Cas", tiktok_handle: "cas3", active: "ja", main_account: "anna.ads" },   // chain
+  ];
+  const acc = lib.parseAccounts(rows);
+  assert.deepEqual(acc.filter((a) => a.tracked).map((a) => [a.handle, a.group]),
+    [["anna", "anna"], ["anna.ads", "anna"], ["bram2", "bram2"], ["cas3", "cas3"]]);
+  assert.match(acc.find((a) => a.handle === "bram2").groupIssue, /niet actief/);
+  assert.ok(acc.find((a) => a.handle === "cas3").groupIssue);
+  const groups = lib.groupAccounts(acc);
+  assert.deepEqual([...groups.values()].map((g) => [g.key, g.name, g.accounts.map((a) => a.handle)]),
+    [["anna", "Anna", ["anna", "anna.ads"]], ["bram2", "Bram", ["bram2"]], ["cas3", "Cas", ["cas3"]]]);
+});
+
+test("mergeSeries adds accounts up with each one's latest value (a partial check doesn't dip)", () => {
+  const a = [{ t: 1, views: 100, followers: 10, posts: 1, likes: 5 }, { t: 3, views: 150, followers: 11, posts: 1, likes: 6 },
+    { t: 4, views: 160, followers: 11, posts: 1, likes: 6 }];
+  const b = [{ t: 1, views: 1000, followers: null, posts: 2, likes: 50 }, { t: 3, views: 1200, followers: null, posts: 3, likes: 60 }];
+  // t=4 is a "Controleer nu" run that only fetched a: b keeps its value of t=3.
+  assert.deepEqual(lib.mergeSeries([a, b]).map((p) => [p.t, p.views, p.followers, p.posts]),
+    [[1, 1100, 10, 3], [3, 1350, 11, 4], [4, 1360, 11, 4]]);
+  assert.deepEqual(lib.mergeSeries([a, []]), a);
+});
+
+test("two accounts: a post on either counts for the streak, Vandaag and Controleer nu", () => {
+  const p = (id, handle, iso) => ({ video_id: id, handle, created_at: iso, views: 10 });
+  const posts = [p("1", "anna", "2026-10-05T10:00:00Z"), p("2", "anna.ads", "2026-10-06T10:00:00Z"), p("3", "anna", "2026-10-07T10:00:00Z")];
+  const now = ams("2026-10-07T15:00:00+02:00");
+  const both = lib.studentStats(posts, CFG, now);
+  assert.equal(both.streak, 3);                          // Mon (anna), Tue (anna.ads), Wed (anna)
+  assert.equal(lib.studentStats(posts.filter((x) => x.handle === "anna"), CFG, now).streak, 1); // Tue missed on its own
+  const st = lib.todayStatus(CFG, [
+    { handle: "anna", posts, accounts: [{ handle: "anna" }, { handle: "anna.ads" }] },
+    { handle: "bo", posts: [], accounts: [{ handle: "bo" }, { handle: "bo.priv", isPrivate: true }] },
+    { handle: "cy", posts: [], accounts: [{ handle: "cy", isPrivate: true }] },
+  ], [], now);
+  assert.deepEqual(st.rows.map((r) => [r.handle, r.done, r.private]), [["anna", true, false], ["bo", false, false], ["cy", false, true]]);
+  assert.deepEqual(lib.todayTargets(st), ["bo"]);         // bo's private account and cy can't be checked
+});

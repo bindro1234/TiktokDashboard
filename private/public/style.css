@@ -241,6 +241,16 @@ button.badge:hover, button.badge[aria-expanded="true"] { background: var(--surfa
 .buttons-cell .btn { margin: 1px 0; }
 .board tr.editing td { background: var(--warn-bg); }
 
+/* Students with two accounts: toggle and per-account rows */
+.acc-toggle { margin-left: 6px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-2);
+  color: var(--text-2); font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.acc-toggle[aria-expanded="true"] { background: var(--surface); color: var(--text); }
+.board tr.sub-row td, .heat tr.sub-row td.name { color: var(--text-2); font-size: 0.9em; }
+.board tr.sub-row td { background: var(--surface-2); }
+.sub-mark { color: var(--muted); margin-left: 6px; }
+.acc-select select { min-height: 34px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.board tr.add-row td { background: var(--surface-2); }
+
 /* Vandaag */
 .today-list { list-style: none; margin: 0; padding: 0; }
 .today-list li { padding: 5px 0; border-bottom: 1px solid var(--grid); }
