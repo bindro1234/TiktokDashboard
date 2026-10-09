@@ -355,7 +355,8 @@ test("todayStatus / todayTargets: who still has to post today; private accounts 
   assert.equal(lib.todayStatus(CFG, students, [], ams("2026-10-10T12:00:00+02:00")).offDay, true); // Saturday
 });
 
-test("lastTodayCheck: from the activity log (dispatch) or run_log (today_check)", () => {
+test("lastTodayCheck: from the activity log (dispatch) or run_log (today_check, ig_today_check)", () => {
+  assert.equal(lib.lastTodayCheck([{ run_type: "ig_today_check", timestamp: "2026-10-06T10:10:00Z", dry_run: false }], []), Date.parse("2026-10-06T10:10:00Z"));
   const runLog = [{ run_type: "today_check", timestamp: "2026-10-06T10:00:00Z", dry_run: false },
     { run_type: "profiles", timestamp: "2026-10-06T11:00:00Z", dry_run: false },
     { run_type: "today_check", timestamp: "2026-10-06T11:30:00Z", dry_run: true }];
@@ -526,7 +527,7 @@ test("studentStats: days before options.from are free (a student with only Insta
   assert.equal(lib.studentStats([], CFG, ams("2026-09-29T12:00:00+02:00"), [], { from: "2026-10-01" }).quietDays, 0);
 });
 
-test("todayStatus: an Instagram post counts; Instagram is never fetched by Controleer nu; private only when all accounts are", () => {
+test("todayStatus: an Instagram post counts; Controleer nu fetches the public accounts of both platforms; private only when all accounts are", () => {
   const now = ams("2026-10-06T13:00:00+02:00");
   const igPost = { platform: "instagram", created_at: "2026-10-06T07:00:00Z" };
   const students = [
@@ -538,6 +539,11 @@ test("todayStatus: an Instagram post counts; Instagram is never fetched by Contr
   ];
   const st = lib.todayStatus(CFG, students, [], now);
   assert.deepEqual(st.rows.map((r) => [r.handle, r.done, r.private, r.checkable]),
-    [["a", true, false, ["a"]], ["b", false, false, ["b"]], ["c", false, false, []], ["instagram:d", false, false, []], ["e", false, true, []]]);
-  assert.deepEqual(lib.todayTargets(st), ["b"]);
+    [["a", true, false, ["a", "instagram:a.ig"]], ["b", false, false, ["b", "instagram:b.ig"]], ["c", false, false, ["instagram:c.ig"]],
+      ["instagram:d", false, false, ["instagram:d"]], ["e", false, true, []]]);
+  // Only students who are not done (a posted on Instagram) and not private (e): TikTok handles bare, Instagram with the platform in front.
+  const targets = lib.todayTargets(st);
+  assert.deepEqual(targets, ["b", "instagram:b.ig", "instagram:c.ig", "instagram:d"]);
+  assert.deepEqual(lib.targetSplit(targets), { tiktok: 1, instagram: 3 });
+  assert.deepEqual(lib.targetSplit([]), { tiktok: 0, instagram: 0 });
 });

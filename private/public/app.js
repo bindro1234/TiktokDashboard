@@ -1130,9 +1130,12 @@ function renderToday(m) {
   const waiting = Boolean(state.todayRun);
   btn.disabled = waiting || !n || Date.now() < next || !st.inCampaign;
   btn.textContent = waiting ? "⏳ Controle loopt…" : "🔎 Controleer nu";
+  // What the check would fetch: one record per account, TikTok and Instagram.
+  const split = lib.targetSplit(lib.todayTargets(st));
+  const platforms = split.tiktok && split.instagram ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
   $("td-cost").textContent = !st.inCampaign ? "" : !n ? "Niemand om te controleren."
-    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)`
-    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}`;
+    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"}${platforms} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)`
+    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}${platforms}`;
 }
 
 // After "Controleer nu": wait for the collector run, then reload (it takes about 5-7 minutes).

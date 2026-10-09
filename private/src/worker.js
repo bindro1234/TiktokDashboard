@@ -654,10 +654,15 @@ class Api {
     if (busy.some(Boolean)) throw new HttpError(409, "Er loopt al een ophaalrun. Probeer het over een paar minuten opnieuw.");
     await this.github(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`, { method: "POST",
       body: JSON.stringify({ ref: "main", inputs: { command: "today", dry_run: "false", handles: targets.join(",") } }) });
-    await this.log(lib.TODAY_CHECK_ACTION, `${targets.length} account${targets.length === 1 ? "" : "s"}, ${targets.length} records`);
-    return { ok: true, count: targets.length, startedAt: now,
-      message: `Controle gestart voor ${targets.length} account${targets.length === 1 ? "" : "s"} (${targets.length} records). `
-        + "Nieuwe cijfers staan er over ongeveer 5–7 minuten; deze pagina ververst vanzelf zodra de run klaar is." };
+    // One record per account on either platform. The collector fetches TikTok first, then Instagram.
+    const split = lib.targetSplit(targets);
+    const both = split.tiktok > 0 && split.instagram > 0;
+    const parts = both ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
+    const accountsText = `${targets.length} account${targets.length === 1 ? "" : "s"}`;
+    await this.log(lib.TODAY_CHECK_ACTION, `${accountsText}, ${targets.length} records${parts}`);
+    return { ok: true, count: targets.length, startedAt: now, tiktok: split.tiktok, instagram: split.instagram,
+      message: `Controle gestart voor ${accountsText}${parts} (${targets.length} records). `
+        + `Nieuwe cijfers staan er over ongeveer ${both ? "5–10" : "5–7"} minuten; deze pagina ververst vanzelf zodra de run klaar is.` };
   }
 
   async logClient(body) {

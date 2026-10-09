@@ -581,8 +581,9 @@ export function median(values) {
  * Vandaag: per student the campaign posts of today (Amsterdam, all their accounts together, TikTok and
  * Instagram), how many are needed (1, or the dagopdracht minimum) and whether that is reached. Private accounts
  * can't be checked. students: [{ handle, posts, isPrivate, accounts?: [{ handle, isPrivate, platform? }] }].
- * "checkable" lists the TikTok accounts "Controleer nu" can fetch (its Instagram part comes with the
- * frequency settings). Returns { day, task, offDay, rows }.
+ * "checkable" lists what "Controleer nu" can fetch: the public accounts on both platforms, a TikTok
+ * handle as it is and an Instagram one as "instagram:<handle>" (the platform in front, like the collector's
+ * `today` command wants it). Returns { day, task, offDay, rows }.
  */
 export function todayStatus(cfg, students, assignments, nowMs) {
   const day = localDay(nowMs);
@@ -593,22 +594,28 @@ export function todayStatus(cfg, students, assignments, nowMs) {
     const accounts = s.accounts || [{ handle: s.handle, isPrivate: s.isPrivate }];
     return { handle: s.handle, count: today.length, required, done: today.length >= required,
       private: accounts.every((a) => a.isPrivate),
-      checkable: accounts.filter((a) => !a.isPrivate && a.platform !== "instagram").map((a) => a.handle),
+      checkable: accounts.filter((a) => !a.isPrivate).map((a) => (a.platform === "instagram" ? instagramKey(a.handle) : a.handle)),
       first: today[0] ?? null, last: today.at(-1) ?? null };
   });
   return { day, task, offDay: isOffDay(cfg, day), rows };
 }
 
-/** Accounts "Controleer nu" fetches: every non-private account of the students not done yet today. */
+/** Accounts "Controleer nu" fetches: every non-private account (TikTok and Instagram) of the students not done yet today. */
 export function todayTargets(status) {
   return status.rows.filter((r) => !r.done && !r.private).flatMap((r) => r.checkable);
+}
+
+/** How many of the targets are Instagram accounts ("instagram:<handle>") and how many TikTok. */
+export function targetSplit(targets) {
+  const instagram = targets.filter((t) => t.startsWith("instagram:")).length;
+  return { tiktok: targets.length - instagram, instagram };
 }
 
 /** Start time (ms) of the last Vandaag check: its activity_log entry or its run_log row. */
 export function lastTodayCheck(runLog, activity) {
   let last = null;
   for (const r of runLog || []) {
-    if (r.run_type !== "today_check" || truthy(r.dry_run)) continue;
+    if (!["today_check", "ig_today_check"].includes(r.run_type) || truthy(r.dry_run)) continue;
     const t = parseTs(r.timestamp);
     if (t !== null && (last === null || t > last)) last = t;
   }

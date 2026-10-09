@@ -416,6 +416,9 @@ const cost = await page.textContent("#td-cost");
 const todayCounts = await page.evaluate(() => ["td-todo-n", "td-done-n", "td-priv-n"].map((id) => document.getElementById(id).textContent));
 console.log(`vandaag: nog niet/gepost/privé = ${todayCounts.join("/")}, knop: "${cost}"`);
 if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${cost})`);
+// "Controleer nu" fetches both platforms: the cost names them (Chris is the only one not done with a public Instagram account).
+if (!/^(\d+) accounts, \1 records \((\d+) TikTok, 1 Instagram\)$/.test(cost)) fail(`vandaag: cost does not split TikTok and Instagram (${cost})`);
+if (!(await page.textContent("#view-vandaag")).includes("TikTok- én Instagram-accounts")) fail("vandaag: the hint does not say that Instagram is fetched too");
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
 // Pim (only Instagram) posted twice today on Instagram: done (dagopdracht 2), with the platform and a link to the post.
 const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram%3Apim.only"])', (li) => ({ text: li.textContent.replace(/\s+/g, " "), href: li.querySelector('a[target]')?.href }));

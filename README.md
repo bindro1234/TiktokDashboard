@@ -67,7 +67,7 @@ Sommige leerlingen hebben twee accounts (bijv. één voor hun merk en één voor
 
 - **Overal samengeteld**: weergaven, volgers, posts en likes van beide accounts tellen op tot één leerling (stand, grafieken, Export, mediaan, presentatie). Bij gedeeltelijke runs telt per account steeds de laatste meting.
 - **Uitsplitsen**: in **Overzicht** en de **Leerlingen**-kalender opent ▸ *2 accounts* een rij per account; op de leerlingpagina kies je *beide accounts samen* of *alleen @…*. Op de openbare site hetzelfde: ▸ in de stand en een keuzemenu op de accountpagina.
-- **Reeks en kalender**: een dag is blauw (gepost) als **één van beide** accounts iets postte. *Vandaag*, *Controleer nu* (haalt alleen de openbare accounts op van wie nog niet gepost heeft), dagopdrachten en *X dagen geen post* werken ook per leerling. *Privé* en *niet gevonden* worden per account gemeld, met de handle erbij.
+- **Reeks en kalender**: een dag is blauw (gepost) als **één van beide** accounts iets postte. *Vandaag*, *Controleer nu* (haalt de openbare accounts op van wie nog niet gepost heeft, op TikTok en Instagram), dagopdrachten en *X dagen geen post* werken ook per leerling. *Privé* en *niet gevonden* worden per account gemeld, met de handle erbij.
 - Is het hoofdaccount niet (meer) actief, of zelf een tweede account, dan telt het tweede account apart en staat er een melding op Beheer (*telt apart*).
 - **Let op, openbaar:** de kolom `group` in de openbare tab `handles` laat zien dat twee handles bij dezelfde deelnemer horen (zonder naam). De openbare site toont ze samen als `@merk + @reclame`. Op de openbare site gebeurt het samenvoegen pas na de volgende ophaalrun; op de beheerpagina meteen.
 - **Kosten:** elk extra account is een extra profiel per run: ≈ 12 records per dag, ≈ 360 per maand.
@@ -103,12 +103,12 @@ Een profielrecord per account (**1 record per account per run**; ook een privé 
   | Instagram-profielruns (128 runs) | ≈ 2.940 | ≈ 6.660 |
   | weekrefreshes (3 vrijdagen, verbruik ≈ 10–60 per keer) | ≈ 150 | ≈ 150 |
   | Nu verversen (≈ 5×, beide platforms) | ≈ 420 | ≈ 570 |
-  | Controleer nu (Vandaag, ≈ 15× een deel van de klas) | ≈ 300 | ≈ 300 |
-  | **totaal zonder finale** | **≈ 12.300** | **≈ 16.200** |
+  | Controleer nu (Vandaag, ≈ 15× een deel van de klas, TikTok en Instagram) | ≈ 600 | ≈ 600 |
+  | **totaal zonder finale** | **≈ 12.600** | **≈ 16.500** |
   | finale van 8 uur, het maximum (32 runs × alle accounts van beide platforms) | +2.700 | +3.600 |
 
-  Kosten: ca. $1,50 per 1.000 records boven de gratis 5.000, dus (totaal − 5.000) × $1,50 / 1.000: bij 12.300 ≈ $11, bij 16.200 met finale ≈ $22.
-- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand (beide platforms) plus max. 40 posts per account. Zelfs met de hele klas op Instagram en een finale van 8 uur blijft het verwachte verbruik (≈ 19.800) onder de limiet; de rest is ruimte voor *Controleer nu*-checks en extra verversingen. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
+  Kosten: ca. $1,50 per 1.000 records boven de gratis 5.000, dus (totaal − 5.000) × $1,50 / 1.000: bij 12.600 ≈ $11, bij 16.500 met finale ≈ $23.
+- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand (beide platforms) plus max. 40 posts per account. Zelfs met de hele klas op Instagram en een finale van 8 uur blijft het verwachte verbruik (≈ 20.100) onder de limiet; de rest is ruimte voor *Controleer nu*-checks en extra verversingen. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
 
 ## Schema
 
@@ -121,7 +121,7 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 | Weekrefresh | vrijdag 08:30 – 10:00 |
 | Eenmalige controle | 5 okt, direct na de run van 22:00 |
 | Finale | alleen als je hem start op de beheerpagina: elke 15 minuten tot de deadline, voor TikTok én Instagram |
-| Controle *Vandaag* | alleen als je op de beheerpagina op **Controleer nu** klikt: alleen wie vandaag nog niet gepost heeft |
+| Controle *Vandaag* | alleen als je op de beheerpagina op **Controleer nu** klikt: alleen wie vandaag nog niet gepost heeft, TikTok én Instagram (eerst TikTok, dan Instagram) |
 
 **Frequentie per platform.** Onder `frequency` in `config.yaml` kiest elk platform een vaste stap: `off`, `daily` (16:00), `12h` (08:00, 20:00), `6h` (02:00, 08:00, 14:00, 20:00), `4h` (00:00, 04:00, …, 20:00) of `2h` (alle 12 vensters van `schedule.profile_runs`). Elke stap is een deel van die 12 uurvensters, dus de runs sluiten altijd aan op de uurlijkse crons; de test `test_crons_cover_every_window` controleert alle 12. Een TikTok-venster heet `2026-10-12/08u`, een Instagram-venster `2026-10-12/ig-08u`. De collector, de reservetimer van de Worker en de budgetreservering lezen dezelfde vensters.
 
@@ -152,7 +152,7 @@ In GitHub: **Actions → Collect TikTok stats → Run workflow**. Kies een comma
 | `ig-profiles` | Instagram-profielen nu ophalen; met dry-run aan zie je alleen wat het zou kosten |
 | `refresh` | weekrefresh nu |
 | `check` | eenmalige controle nu (optioneel eigen lijst handles) |
-| `today` | *Controleer nu* van het tabblad Vandaag: profielen van alleen de opgegeven handles (veld *handles*, met komma's; Instagram met het platform ervoor: `instagram:naam`, een kale naam is TikTok). Normaal start de beheerpagina dit |
+| `today` | *Controleer nu* van het tabblad Vandaag: profielen van alleen de opgegeven handles (veld *handles*, met komma's; Instagram met het platform ervoor: `instagram:naam`, een kale naam is TikTok). Eén run voor de TikTok-handles en daarna één voor de Instagram-handles; gaat er één mis, dan loopt de andere toch en wordt de workflow rood. Normaal start de beheerpagina dit |
 | `auto` | wat een geplande run ook doet |
 | `setup` | tabbladen en kopregels aanmaken (veilig om opnieuw te draaien) |
 
@@ -238,10 +238,10 @@ Op vrije dagen hoeft niemand te posten. Ze staan in `config.yaml` onder `campaig
 
 Sommige docenten laten leerlingen eerder gaan als hun video van vandaag online staat. Het tabblad **Vandaag** toont twee lijsten: *nog niet gepost* en *gepost* (met tijd en link naar de video), plus *laatst gecontroleerd* (de laatste ophaalrun). Op een dag met een dagopdracht staat er bijv. **2/5** in plaats van een vinkje, en is iemand pas klaar bij het minimum. Privé-accounts staan apart onder *kan niet gecontroleerd worden (privé)*.
 
-- **Controleer nu** haalt meteen de profielen op van alleen de actieve, openbare accounts die vandaag nog niet (genoeg) gepost hebben. 1 record per account: hoe korter de lijst, hoe goedkoper. Vóór het starten zie je wat het kost (bijv. *18 accounts, 18 records*).
-- Het duurt ongeveer **5–7 minuten** voordat de nieuwe cijfers er staan; het tabblad ververst vanzelf als de run klaar is.
+- **Controleer nu** haalt meteen de profielen op van alleen de actieve, openbare accounts die vandaag nog niet (genoeg) gepost hebben, **op TikTok en op Instagram** (ook van een leerling met alleen Instagram). Wie op één van beide platforms gepost heeft, is klaar en wordt op geen van beide opgehaald. 1 record per account: hoe korter de lijst, hoe goedkoper. Vóór het starten zie je wat het kost, met de verdeling (bijv. *18 accounts, 18 records (12 TikTok, 6 Instagram)*).
+- Het duurt ongeveer **5–7 minuten per platform** (TikTok en Instagram na elkaar, dus tot ≈ 10 minuten) voordat de nieuwe cijfers er staan; het tabblad ververst vanzelf als de run klaar is.
 - Regels: maximaal één keer per **10 minuten** (`today_check.cooldown_minutes`), niet terwijl er al een ophaalrun loopt, en alleen als het binnen de maandlimiet past (met de resterende geplande runs van de maand gereserveerd). De lijst wordt op de server gemaakt, niet in de browser.
-- Eigen run-type in `run_log`: `today_check`. Die telt niet als volledige profielrun, dus de volgende geplande run wordt er niet door overgeslagen. Zo'n gedeeltelijke run werkt alleen de opgehaalde accounts bij (posts, status) en schrijft alleen voor hen een rij in `history`; de rest blijft precies zoals het was.
+- Eigen run-types in `run_log`: `today_check` (TikTok) en `ig_today_check` (Instagram). Die tellen niet als volledige profielrun, dus de volgende geplande run wordt er niet door overgeslagen (per platform). Zo'n gedeeltelijke run werkt alleen de opgehaalde accounts bij (posts, status) en schrijft alleen voor hen een rij in `history`; de rest blijft precies zoals het was.
 
 ### TikTok en Instagram samen
 
@@ -253,7 +253,7 @@ Op de privé-site tellen TikTok en Instagram **samen** voor wie gepost heeft. De
 - **Meer dan één account** (twee op TikTok, of TikTok en Instagram): ▸ *2 accounts* in Overzicht en de Leerlingen-kalender opent een rij per account, ook de Instagram-rij. Naast de TikTok-handle(s) staat in lijsten `IG @naam`.
 - **Alleen Instagram:** een leerling zonder TikTok-handle (actieve rij met alleen `instagram_handle`) staat nu ook in Overzicht, Leerlingen, Vandaag en Export, met sleutel `instagram:<handle>`. Omdat Instagram vóór `instagram.start_date` niet is opgehaald, zijn die dagen voor zo'n leerling *vrij* (*nog niet gevolgd*): niet gemist en geen onderbroken reeks. Een leerling met ook TikTok heeft die uitzondering niet: TikTok telt vanaf de eerste campagnedag.
 - **Waarschuwingen per account**, met het platform erbij zodra een leerling beide heeft: *privé (Instagram)*, *niet gevonden (Instagram)*, *nog niet opgehaald (Instagram)*, naast *privé (TikTok)* enz. Ze staan ook onder *Actie nodig*. Een leerling is op Vandaag alleen *privé* (niet te controleren) als **alle** accounts privé zijn.
-- **Controleer nu** haalt voorlopig alleen TikTok-accounts op; een Instagram-post telt wel mee voor *klaar*, en een leerling met alleen Instagram wordt niet gecontroleerd (de geplande Instagram-runs werken die bij). Dat verandert bij de frequentie-instellingen per platform.
+- **Controleer nu** haalt de openbare accounts van beide platforms op van wie nog niet gepost heeft (zie *Vandaag en Controleer nu*); een post op één van beide platforms telt voor *klaar*.
 - **Export** heeft er vijf kolommen bij: `tiktok_posts`, `instagram_handle`, `instagram_posts`, `instagram_volgers` en `instagram_volgers_sinds_start`. `posts`, `dagen_met_post`, `gemiste_dagen`, `huidige_reeks`, `langste_reeks`, `laatste_post`, `hashtags` en `opdrachten_niet_gehaald` tellen beide platforms; de overige cijfers zijn TikTok.
 - De openbare site, de grafieken, de ranglijsten en de presentatie blijven in deze stap TikTok; Instagram komt daar bij de twee ranglijsten.
 

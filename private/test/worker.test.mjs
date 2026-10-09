@@ -630,21 +630,58 @@ test("/api/data: the Instagram tabs come along (stripped of row numbers), and ar
   for (const row of [...d.igHandles, ...d.igHistory, ...d.igPosts, ...d.igBaseline]) assert.equal("_row" in row, false);
 });
 
-test("Controleer nu: an Instagram post counts as posted today, Instagram accounts are never fetched, an Instagram-only student is not a target", async () => {
+test("Controleer nu: both platforms in one dispatch (cost shown per platform); an Instagram post counts as posted; Instagram-only students are checked", async () => {
   const now = new Date().toISOString();
   sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
-  sheets.accounts[1].push("anna.ig");                  // Anna: TikTok anna_1 + Instagram anna.ig
-  sheets.accounts.push(["Dewi", "dewi", "ja", "dewi.ig"], ["Pim", "", "ja", "pim.only"]);
-  sheets.handles.push(["chris", false, 1, "", "ok"], ["dewi", false, 1, "", "ok"]);
-  sheets.posts_latest = [["video_id", "handle", "created_at", "views"]];
+  sheets.accounts[1].push("anna.ig");                  // Anna: TikTok anna_1 + Instagram anna.ig, posted on Instagram today
+  sheets.accounts.push(["Dewi", "dewi", "ja", "dewi.ig"], ["Pim", "", "ja", "pim.only"], ["Quin", "quin", "ja", "quin.ig"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"], ["dewi", false, 1, "", "ok"], ["quin", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"], ["9", "quin", now, 5]];   // Quin posted on TikTok today
   sheets.ig_handles = [["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"],
-    ["anna.ig", false, 1, "", "ok", ""], ["dewi.ig", true, 1, "", "privé", ""], ["pim.only", false, 1, "", "ok", ""]];
+    ["anna.ig", false, 1, "", "ok", ""], ["dewi.ig", true, 1, "", "privé", ""], ["pim.only", false, 1, "", "ok", ""], ["quin.ig", false, 1, "", "ok", ""]];
   sheets.ig_posts = [["post_id", "handle", "created_at"], ["1", "anna.ig", now]];
   sheets._runs = [{ status: "completed" }];
   const res = await req("/api/today/check", { body: {} });
   assert.equal(res.status, 200, await res.clone().text());
+  const body = await res.json();
   const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
-  // Anna posted on Instagram: not checked. Dewi's TikTok is public (only her Instagram is private): checked. Pim has no
-  // TikTok. Chris has nothing today. No Instagram handle is ever sent.
-  assert.equal(JSON.parse(dispatch.body).inputs.handles, "chris,dewi");
+  // Anna (Instagram post) and Quin (TikTok post) are done on both platforms. Chris: TikTok only. Dewi: public TikTok, private Instagram.
+  // Pim: only Instagram. The Instagram handles carry the platform in front; no names anywhere.
+  assert.equal(JSON.parse(dispatch.body).inputs.handles, "chris,dewi,instagram:pim.only");
+  assert.deepEqual([body.count, body.tiktok, body.instagram], [3, 2, 1]);
+  assert.match(body.message, /3 accounts \(2 TikTok, 1 Instagram\) \(3 records\)/);
+  assert.match(body.message, /5–10 minuten/);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "vandaag gecontroleerd" && r[3] === "3 accounts, 3 records (2 TikTok, 1 Instagram)"));
+});
+
+test("Controleer nu: only Instagram accounts left, or only TikTok: the message says so and the time stays 5–7 minutes", async () => {
+  const now = new Date().toISOString();
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts.push(["Pim", "", "ja", "pim.only"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"], ["1", "anna_1", now, 5], ["2", "chris", now, 5]];   // both TikTok students posted
+  sheets.ig_handles = [["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"], ["pim.only", false, 1, "", "ok", ""]];
+  sheets._runs = [{ status: "completed" }];
+  let res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  let body = await res.json();
+  assert.deepEqual([body.count, body.tiktok, body.instagram], [1, 0, 1]);
+  assert.match(body.message, /1 account \(Instagram\) \(1 records\)/);
+  assert.match(body.message, /5–7 minuten/);
+  const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+  assert.equal(JSON.parse(dispatch.body).inputs.handles, "instagram:pim.only");
+});
+
+test("Controleer nu: the Instagram accounts count in the budget check", async () => {
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts.push(["Pim", "", "ja", "pim.only"], ["Quin", "", "ja", "quin.only"]);   // two students with only Instagram
+  sheets._runs = [{ status: "completed" }];
+  // Fill the month so that exactly 2 records are left after the reserve for the remaining scheduled runs:
+  // the two TikTok accounts (chris, anna_1) would fit, the two Instagram-only students on top of them don't.
+  const projected = (await (await req("/api/data")).json()).budget.projected;
+  sheets.run_log.push([sheets._recent, "profiles", "2026-10-01/20u", false, 0, CONFIG.budget.monthlyCap - 2 - projected, 0, "ok", "sd_big", ""]);
+  const res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /Past niet in het budget.*\+ 4 voor deze controle/);
+  assert.equal(calls.some((c) => c.url.endsWith("/dispatches")), false);
 });
