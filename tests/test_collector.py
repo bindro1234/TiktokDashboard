@@ -2,9 +2,12 @@
 
 import datetime as dt
 import json
+import os
 import pathlib
 import re
+import tempfile
 import unittest
+from unittest import mock
 
 from collector import config, model
 from collector.__main__ import run_today
@@ -1473,6 +1476,22 @@ class FrequencySettingTests(unittest.TestCase):
             col, admin = self.collector(self.setting(tiktok, instagram), now=now, finale=[row])
             col.auto()
             self.assertEqual(set(self.windows_run(admin)), expected, (tiktok, instagram))
+
+
+class JobSummaryTests(unittest.TestCase):
+    """Test output stays out of the Collect workflow's job summary; the real run still writes to it."""
+
+    def test_tests_do_not_see_the_job_summary(self):
+        # In Actions the variable is set for the whole job; tests/__init__.py removes it before any test runs.
+        self.assertNotIn("GITHUB_STEP_SUMMARY", os.environ)
+
+    def test_summary_still_writes_when_actions_sets_it(self):
+        from collector.runner import summary
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "summary.md"
+            with mock.patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(path)}):
+                summary("**profiles** ok")
+            self.assertEqual(path.read_text(encoding="utf-8"), "**profiles** ok\n\n")
 
 
 def RunResultFor(expected=0):

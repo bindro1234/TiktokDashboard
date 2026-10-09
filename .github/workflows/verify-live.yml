@@ -1,0 +1,35 @@
+name: Check live Worker
+
+# Asks the live private Worker which commit it runs, through /version (the one path Cloudflare Access lets
+# through without a login, see README "Versiecontrole"). Without a commit it only checks that /version is
+# reachable without a login; use that to test the Access rule. The deploy job runs the same check on the
+# commit it just deployed.
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Address of the Worker, e.g. https://tiktok-beheer.<subdomain>.workers.dev"
+        type: string
+        required: true
+      commit:
+        description: "Commit the Worker must report (empty = only check that /version is reachable)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - name: Check /version
+        env:
+          URL: ${{ inputs.url }}
+          COMMIT: ${{ inputs.commit }}
+        run: node tools/verify_live.mjs "$URL" "$COMMIT"

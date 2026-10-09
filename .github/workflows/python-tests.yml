@@ -1,0 +1,24 @@
+name: Python tests
+
+# Runs the collector's unit tests (python -m unittest) on every pull request, so a change to collector/ or
+# tests/ is checked before it is merged. Collect TikTok stats runs the same tests before each real run.
+# Synthetic data only; no secrets are used.
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python -m unittest
