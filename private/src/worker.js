@@ -22,6 +22,7 @@ const MIN_FINALE_MINUTES = 15;
 const TASKS_TAB = "dagopdrachten";
 const TASKS_HEADER = ["date", "min_posts", "label", "active", "updated_at", "updated_by"];
 const OUTLIERS_TAB = "outliers"; // public sheet: handles only
+const IG_OUTLIERS_TAB = "ig_outliers"; // the same, for Instagram: "buiten schaal" is set per platform
 const IG_TABS = ["ig_handles", "ig_history", "ig_posts", "ig_baseline"]; // public sheet: Instagram, handles only
 const OUTLIERS_HEADER = ["handle", "buiten_schaal", "updated_at"];
 const SETTINGS_TAB = "settings"; // private sheet: key/value settings changed on Beheer (school hashtags, pull frequency per platform)
@@ -203,7 +204,7 @@ class Api {
   async data() {
     const [admin, data] = await Promise.all([
       this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB, TASKS_TAB, SETTINGS_TAB]),
-      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB, ...IG_TABS]),
+      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB, IG_OUTLIERS_TAB, ...IG_TABS]),
     ]);
     const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
     const runLog = lib.rowsToObjects(admin.run_log);
@@ -263,6 +264,7 @@ class Api {
       settings: { schoolHashtags: lib.schoolHashtags(lib.parseSettings(lib.rowsToObjects(admin[SETTINGS_TAB])), CONFIG.hashtags?.school),
         schoolHashtagsDefault: [...(CONFIG.hashtags?.school || [])] },
       outliers: [...lib.parseOutliers(lib.rowsToObjects(data[OUTLIERS_TAB]))],
+      igOutliers: [...lib.parseOutliers(lib.rowsToObjects(data[IG_OUTLIERS_TAB]), lib.normalizeInstagramHandle)],
     };
   }
 
@@ -589,24 +591,30 @@ class Api {
 
   // ---------- buiten schaal (public sheet, handles only) ----------
 
+  // Per platform: body.platform "instagram" (tab ig_outliers) or, without it, TikTok (tab outliers). A handle can exist
+  // on both platforms; the switch of one does not touch the other.
   async setOutlier(body) {
-    const { handle } = lib.normalizeHandle(body?.handle);
+    const instagram = body?.platform === "instagram";
+    const tab = instagram ? IG_OUTLIERS_TAB : OUTLIERS_TAB;
+    const normalize = instagram ? lib.normalizeInstagramHandle : lib.normalizeHandle;
+    const { handle } = normalize(body?.handle);
     const on = body?.on === true;
     if (!handle) throw new HttpError(400, "Ongeldige handle");
+    const label = instagram ? `Instagram @${handle}` : `@${handle}`;
     const { accounts } = await this.sheets.readTabs(this.admin, ["accounts"]);
-    if (!lib.parseAccounts(lib.rowsToObjects(accounts)).some((a) => a.tracked && a.handle === handle)) {
-      throw new HttpError(409, `@${handle} wordt niet gevolgd.`);
-    }
-    await this.sheets.ensureTab(this.dataId, OUTLIERS_TAB, OUTLIERS_HEADER, CONFIG.fixedGids?.[OUTLIERS_TAB] ?? null);
-    const { [OUTLIERS_TAB]: values } = await this.sheets.readTabs(this.dataId, [OUTLIERS_TAB]);
-    const row = lib.rowsToObjects(values).find((r) => lib.normalizeHandle(r.handle).handle === handle);
+    const parsed = lib.parseAccounts(lib.rowsToObjects(accounts));
+    const known = instagram ? parsed.some((a) => a.instagramTracked && a.instagram === handle) : parsed.some((a) => a.tracked && a.handle === handle);
+    if (!known) throw new HttpError(409, `${label} wordt niet gevolgd.`);
+    await this.sheets.ensureTab(this.dataId, tab, OUTLIERS_HEADER, CONFIG.fixedGids?.[tab] ?? null);
+    const { [tab]: values } = await this.sheets.readTabs(this.dataId, [tab]);
+    const row = lib.rowsToObjects(values).find((r) => normalize(r.handle).handle === handle);
     const cells = [handle, on ? "ja" : "nee", nowIso()];
     // One row per handle, updated in place (never deleted).
-    if (row) await this.sheets.update(this.dataId, OUTLIERS_TAB, `A${row._row}:C${row._row}`, [cells]);
-    else await this.sheets.append(this.dataId, OUTLIERS_TAB, [cells]);
-    await this.log(on ? "buiten schaal aan" : "buiten schaal uit", `@${handle}`);
-    return { ok: true, message: on ? `@${handle} staat nu buiten de schaal van de grafieken (plaats en cijfers blijven gelijk).`
-      : `@${handle} telt weer mee in de schaal van de grafieken.` };
+    if (row) await this.sheets.update(this.dataId, tab, `A${row._row}:C${row._row}`, [cells]);
+    else await this.sheets.append(this.dataId, tab, [cells]);
+    await this.log(on ? "buiten schaal aan" : "buiten schaal uit", label);
+    return { ok: true, message: on ? `${label} staat nu buiten de schaal van de grafieken (plaats en cijfers blijven gelijk).`
+      : `${label} telt weer mee in de schaal van de grafieken.` };
   }
 
   // ---------- dagopdrachten (private sheet) ----------

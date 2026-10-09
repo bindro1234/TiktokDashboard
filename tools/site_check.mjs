@@ -29,8 +29,9 @@ const expected = {
   ig_outliers: ["handle", "buiten_schaal"],
 };
 // Created by the first collector run after it was added (or the first "buiten schaal" switch);
-// until then the site simply has no outliers.
-const optional = new Set(["outliers", "ig_handles", "ig_history", "ig_posts", "ig_baseline", "ig_outliers"]);
+// until then the site simply has no outliers. The four Instagram data tabs are required: the Instagram
+// leaderboard is the first thing on the site (fixed gids; created by `setup` or the first Instagram run).
+const optional = new Set(["outliers", "ig_outliers"]);
 const missingTabs = new Set();
 
 let failed = false;
@@ -127,21 +128,63 @@ for (const hash of ["#stand", "#grafiek", "#groei"]) {
 {
   await page.goto(siteUrl + "#stand", { waitUntil: "networkidle" });
   await page.waitForSelector("#board-body tr[data-handle]", { timeout: 30000 });
-  const values = (col) => page.$$eval(`#board-body td.${col}`, (tds) =>
-    tds.map((td) => td.textContent.trim()).filter((t) => t !== "–").map((t) => Number(t.replace(/\./g, ""))));
+  // One leaderboard per platform, Instagram first; each sorts on its own columns.
+  const order = await page.$$eval("#view-stand .board-title", (h) => h.map((x) => x.textContent.trim().split(" ")[0]));
+  console.log(`site stand: boards ${order.join(", ")}`);
+  if (order.join() !== "Instagram,TikTok") fail(`site: the boards are ${order.join()}, expected Instagram first`);
+  const num = (t) => Number(t.trim().split(/\s/)[0].replace(/\./g, "").replace("−", "-").replace("+", "").replace("±", ""));
+  const valuesOf = (body) => (col) => page.$$eval(`${body} td.${col}`, (tds) => tds.map((td) => td.textContent.trim()).filter((t) => t !== "–" && t !== ""), col).then((list) => list.map(num));
   const sorted = (list, dir) => list.every((v, i) => i === 0 || (v - list[i - 1]) * dir <= 0);
-  for (const col of ["followers", "posts", "likes", "views"]) {
-    const btn = `#view-stand th[data-sort="${col}"] button`;
-    await page.click(btn);
-    const desc = await values(`c-${col}`);
-    const ariaDesc = await page.getAttribute(`#view-stand th[data-sort="${col}"]`, "aria-sort");
-    await page.click(btn);
-    const asc = await values(`c-${col}`);
-    const ariaAsc = await page.getAttribute(`#view-stand th[data-sort="${col}"]`, "aria-sort");
-    const ok = sorted(desc, 1) && sorted(asc, -1) && ariaDesc === "descending" && ariaAsc === "ascending";
-    console.log(`site sort ${col}: ${ok ? "ok" : "WRONG"} (${desc.length} values)`);
-    if (!ok) fail(`site: sorting on ${col} is wrong (aria ${ariaDesc}/${ariaAsc})`);
+  for (const [table, body, cols] of [["board", "#board-body", ["followers", "posts", "likes", "views"]], ["board-ig", "#board-ig-body", ["followers", "posts", "gained"]]]) {
+    for (const col of cols) {
+      // A click on a column sorts it high to low, a second click reverses it (on the column the board starts sorted on, the first click reverses).
+      const btn = `#${table} th[data-sort="${col}"] button`;
+      const state = async () => ({ values: await valuesOf(body)(`c-${col}`), aria: await page.getAttribute(`#${table} th[data-sort="${col}"]`, "aria-sort") });
+      await page.click(btn);
+      const first = await state();
+      await page.click(btn);
+      const second = await state();
+      const right = ({ values, aria }) => sorted(values, aria === "descending" ? 1 : -1);
+      const ok = first.aria !== second.aria && [first.aria, second.aria].sort().join() === "ascending,descending" && right(first) && right(second);
+      console.log(`site sort ${table} ${col}: ${ok ? "ok" : "WRONG"} (${first.values.length} values)`);
+      if (!ok) fail(`site: sorting ${table} on ${col} is wrong (aria ${first.aria}/${second.aria})`);
+    }
   }
+  // Instagram: places run 1, 2, ... on followers gained since each account's baseline (equal gains share a place).
+  await page.click('#board-ig th[data-sort="followers"] button'); // another column first, so the next click starts high to low
+  await page.click('#board-ig th[data-sort="gained"] button');
+  const places = await page.$$eval("#board-ig-body tr[data-handle]", (r) => r.map((x) => [x.children[0].textContent.trim(), x.children[3].textContent.trim().split(/\s/)[0]]));
+  const medal = { "🥇": 1, "🥈": 2, "🥉": 3 };
+  const ranked = places.filter(([p]) => p !== "–").map(([p, g]) => [medal[p] ?? Number(p), num(g)]);
+  const igOk = ranked.every(([p, g], i) => (i === 0 ? p === 1 : g <= ranked[i - 1][1] && (g === ranked[i - 1][1] ? p === ranked[i - 1][0] : p === i + 1)));
+  console.log(`site stand Instagram: ${places.length} accounts, ${ranked.length} with a place, places ${igOk ? "follow the gains" : "WRONG"}`);
+  if (!igOk) fail(`site: Instagram places do not follow the followers gained (${JSON.stringify(ranked)})`);
+  if (cfg.gids.ig_handles != null && places.length === 0) fail("site: the Instagram leaderboard is empty");
+  const igFirst = await page.$eval("#board-ig-body tr[data-handle]", (r) => r.dataset.handle).catch(() => null);
+  if (igFirst) {
+    await page.goto(`${siteUrl}#account/ig/${encodeURIComponent(igFirst)}`, { waitUntil: "networkidle" });
+    await page.waitForSelector("#view-account .tiles", { timeout: 15000 });
+    const tiles = (await page.$$eval("#view-account .tile .label", (l) => l.map((x) => x.textContent))).join(",");
+    console.log(`site account Instagram page: tiles ${tiles}`);
+    if (tiles !== "Positie,Volgers erbij,Volgers,Posts") fail(`site: Instagram account page tiles are ${tiles}`);
+    await page.goto(siteUrl + "#stand", { waitUntil: "networkidle" });
+    await page.waitForSelector("#board-body tr[data-handle]", { timeout: 30000 });
+  }
+  // Grafiek and Groei: the platform switch, Instagram first, each with its own metrics.
+  for (const [view, bind, want] of [["grafiek", "metric", "Volgers erbij,Volgers,Posts"], ["groei", "growthMetric", "Volgers,Posts"]]) {
+    await page.goto(`${siteUrl}#${view}`, { waitUntil: "networkidle" });
+    await page.waitForSelector(`#view-${view} .seg[data-bind="platform"] button`, { timeout: 30000 });
+    // (The chosen platform is kept while moving between tabs; start on Instagram.)
+    await page.click(`#view-${view} .seg[data-bind="platform"] button:text("Instagram")`);
+    const sw = await page.$$eval(`#view-${view} .seg[data-bind="platform"] button`, (b) => b.map((x) => `${x.textContent}${x.getAttribute("aria-pressed") === "true" ? "*" : ""}`).join());
+    const metrics = await page.$$eval(`#view-${view} .seg[data-bind="${bind}"] button`, (b) => b.map((x) => x.textContent).join());
+    console.log(`site ${view}: platform switch ${sw}, metrics ${metrics}`);
+    if (sw !== "Instagram*,TikTok" || metrics !== want) fail(`site ${view}: switch ${sw}, metrics ${metrics}`);
+    await page.click(`#view-${view} .seg[data-bind="platform"] button:text("TikTok")`);
+    await page.waitForFunction((v) => /Weergaven/.test(document.querySelector(`#view-${v} .seg[data-bind]:not([data-bind="platform"]) `).textContent), view, { timeout: 10000 });
+  }
+  await page.goto(siteUrl + "#stand", { waitUntil: "networkidle" });
+  await page.waitForSelector("#board-body tr[data-handle]", { timeout: 30000 });
   const link = await page.getAttribute("#present-link", "href");
   console.log(`site presentatie button: href=${link}, visible=${await page.isVisible("#present-link")}`);
   if (link !== "?present" || !(await page.isVisible("#present-link"))) fail("site: Presentatie button missing");
@@ -171,7 +214,7 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   await pp.goto(`${siteUrl}?present&sec=2`, { waitUntil: "networkidle" });
   await pp.waitForSelector("#p-stage[data-kind]", { timeout: 30000 });
   const count = await pp.$$eval("#p-dots button", (s) => s.length);
-  const kinds = [];
+  const kinds = [], platforms = [];
   for (let i = 0; i < count; i++) {
     await pp.waitForFunction((n) => document.querySelectorAll("#p-dots button")[n]?.classList.contains("on"), i, { timeout: 10000 });
     await pp.waitForTimeout(700); // let the enter animation finish
@@ -185,6 +228,7 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
       };
     });
     kinds.push(m.kind);
+    platforms.push((await pp.textContent(".p-title")).trim().split(" ")[0]);
     if (m.overflow || m.scroll) fail(`present ${w}x${h}: slide ${i + 1} (${m.kind}) does not fit the screen`);
   }
   const ui = await pp.evaluate(() => ({
@@ -195,8 +239,11 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   }));
   await pp.waitForTimeout(3300);
   const idle = await pp.evaluate(() => document.getElementById("present").classList.contains("p-idle"));
-  console.log(`present ${w}x${h}: slides=[${kinds.join(", ")}], theme=${ui.theme}, cursor hidden=${idle}, "${ui.updated}"`);
-  for (const k of ["podium", "graph", "risers"]) if (!kinds.includes(k)) fail(`present ${w}x${h}: no ${k} slide`);
+  if (platforms[0] !== "Instagram" || platforms.at(-1) !== "TikTok" || platforms.join() !== [...platforms].sort((a, b) => (a === "Instagram" ? 0 : 1) - (b === "Instagram" ? 0 : 1)).join()) {
+    fail(`present ${w}x${h}: slides are ${platforms.join(", ")}, expected all Instagram slides first, then TikTok`);
+  }
+  console.log(`present ${w}x${h}: slides=[${kinds.map((k, i) => `${platforms[i]} ${k}`).join(", ")}], theme=${ui.theme}, cursor hidden=${idle}, "${ui.updated}"`);
+  for (const k of ["podium", "graph", "risers"]) if (kinds.filter((x) => x === k).length < 2) fail(`present ${w}x${h}: not a ${k} slide for both platforms`);
   if (ui.theme !== "light") fail(`present ${w}x${h}: theme is ${ui.theme}, expected light`);
   if (ui.header !== "none") fail(`present ${w}x${h}: tabs/header are visible`);
   if (ui.admin) fail(`present ${w}x${h}: admin button is visible`);

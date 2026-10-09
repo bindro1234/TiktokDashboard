@@ -84,13 +84,18 @@ chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo",
 for (const day of ["2026-09-30", "2026-10-02"]) igPost("pim.only", `${day}T14:00:00Z`, "carousel");
 igPost("pim.only", "2026-10-05T08:00:00Z"); igPost("pim.only", "2026-10-05T18:00:00Z");
 igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo", "av"); // today: reaches the dagopdracht (2)
+// Followers gained between the first and the last measurement, per account, so the Instagram standings have different places:
+// Chris +12, Pim +8, Anna +7, Bram +3. Pim's account was added later: its baseline is from 5 Oct, not from the first measurement.
+const IG_GAIN = { "anna.gram": 7, "bram.ig": 3, "chris.ig": 12, "pim.only": 8 };
+const IG_LATE = new Set(["pim.only"]);
+const igFirstDay = (h) => (IG_LATE.has(h) ? "2026-10-05" : "2026-09-30");
 igTracked.forEach((h, i) => {
-  for (const day of ["2026-09-30", "2026-10-07"]) {
-    igHistory.push({ timestamp: `${day}T05:00:00Z`, handle: h, followers: 100 + i * 10 + (day === "2026-10-07" ? 7 : 0), following: 50, posts_count: 20,
+  for (const day of [igFirstDay(h), "2026-10-07"]) {
+    igHistory.push({ timestamp: `${day}T05:00:00Z`, handle: h, followers: 100 + i * 10 + (day === "2026-10-07" ? IG_GAIN[h] : 0), following: 50, posts_count: 20,
       is_private: false, campaign_posts: igPosts.filter((p) => p.handle === h).length });
   }
 });
-const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: "2026-09-30T05:00:00Z", baseline_followers: 100 + i * 10 }));
+const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: `${igFirstDay(h)}T05:00:00Z`, baseline_followers: 100 + i * 10 }));
 // "Video verdwenen": test_06 (Finn) lost one video on 6 Oct (recent) and one on 30 Sep (old); test_07 (Gijs) only the old one.
 // Overzicht warns only about videos of the last 3 days; the student page lists them all.
 const oldGone = "2026-09-30T16:00:00Z";
@@ -104,7 +109,7 @@ posts.find((p) => p.handle === "test_07" && !p.missing_since).missing_since = ol
 // Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
 Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
 Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
-const igHandles = igTracked.map((h, i) => ({ handle: h, is_private: h === "bram.ig", followers: 100 + i * 10 + 7, last_scraped: "",
+const igHandles = igTracked.map((h, i) => ({ handle: h, is_private: h === "bram.ig", followers: 100 + i * 10 + IG_GAIN[h], last_scraped: "",
   last_status: h === "bram.ig" ? "privé" : h === "chris.ig" ? "fout: dead_page: not found" : "ok",
   status_since: h === "bram.ig" ? "2026-10-04T08:00:00Z" : h === "chris.ig" ? "2026-10-05T14:00:00Z" : "2026-09-30T06:00:00Z" }));
 const handles = tracked.map((h, i) => ({ handle: h, is_private: i === 1, followers: 50 + i * 20, last_scraped: "",
@@ -113,6 +118,8 @@ const handles = tracked.map((h, i) => ({ handle: h, is_private: i === 1, followe
 // Dagopdrachten: Thu 1 Oct (minimum 2, over) and today (Wed 7 Oct, minimum 2, still pending).
 let tasks = [{ row: 2, date: "2026-10-01", min: 2, label: "Dubbeldag" }, { row: 3, date: "2026-10-07", min: 2, label: "" }];
 const outliers = new Set(["test_11"]);
+// "Buiten schaal" is per platform: Chris's Instagram account is one (his TikTok account is not).
+const igOutliers = new Set(["chris.ig"]);
 const runLog = [
   { timestamp: "2026-10-07T16:05:00Z", run_type: "profiles", window: "2026-10-07/18u", dry_run: false, expected_records: 11, actual_records: 11, errors: 0, status: "ok", snapshot_ids: "sd_x", notes: "11 profiles ok | budget: used 400" },
   { timestamp: "2026-10-02T06:40:00Z", run_type: "posts_refresh", window: "2026-10-02/weekrefresh", dry_run: false, expected_records: 80, actual_records: 12, errors: 0, status: "ok", snapshot_ids: "sd_y", notes: "" },
@@ -149,7 +156,7 @@ function api(req, body) {
       budget: lib.budget(cfgNow, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
       budgetBase: { used: lib.monthUsage(runLog, NOW), done: [...lib.doneWindows(runLog)] },
       lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
-      lastTodayCheck: null, tasks, outliers: [...outliers] }];
+      lastTodayCheck: null, tasks, outliers: [...outliers], igOutliers: [...igOutliers] }];
   }
   if (req.method === "GET" && req.url === "/api/post-history") return [200, { rows: postHistory }];
   if (req.method === "GET" && req.url === "/api/runs") {
@@ -199,7 +206,8 @@ function api(req, body) {
     }
     if (req.url === "/api/log") return [200, { ok: true }];
     if (req.url === "/api/outliers") {
-      if (body.on) outliers.add(body.handle); else outliers.delete(body.handle);
+      const set = body.platform === "instagram" ? igOutliers : outliers;
+      if (body.on) set.add(body.handle); else set.delete(body.handle);
       return [200, { ok: true, message: `@${body.handle} ${body.on ? "buiten" : "in"} schaal.` }];
     }
     if (req.url === "/api/tasks") {
@@ -273,6 +281,11 @@ async function open(viewport, path = "", font = process.env.CHECK_FONT) {
   await page.goto(base + path);
   return page;
 }
+// Overzicht shows one platform's standings at a time (Instagram first); the older checks look at the TikTok ones.
+const showBoard = async (p, board) => {
+  await p.click(`#ov-board button[data-board="${board}"]`);
+  await p.waitForSelector(`#ov-board button[data-board="${board}"][aria-pressed="true"]`);
+};
 const noHScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
 // The elements that stick out past the viewport (outside the tables, which scroll inside their own box): for the failure message.
 const stickingOut = (page) => page.evaluate(() => [...document.querySelectorAll("body *")]
@@ -341,6 +354,8 @@ for (const [viewport, font] of sweeps) {
   await sp.waitForSelector("#st-ig-posts");
   if (!(await noHScroll(sp))) fail("390px: Instagram-only student page scrolls sideways");
   await sp.evaluate(() => { location.hash = "overzicht"; });
+  await sp.waitForSelector("#ov-board button");
+  await showBoard(sp, "tiktok");
   await sp.waitForSelector('#ov-body button[data-open="test_01"]');
   await sp.click('#ov-body button[data-open="test_01"]');
   if (!(await noHScroll(sp))) fail("390px: Overzicht with the Instagram sub-row scrolls sideways");
@@ -352,6 +367,41 @@ for (const [viewport, font] of sweeps) {
 
 const page = await open({ width: 1280, height: 900 }, "#overzicht");
 await page.waitForSelector("#ov-body tr[data-handle]");
+// Instagram standings come first (the default): ranked on followers gained since each account's baseline, the total followers
+// next to it. Pim's account was added later and says so; students without an Instagram account have no place and come last.
+{
+  const pressed = await page.$eval('#ov-board button[aria-pressed="true"]', (b) => b.dataset.board);
+  if (pressed !== "instagram") fail(`overzicht: opens on ${pressed}, expected Instagram first`);
+  if ((await page.$$eval("#ov-board button", (b) => b.map((x) => x.dataset.board))).join() !== "instagram,tiktok") fail("overzicht: switch is not Instagram, TikTok");
+  const heads = await page.$$eval("#ov-head th", (t) => t.map((x) => x.textContent.trim()));
+  if (heads.join("|") !== "#|Naam|Instagram|Volgers erbij|Volgers|Posts|Laatste post|Let op") fail(`overzicht (Instagram): columns ${heads.join("|")}`);
+  const read = () => page.$$eval("#ov-body tr[data-handle]", (r) => r.map((x) => ({ key: x.dataset.handle, place: x.children[0].textContent.trim(),
+    gained: x.children[3].textContent.replace(/\s+/g, " ").trim(), followers: x.children[4].textContent.trim(), text: x.textContent })));
+  const igRows = await read();
+  const want = [["test_03", "1", "+12", "132"], ["instagram:pim.only", "2", "+8", "138"], ["test_01", "3", "+7", "107"], ["test_02", "4", "+3", "113"]];
+  const got = igRows.slice(0, 4).map((r) => [r.key, r.place, r.gained.split(" ")[0], r.followers]);
+  console.log(`overzicht Instagram: ${got.map((g) => g.join(" ")).join(" | ")}, then ${igRows.length - 4} without a place`);
+  if (JSON.stringify(got) !== JSON.stringify(want)) fail(`overzicht (Instagram): standings are ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+  if (!/vanaf 5 okt/.test(igRows[1].gained) || igRows.some((r, i) => i !== 1 && /vanaf/.test(r.gained))) fail(`overzicht (Instagram): only Pim's account should be marked as added later (${igRows.map((r) => r.gained).join(" / ")})`);
+  if (!igRows.slice(4).every((r) => r.place === "–" && r.gained === "–")) fail("overzicht (Instagram): students without an Instagram account should have no place");
+  if (!igRows[0].text.includes("buiten schaal")) fail("overzicht (Instagram): Chris's Instagram outlier is not marked");
+  const tiles = (await page.textContent("#ov-tiles")).replace(/\s+/g, " ");
+  if (!tiles.includes("Volgers erbij") || !tiles.includes("+30")) fail(`overzicht (Instagram): tile does not show the +30 followers gained (${tiles})`);
+  // Sort on total followers (high to low), then back to the place.
+  await page.click('#ov-table th[data-sort="followers"] button');
+  const byFollowers = (await read()).slice(0, 4).map((r) => r.key).join();
+  if (byFollowers !== "instagram:pim.only,test_03,test_02,test_01") fail(`overzicht (Instagram): sorted on followers gives ${byFollowers}`);
+  await page.click('#ov-table th[data-sort="rank"] button');
+  if ((await read()).slice(0, 4).map((r) => r.key).join() !== want.map((w) => w[0]).join()) fail("overzicht (Instagram): sorting on # does not give the places");
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-overzicht-instagram.png`, fullPage: true });
+  // TikTok: the standings as before, with its own columns; "buiten schaal" is that platform's own.
+  await showBoard(page, "tiktok");
+  const ttHeads = await page.$$eval("#ov-head th", (t) => t.map((x) => x.textContent.trim()));
+  if (!ttHeads.includes("Weergaven") || ttHeads.includes("Volgers erbij")) fail(`overzicht (TikTok): columns ${ttHeads.join("|")}`);
+  if ((await page.textContent('#ov-body tr[data-handle="test_03"]')).includes("buiten schaal")) fail("overzicht (TikTok): Chris's Instagram outlier also marks his TikTok account");
+  if (!(await page.textContent('#ov-body tr[data-handle="test_11"]')).includes("buiten schaal")) fail("overzicht (TikTok): the TikTok outlier is not marked");
+  console.log("overzicht TikTok: own columns, buiten schaal per platform");
+}
 const rows = await page.$$eval("#ov-body tr[data-handle]", (r) => r.length);
 const text = await page.textContent("#ov-body");
 console.log(`overzicht: ${rows} rows`);
@@ -875,6 +925,7 @@ await page.waitForFunction((n) => document.querySelectorAll("#ig-missing form[da
 {
   const fresh = await open({ width: 1280, height: 900 }, "#overzicht");
   await fresh.waitForSelector('#ov-body tr[data-handle="test_04"]');
+  await showBoard(fresh, "tiktok");
   const row = await fresh.textContent('#ov-body tr[data-handle="test_04"]');
   if (!/dagen geen post/.test(row) || row.includes("geen Instagram-handle")) fail(`overzicht: student with a new handle still treated as without (${row.replace(/\s+/g, " ").slice(0, 160)})`);
   const flagged = await fresh.$$eval("#ov-body tr[data-handle]", (r) => r.filter((x) => x.textContent.includes("geen Instagram-handle")).length);
@@ -920,7 +971,15 @@ const task = posted.find((p) => p.url === "/api/tasks");
 if (!task || task.body.action !== "add" || task.body.date !== "2026-10-09" || task.body.min !== 3) fail(`beheer: dagopdracht not posted right (${JSON.stringify(task && task.body)})`);
 await page.click('#acc-body button[data-outlier="test_04"]');
 await page.waitForTimeout(400);
-if (!posted.some((p) => p.url === "/api/outliers" && p.body.handle === "test_04" && p.body.on === true)) fail("beheer: buiten schaal did not post");
+if (!posted.some((p) => p.url === "/api/outliers" && p.body.handle === "test_04" && p.body.on === true && p.body.platform === "tiktok")) fail("beheer: buiten schaal did not post (TikTok)");
+// Instagram has its own switch: Chris's Instagram account is one already, Pim's is switched on and off again.
+if (!(await page.textContent("#acc-body")).includes("buiten schaal (Instagram)")) fail("beheer: no 'buiten schaal (Instagram)' badge on Chris's row");
+const annaIg = '#acc-body button[data-outlier="pim.only"][data-platform="instagram"]';
+await page.click(annaIg);
+await page.waitForFunction((s) => document.querySelector(s)?.dataset.on === "false", annaIg);
+if (!posted.some((p) => p.url === "/api/outliers" && p.body.handle === "pim.only" && p.body.platform === "instagram" && p.body.on === true)) fail("beheer: Instagram buiten schaal did not post its platform");
+await page.click(annaIg);
+await page.waitForFunction((s) => document.querySelector(s)?.dataset.on === "true", annaIg);
 await page.click("#bh-refresh");
 await page.waitForFunction(() => document.getElementById("bh-refresh-msg").textContent.includes("min"));
 console.log(`beheer: refresh message "${await page.textContent("#bh-refresh-msg")}"`);
@@ -944,7 +1003,7 @@ const head = cells(lines[0]);
 const col = (name) => chrisLine[head.indexOf(name)];
 const chrisIg = igPosts.filter((p) => p.handle === "chris.ig").length;
 // (Cells starting with @ get a leading ' so Excel does not read them as a formula.)
-if (col("instagram_handle") !== "'@chris.ig" || col("instagram_posts") !== String(chrisIg) || col("instagram_volgers_sinds_start") !== "7") fail(`export: Chris's Instagram columns wrong (${col("instagram_handle")}, ${col("instagram_posts")}, ${col("instagram_volgers_sinds_start")})`);
+if (col("instagram_handle") !== "'@chris.ig" || col("instagram_posts") !== String(chrisIg) || col("instagram_volgers_sinds_start") !== "12") fail(`export: Chris's Instagram columns wrong (${col("instagram_handle")}, ${col("instagram_posts")}, ${col("instagram_volgers_sinds_start")})`);
 if (Number(col("posts")) !== Number(col("tiktok_posts")) + chrisIg) fail("export: posts is not TikTok + Instagram");
 if (!lines.find((l) => l.startsWith("Pim;;")) && !lines.find((l) => l.startsWith("Pim;"))) fail("export: Instagram-only student missing");
 if (!lines[0].includes("dagen_niet_te_controleren")) fail("export: no dagen_niet_te_controleren column");
@@ -981,6 +1040,7 @@ await page.close();
   });
   await np.goto(base + "#overzicht");
   await np.waitForSelector("#ov-body tr[data-handle]");
+  await showBoard(np, "tiktok");
   if (await np.$eval("#ov-ig-note", (e) => e.hidden)) fail("overzicht: no note that Instagram has not been fetched yet");
   if ((await np.textContent("#ov-body")).includes("nog niet opgehaald (Instagram)")) fail("overzicht: every student has a 'nog niet opgehaald (Instagram)' badge before the first Instagram run");
   if (!(await np.textContent('#ov-body tr[data-handle="test_01"]')).match(/IG @[\w.]+/)) fail("overzicht: Instagram handle missing before the first run");
@@ -1066,9 +1126,24 @@ await page.close();
   await sp.close();
 }
 
+// The podium is drawn in classic order (2nd, 1st, 3rd); this gives place i (0 = first).
+const podiumPlace = (places, i) => places[[1, 0, 2][i]] ?? "";
+
 // Presentation with first names (copied from the public site by build.sh).
 const pres = await open({ width: 1280, height: 720 }, "present/index.html?present&sec=60");
 await pres.waitForSelector("#p-stage[data-kind='podium'] .p-pod-handle", { timeout: 20000 });
+// Instagram first: its podium (first names, followers gained, total followers), then the TikTok slides.
+{
+  const title = (await pres.textContent(".p-title")).replace(/\s+/g, " ").trim();
+  if (!/^Instagram · Top 3/.test(title)) fail(`presentatie: first slide is "${title}", expected the Instagram podium`);
+  const places = await pres.$$eval(".p-pod", (ps) => ps.map((x) => x.textContent.replace(/\s+/g, " ").trim()));
+  console.log(`presentatie Instagram: ${places.join(" | ")}`);
+  const want = [/Chris ?@chris\.ig.*\+12.*volgers erbij.*132 volgers/, /Pim ?@pim\.only.*\+8.*volgers erbij.*138 volgers/, /(Anna ?)?@anna\.gram.*\+7.*volgers erbij.*107 volgers/];
+  want.forEach((re, i) => { if (!re.test(podiumPlace(places, i))) fail(`presentatie Instagram: podium place ${i + 1} is "${podiumPlace(places, i)}"`); });
+  if (process.env.SHOTS) await pres.screenshot({ path: `${process.env.SHOTS}/private-present-instagram.png` });
+  for (let i = 0; i < 12 && !/^TikTok · Top 3/.test((await pres.textContent(".p-title")).trim()); i++) await pres.keyboard.press("ArrowRight");
+  if (!/^TikTok · Top 3/.test((await pres.textContent(".p-title")).trim())) fail("presentatie: no TikTok podium after the Instagram slides");
+}
 if (process.env.SHOTS) await pres.screenshot({ path: `${process.env.SHOTS}/private-present.png` });
 const podium = await pres.$$eval(".p-pod-handle", (p) => p.map((x) => x.textContent.trim()));
 console.log(`presentatie: podium ${JSON.stringify(podium)}`);
@@ -1083,6 +1158,24 @@ await pres.close();
 {
   const sp = await open({ width: 1280, height: 900 }, "present/index.html#grafiek");
   await sp.waitForFunction(() => window.Chart && Chart.getChart(document.getElementById("chart-main")), null, { timeout: 20000 });
+  // Instagram is the platform shown first: followers gained, Chris's Instagram account buiten schaal (his TikTok one is not).
+  {
+    const ig = await sp.evaluate(() => {
+      const c = Chart.getChart(document.getElementById("chart-main"));
+      return { platform: document.querySelector('#view-grafiek .seg[data-bind="platform"] button[aria-pressed="true"]').textContent,
+        platforms: [...document.querySelectorAll('#view-grafiek .seg[data-bind="platform"] button')].map((b) => b.textContent).join(),
+        metrics: [...document.querySelectorAll('#view-grafiek .seg[data-bind="metric"] button')].map((b) => b.textContent).join(),
+        yTitle: c.options.scales.y.title.text, max: c.scales.y.max, marks: c.data.datasets.filter((d) => d.outlierMark).map((d) => d.label) };
+    });
+    console.log(`site grafiek Instagram: ${JSON.stringify(ig)}`);
+    if (ig.platform !== "Instagram" || ig.platforms !== "Instagram,TikTok") fail(`site grafiek: platform switch is ${ig.platforms}, shown ${ig.platform}`);
+    if (ig.metrics !== "Volgers erbij,Volgers,Posts" || ig.yTitle !== "Volgers erbij") fail(`site grafiek: Instagram metrics ${ig.metrics} / ${ig.yTitle}`);
+    if (!(ig.max < 30) || ig.marks.join() !== "@chris.ig") fail(`site grafiek: Instagram not scaled without its own outlier (${JSON.stringify(ig)})`);
+    await sp.click('#view-grafiek .seg[data-bind="platform"] button:text("TikTok")');
+    await sp.waitForFunction(() => Chart.getChart(document.getElementById("chart-main")).data.datasets.some((d) => d.outlierMark && d.label === "@test_11"), null, { timeout: 10000 });
+    const tt = await sp.$$eval('#view-grafiek .seg[data-bind="metric"] button', (b) => b.map((x) => x.textContent).join());
+    if (tt !== "Weergaven,Volgers,Posts,Likes") fail(`site grafiek: TikTok metrics ${tt}`);
+  }
   const g = await sp.evaluate(() => {
     const c = Chart.getChart(document.getElementById("chart-main"));
     return { max: c.scales.y.max, marks: c.data.datasets.filter((d) => d.outlierMark).map((d) => d.label) };
@@ -1092,6 +1185,37 @@ await pres.close();
   await sp.evaluate(() => { location.hash = "stand"; });
   await sp.waitForSelector("#board-body tr[data-handle]");
   if ((await sp.$eval("#board-body tr", (r) => r.dataset.handle)) !== "test_11") fail("site stand: outlier not at its own place");
+  // Two leaderboards, Instagram above TikTok: places on followers gained (equal gains would share a place), total followers next to it.
+  {
+    const order = await sp.$$eval("#view-stand .board-title", (h) => h.map((x) => x.textContent.trim().split(" ")[0]));
+    if (order.join() !== "Instagram,TikTok") fail(`site stand: boards are ${order.join()}, expected Instagram first`);
+    const read = () => sp.$$eval("#board-ig-body tr[data-handle]", (r) => r.map((x) => ({ key: x.dataset.handle, platform: x.dataset.platform, place: x.children[0].textContent.trim(),
+      gained: x.children[3].textContent.replace(/\s+/g, " ").trim(), followers: x.children[4].textContent.trim() })));
+    const ig = await read();
+    console.log(`site stand Instagram: ${ig.map((r) => `${r.place} ${r.key} ${r.gained} ${r.followers}`).join(" | ")}`);
+    const want = [["🥇", "chris.ig", "+12", "132"], ["🥈", "pim.only", "+8 vanaf 5 okt", "138"], ["🥉", "anna.gram", "+7", "107"], ["4", "bram.ig", "+3", "113"]];
+    if (JSON.stringify(ig.map((r) => [r.place, r.key, r.gained, r.followers])) !== JSON.stringify(want)) fail(`site stand: Instagram board is ${JSON.stringify(ig)}`);
+    if (ig.some((r) => r.platform !== "instagram")) fail("site stand: Instagram rows do not carry their platform");
+    await sp.click('#board-ig th[data-sort="followers"] button');
+    const byFollowers = (await read()).map((r) => r.key).join();
+    if (byFollowers !== "pim.only,chris.ig,bram.ig,anna.gram") fail(`site stand: Instagram sorted on followers gives ${byFollowers}`);
+    await sp.click('#board-ig th[data-sort="gained"] button');
+    // The TikTok board keeps its own sort and rows.
+    if ((await sp.$eval("#board-body tr", (r) => r.dataset.handle)) !== "test_11") fail("site stand: sorting the Instagram board changed the TikTok board");
+    // An Instagram account page: its own tiles, charts and posts; no TikTok numbers.
+    await sp.click('#board-ig-body tr[data-handle="chris.ig"]');
+    await sp.waitForSelector("#view-account .tiles");
+    const acc = await sp.evaluate(() => ({ head: document.querySelector("#view-account .detail-head").textContent.replace(/\s+/g, " ").trim(),
+      tiles: [...document.querySelectorAll("#view-account .tile")].map((t) => t.textContent.replace(/\s+/g, " ").trim()),
+      charts: document.querySelectorAll("#view-account canvas").length, posts: document.querySelectorAll("#view-account tbody tr").length, hash: location.hash }));
+    console.log(`site account Instagram: ${JSON.stringify(acc)}`);
+    if (acc.hash !== "#account/ig/chris.ig" || !/@chris\.ig/.test(acc.head) || !/Instagram/.test(acc.head)) fail(`site account Instagram: ${JSON.stringify(acc)}`);
+    if (!acc.tiles[0].startsWith("Positie1") || !acc.tiles[1].startsWith("Volgers erbij+12") || !acc.tiles[2].startsWith("Volgers132")) fail(`site account Instagram: tiles ${acc.tiles.join(" / ")}`);
+    if (acc.tiles.some((tl) => /Weergaven|Likes/.test(tl))) fail("site account Instagram: shows TikTok numbers");
+    if (acc.charts !== 3 || acc.posts !== igPosts.filter((p) => p.handle === "chris.ig").length) fail(`site account Instagram: ${acc.charts} charts, ${acc.posts} posts`);
+    await sp.evaluate(() => { location.hash = "stand"; });
+    await sp.waitForSelector("#board-ig-body tr[data-handle]");
+  }
   // Anna's two accounts are one participant ("@test_01 + @test_13"), with a row per account behind the toggle.
   const pRow = await sp.textContent('#board-body tr[data-handle="test_01"]');
   await sp.click('#board-body button[data-open="test_01"]');
@@ -1117,6 +1241,7 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   const pp = await open({ width: w, height: h }, "present/index.html?present&sec=60");
   await pp.waitForSelector("#p-dots button.on", { timeout: 20000 });
   const total = await pp.$$eval("#p-dots button", (b) => b.length);
+  const titles = [];
   for (let i = 0; i < total; i++) {
     await pp.waitForTimeout(600);
     const m = await pp.evaluate(() => {
@@ -1124,20 +1249,125 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
       return { kind: st.dataset.kind, over: st.scrollHeight > st.clientHeight + 1 || st.scrollWidth > st.clientWidth + 1 };
     });
     if (m.over) fail(`presentatie ${w}x${h}: slide ${i + 1} (${m.kind}) does not fit`);
+    const platform = (await pp.textContent(".p-title")).trim().split(" ")[0];
+    titles.push(`${platform} ${m.kind}`);
     if (m.kind === "graph") {
-      // The y-axis scales on the others; the outlier is a ▲ marker with its real number.
+      // The y-axis scales on the others; the outlier is a ▲ marker with its real number (each platform has its own).
       const g = await pp.evaluate(() => {
         const c = Chart.getChart(document.getElementById("p-chart"));
         return { max: c.scales.y.max, marks: c.data.datasets.filter((d) => d.outlierMark).map((d) => d.label) };
       });
-      if (!(g.max < 200000) || g.marks.join() !== "@test_11") fail(`presentatie: graph not scaled without the outlier (${JSON.stringify(g)})`);
+      const ig = platform === "Instagram";
+      if (!(g.max < (ig ? 30 : 200000)) || g.marks.join() !== (ig ? "@chris.ig" : "@test_11")) fail(`presentatie: ${platform} graph not scaled without the outlier (${JSON.stringify(g)})`);
     }
     if (m.kind === "risers" && !(await pp.$(".p-bar-out"))) fail("presentatie: risers bar of the outlier not capped");
     if (process.env.SHOTS) await pp.screenshot({ path: `${process.env.SHOTS}/private-present-${w}-${i + 1}.png` });
     await pp.keyboard.press("ArrowRight");
   }
-  console.log(`presentatie ${w}x${h}: ${total} slides checked`);
+  console.log(`presentatie ${w}x${h}: ${total} slides checked (${titles.join(", ")})`);
+  const order = titles.map((x) => x.split(" ")[0]);
+  if (order.join() !== [...order].sort((a, b) => (a === "Instagram" ? 0 : 1) - (b === "Instagram" ? 0 : 1)).join() || order[0] !== "Instagram" || !order.includes("TikTok")) {
+    fail(`presentatie ${w}x${h}: slide order is ${titles.join(", ")}, expected all Instagram slides first, then TikTok`);
+  }
   await pp.close();
+}
+
+// The same handle on both platforms (students do that): the public site keeps them apart. Anna's Instagram account is renamed to her
+// TikTok handle here. Account pages get a switch, the chosen accounts and "buiten schaal" are kept per platform.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const sp = await ctx.newPage();
+  const errors = [];
+  sp.on("pageerror", (e) => errors.push(e.message));
+  sp.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(sp);
+  await sp.route("**/api/data", async (route) => {
+    const res = await route.fetch();
+    const data = await res.json();
+    const rename = (rows) => rows.map((r) => (r.handle === "anna.gram" ? { ...r, handle: "test_01" } : r));
+    await route.fulfill({ response: res, json: { ...data, igHandles: rename(data.igHandles), igHistory: rename(data.igHistory),
+      igPosts: rename(data.igPosts), igBaseline: rename(data.igBaseline), igOutliers: ["test_01"] } });
+  });
+  await sp.goto(base + "present/index.html#account/test_01");
+  await sp.waitForSelector("#view-account .tiles");
+  const sw = () => sp.$$eval("#view-account .account-platform > *", (e) => e.map((x) => `${x.textContent.trim()}${x.disabled ? "*" : ""}`).join());
+  if ((await sw()) !== "Instagram,TikTok*") fail(`site account: TikTok page of a handle on both platforms has switch "${await sw()}"`);
+  await sp.click('#view-account .account-platform a:text("Instagram")');
+  await sp.waitForFunction(() => location.hash === "#account/ig/test_01" && /Volgers erbij/.test(document.querySelector("#view-account .tiles").textContent));
+  if ((await sw()) !== "Instagram*,TikTok") fail(`site account: Instagram page has switch "${await sw()}"`);
+  await sp.click('#view-account .account-platform a:text("TikTok")');
+  await sp.waitForFunction(() => location.hash === "#account/test_01" && /Weergaven/.test(document.querySelector("#view-account .tiles").textContent));
+  // "Buiten schaal" is per platform.
+  const marks = await sp.evaluate(() => [state.all.instagram.outliers.has("test_01"), state.all.tiktok.outliers.has("test_01")]);
+  if (marks.join() !== "true,false") fail(`site: buiten schaal of the same handle should be Instagram only, got ${marks}`);
+  // The chosen accounts are kept per platform.
+  await sp.evaluate(() => { location.hash = "grafiek"; });
+  await sp.waitForSelector("#chips-grafiek .chip");
+  const picked = () => sp.evaluate(() => state.selected.join());
+  const igPick = await picked();
+  await sp.click('#view-grafiek .seg[data-bind="platform"] button:text("TikTok")');
+  const ttPick = await picked();
+  await sp.click('#view-grafiek .seg[data-bind="platform"] button:text("Instagram")');
+  if (igPick !== "chris.ig,pim.only,test_01,bram.ig" || ttPick === igPick || (await picked()) !== igPick) fail(`site grafiek: picks per platform are wrong (Instagram ${igPick}, TikTok ${ttPick}, back ${await picked()})`);
+  // Groei has the same switch and its own Instagram metrics.
+  await sp.evaluate(() => { location.hash = "groei"; });
+  await sp.waitForSelector("#view-groei .seg[data-bind='growthMetric'] button");
+  const gm = await sp.$$eval("#view-groei .seg[data-bind='growthMetric'] button", (b) => b.map((x) => x.textContent).join());
+  const rowsG = await sp.$$eval("#growth-body tr[data-platform='instagram']", (r) => r.length);
+  if (gm !== "Volgers,Posts" || rowsG !== 4) fail(`site groei: Instagram metrics "${gm}", ${rowsG} Instagram rows`);
+  await sp.click('#view-groei .seg[data-bind="platform"] button:text("TikTok")');
+  const gt = await sp.$$eval("#view-groei .seg[data-bind='growthMetric'] button", (b) => b.map((x) => x.textContent).join());
+  if (gt !== "Weergaven,Volgers,Posts,Likes") fail(`site groei: TikTok metrics "${gt}"`);
+  // Video's and Hashtags are TikTok only.
+  await sp.evaluate(() => { location.hash = "hashtags"; });
+  await sp.waitForSelector("#tags-body tr[data-tag]");
+  if (!/TikTok/.test(await sp.textContent("#view-hashtags h2"))) fail("site hashtags: not labelled as TikTok");
+  if (errors.length) fail(`site (same handle on both platforms): browser errors: ${errors.join(" | ")}`);
+  console.log("site: same handle on both platforms: switch on the account pages, picks and buiten schaal per platform");
+  await ctx.close();
+}
+
+// Without Instagram data (before the first Instagram run, or the tabs cannot be read): the TikTok side works as before and the
+// Instagram board says why it is empty; the presentation only has TikTok slides.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const sp = await ctx.newPage();
+  const errors = [];
+  sp.on("pageerror", (e) => errors.push(e.message));
+  sp.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(sp);
+  await sp.route("**/api/data", async (route) => {
+    const res = await route.fetch();
+    const data = await res.json();
+    await route.fulfill({ response: res, json: { ...data, igHandles: [], igHistory: [], igPosts: [], igBaseline: [], igOutliers: [] } });
+  });
+  await sp.goto(base + "present/index.html#stand");
+  await sp.waitForSelector("#board-body tr[data-handle]");
+  const note = await sp.$eval("#ig-note", (e) => (e.hidden ? "" : e.textContent));
+  if (!/Nog geen Instagram-accounts/.test(note)) fail(`site stand without Instagram data: note is "${note}"`);
+  for (const view of ["grafiek", "groei"]) {
+    await sp.evaluate((v) => { location.hash = v; }, view);
+    await sp.waitForSelector(`#view-${view} .seg[data-bind="platform"] button`);
+  }
+  await sp.evaluate(() => { location.hash = "account/ig/nobody"; });
+  await sp.waitForSelector("#view-account .back");
+  if (!/niet gevonden/.test(await sp.textContent("#view-account"))) fail("site: unknown Instagram account page says nothing");
+  const pp = await ctx.newPage();
+  if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(pp);
+  await pp.route("**/api/data", async (route) => {
+    const res = await route.fetch();
+    const data = await res.json();
+    await route.fulfill({ response: res, json: { ...data, igHandles: [], igHistory: [], igPosts: [], igBaseline: [] } });
+  });
+  pp.on("pageerror", (e) => errors.push(e.message));
+  await pp.goto(base + "present/index.html?present&sec=60");
+  await pp.waitForSelector("#p-stage[data-kind='podium']");
+  const only = await pp.$$eval("#p-dots button", (b) => b.map((x) => x.getAttribute("aria-label")));
+  const first = (await pp.textContent(".p-title")).trim();
+  if (!/^TikTok · Top 3/.test(first)) fail(`presentatie without Instagram data starts with "${first}"`);
+  if (errors.length) fail(`site without Instagram data: browser errors: ${errors.join(" | ")}`);
+  console.log(`site without Instagram data: note "${note.slice(0, 40)}…", presentation ${only.length} slides, TikTok only`);
+  await ctx.close();
 }
 
 // Beheer: "Leerlingen zonder Instagram" is only there while somebody lacks a handle. This goes last: it gives students handles.

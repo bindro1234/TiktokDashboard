@@ -1,4 +1,4 @@
-# TikTok-campagne tracker
+# Social Media Campagne tracker
 
 Houdt de statistieken van de klas bij tijdens de Social Media Campagne (28 sept – 30 okt 2026) en toont de stand op een website. De campagne liep eerst op TikTok en is rond 7 okt verhuisd naar **Instagram** (posts, carrousels en reels); beide platforms worden opgehaald.
 
@@ -45,7 +45,7 @@ Bright Data (TikTok- en Instagram-scraper)  →  GitHub Actions (collector/)  �
 | openbaar | `ig_history` | per run per account: volgers, volgend, aantal posts, privé ja/nee en het aantal posts in de campagne |
 | openbaar | `ig_posts` | één rij per post (`post_id`): handle, tijdstip, type (`photo`, `carousel`, `reel`), hashtags, link, eerste en laatste keer gezien |
 | openbaar | `ig_baseline` | per account de eerste geslaagde meting van de volgers (de basislijn voor de ranglijst); wordt alleen aangevuld, nooit aangepast |
-| openbaar | `ig_outliers` | *buiten schaal* voor Instagram (komt in een latere stap in gebruik) |
+| openbaar | `ig_outliers` | *buiten schaal* voor Instagram: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Gemaakt door de collector bij de eerste Instagram-run (vaste `gid` 702500006); de beheerpagina vult hem |
 | openbaar | `finale` | kopie van de huidige finale zonder namen of e-mail: start, deadline, status, gestopt (voor de aftelklok en de Eindstand op de openbare site) |
 
 ### Accounts toevoegen
@@ -187,9 +187,11 @@ Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**,
 - Wisselt automatisch elke 15 seconden:
   1. **Top 3** op een podium;
   2. **de rest van de stand** in pagina's van 10 (plaats 4–13, 14–23, …), met ▲▼ en *+ 24 uur*;
-  3. **grafiek** van de weergaven van de top 8;
-  4. **Stijgers**: de grootste groei in weergaven in de laatste 24 uur.
-- Geen tabbladen en geen beheerdersknoppen; alleen TikTok-handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
+  3. **grafiek** van de top 8;
+  4. **Stijgers**: de grootste groei in de laatste 24 uur.
+
+  Eerst alle dia's van **Instagram** (plaats op *volgers erbij* sinds de eerste meting, met de totale *volgers* ernaast; de grafiek en de stijgers gaan over volgers), daarna dezelfde dia's van **TikTok** (weergaven). De titel zegt welk platform het is (*Instagram · Top 3*). Heeft een platform nog niets om te rangschikken (bijv. vóór de eerste Instagram-run), dan ontbreken zijn dia's. Na de deadline: podium en stand van elk platform.
+- Geen tabbladen en geen beheerdersknoppen; alleen handles. Rechtsboven zit een klein knopje voor **volledig scherm**. De muisaanwijzer verdwijnt na 3 seconden stilstand.
 - **Zelf doorklikken:**
   - klik op een **bolletje** onderaan om naar die dia te springen;
   - **→**, **spatiebalk** of **PageDown**: volgende dia;
@@ -223,14 +225,14 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 
 | Tabblad | Wat |
 |---|---|
-| **Overzicht** | bij twee accounts staat er `@merk + @reclame` met ▸ *2 accounts* om ze apart te zien (zie *Twee accounts*). Bovenaan **Actie nodig**: wie vandaag nog niet gepost heeft, *geen Instagram-handle: niet te controleren*, privé, niet gevonden en dagopdracht niet gehaald, elk met een link naar de leerling. Daaronder alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen* (op Overzicht alleen voor video's die de **laatste 3 dagen** zijn verdwenen, anders blijft dezelfde waarschuwing de hele campagne staan; de leerlingpagina en de Export tonen ze allemaal), *opdracht 2 okt: 3/5*. **Klik op een waarschuwing** voor de details: welke video verdwenen is en sinds wanneer, sinds wanneer een account privé of niet gevonden is. De kaart *Weergaven* toont naast het totaal de **mediaan per leerling**. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
+| **Overzicht** | bovenaan een schakelaar **Instagram / TikTok** (Instagram staat eerst): de stand van dat platform, met zijn eigen kolommen. *Instagram*: plaats op **volgers erbij** sinds de eerste meting van het account, met de **volgers** ernaast en een label *vanaf 12 okt* bij een account dat later is toegevoegd; leerlingen zonder Instagram-account staan onderaan zonder plaats. *TikTok*: zoals altijd op weergaven. Verder: bij twee accounts staat er `@merk + @reclame` met ▸ *2 accounts* om ze apart te zien (zie *Twee accounts*). Bovenaan **Actie nodig**: wie vandaag nog niet gepost heeft, *geen Instagram-handle: niet te controleren*, privé, niet gevonden en dagopdracht niet gehaald, elk met een link naar de leerling. Daaronder alle gevolgde leerlingen met naam en handle, sorteerbaar, met waarschuwingen: *privé*, *niet gevonden*, *nog niet opgehaald*, *X dagen geen post* (2 of meer, vrije dagen tellen niet mee), *video verdwenen* (op Overzicht alleen voor video's die de **laatste 3 dagen** zijn verdwenen, anders blijft dezelfde waarschuwing de hele campagne staan; de leerlingpagina en de Export tonen ze allemaal), *opdracht 2 okt: 3/5*. **Klik op een waarschuwing** voor de details: welke video verdwenen is en sinds wanneer, sinds wanneer een account privé of niet gevonden is. De kaart *Weergaven* toont naast het totaal de **mediaan per leerling**. Geen naam ingevuld = <mark>onbekend</mark>. Na een finale: *Eindstand* |
 | **Vandaag** | wie vandaag nog niet gepost heeft en wie wel (op TikTok of Instagram, met tijd, platform en link naar de post), plus *laatst gecontroleerd* per platform, en de knop **Controleer nu** (zie hieronder) |
 | **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks, gemiste dagen en **opdrachten niet gehaald** (zie *Vrije dagen* en *Dagopdrachten* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, dagopdrachten, gem. weergaven per post, **mediaan per video** (de gewone video: één virale video trekt het gemiddelde omhoog, de mediaan nauwelijks), beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts (TikTok), de **Instagram-posts** en de Instagram-volgers (zie *TikTok en Instagram samen*) |
 | **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam. Met *zonder buiten schaal* |
 | **Hashtags** | zoekveld **Wie gebruikt een hashtag?**, schoolhashtags als knoppen en daaronder de tabel *Meest gebruikt*; alleen Instagram (zie *Hashtags (Instagram)*) |
 | **Opvallend** | video's en accounts om even naar te kijken (zie hieronder) |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
-| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, **Schoolhashtags**, leerling toevoegen (met optionele Instagram-handle), **Instagram-handles** toevoegen of wijzigen en de lijst *Leerlingen zonder Instagram*, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, **schema (de ophaalfrequentie per platform kiezen, met de kosten vooraf)**, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
+| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, **Schoolhashtags**, leerling toevoegen (met optionele Instagram-handle), **Instagram-handles** toevoegen of wijzigen en de lijst *Leerlingen zonder Instagram*, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling en per platform (een knop bij het TikTok-account en een bij het Instagram-account), budget t.o.v. de limiet, **schema (de ophaalfrequentie per platform kiezen, met de kosten vooraf)**, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
 | **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling, ook met `opdrachten_niet_gehaald`, `mediaan_weergaven_per_video` en de Instagram-kolommen (zie *TikTok en Instagram samen*) |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).
@@ -295,12 +297,12 @@ Op **Beheer → Dagopdrachten**: een dag waarop elke leerling minimaal een aanta
 
 ### Buiten schaal (uitschieter)
 
-Heeft één account bijv. 2,3 miljoen weergaven en de rest minder dan 100.000, dan is elke grafiek één lijn met een platte vloer. Zet dat account op **Beheer → Alle leerlingen → Buiten schaal**.
+Heeft één account bijv. 2,3 miljoen weergaven en de rest minder dan 100.000, dan is elke grafiek één lijn met een platte vloer. Zet dat account op **Beheer → Alle leerlingen → Buiten schaal**. Het geldt **per platform**: de knop *Buiten schaal* staat bij het TikTok-account, *Buiten schaal (Instagram)* bij het Instagram-account van de leerling. Staat een account op TikTok buiten schaal, dan telt zijn Instagram-account gewoon mee in de schaal (en andersom), ook als de handle op beide platforms hetzelfde is.
 
 - **Grafieken** (openbaar *Grafiek* en *Groei*, de grafiek in de presentatie): de y-as schaalt zonder dat account. Het staat als grijs **▲** bovenaan met de handle en het echte getal. Ook de balkjes van *Stijgers* (presentatie) en *Video's* schalen zonder het account; dat van het account loopt grijs door tot het eind.
 - **Plaats, podium en tabellen veranderen niet**: het account staat gewoon op zijn echte plaats met zijn echte cijfers.
 - Op de beheerpagina kun je bij *Stijgers* het account weglaten met **zonder buiten schaal** (staat standaard aan zodra er een account gemarkeerd is).
-- Opgeslagen in de openbare tab `outliers` (alleen handles), zodat de openbare site, de beheerpagina en de presentatie het allemaal volgen. Weer aanzetten: dezelfde knop (*In schaal*).
+- Opgeslagen in de openbare tab `outliers` (TikTok) of `ig_outliers` (Instagram), alleen handles, zodat de openbare site, de beheerpagina en de presentatie het allemaal volgen. Weer aanzetten: dezelfde knop (*In schaal*).
 
 ### Opvallend (geen oordeel)
 
@@ -411,19 +413,22 @@ Elk antwoord van de Worker, ook *Geen toegang*, heeft de header `x-deploy-commit
 
 ## Website
 
-Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history`, `posts_latest`, `finale` en `outliers`, en ververst zichzelf elke 10 minuten (tijdens een finale elke 2 minuten). `post_history` wordt alleen geladen voor *Video's* en accountpagina's.
+Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history`, `posts_latest`, `finale` en `outliers` (TikTok) en van `ig_handles`, `ig_history`, `ig_posts`, `ig_baseline` en `ig_outliers` (Instagram), en ververst zichzelf elke 10 minuten (tijdens een finale elke 2 minuten). Kan de site de Instagram-tabbladen niet lezen, dan staat er bij de Instagram-stand een melding en werkt TikTok gewoon. `post_history` wordt alleen geladen voor *Video's* en accountpagina's.
 
-- **Stand**: ranglijst op totaal weergaven, met `+ 24 uur` (vergeleken met de meting van 24 uur eerder; het schuift mee en springt niet terug om middernacht), stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
-- **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen weergaven, volgers, posts en likes, en tussen **Alles / 7 dagen / 48 uur** (met 12 metingen per dag zie je zo het verloop binnen een dag; bij korte periodes staan er ook uren op de as). Overige accounts kunnen grijs erbij. Een account *buiten schaal* staat als grijs ▲ bovenaan met zijn echte getal.
-- **Groei**: erbij per dag of per week (per dag = laatste meting van die dag min die van de dag ervoor), plus de grootste stijgers.
-- **Video's**: *Snelste stijgers*, de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur.
-- **Hashtags**: de meest gebruikte hashtags en de hashtags met de meeste weergaven (van campagneposts), met het aantal accounts. Klik op een hashtag om te zien welke accounts hem gebruiken.
+- **Stand**: **twee ranglijsten onder elkaar, Instagram eerst**. *Instagram*: plaats op **volgers erbij sinds de eerste meting van het account** (de *baseline*: de eerste geslaagde meting, bewaard in `ig_baseline` en daarna nooit meer verschoven), met het totaal aantal **volgers** ernaast en `±` t.o.v. 24 uur eerder. Iedereen begint op 0, dus een kleine account kan winnen. Een account dat later is toegevoegd (zijn baseline is meer dan 90 minuten later dan die van de eerste accounts) krijgt het label *vanaf 12 okt*: zijn winst telt vanaf zijn eigen eerste meting. Gelijke winst = gelijke plaats (gesorteerd op volgers); een account zonder meting (privé of nog niet opgehaald) staat onderaan zonder plaats. *TikTok* eronder, zoals voorheen: ranglijst op totaal weergaven, met `+ 24 uur` (vergeleken met de meting van 24 uur eerder; het schuift mee en springt niet terug om middernacht), stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
+- **Platformschakelaar** (*Instagram | TikTok*, Instagram eerst) op **Grafiek**, **Groei** en de accountpagina's. *Grafiek*, *Groei* en de accountpagina's hebben per platform eigen meetwaarden (Instagram kent geen weergaven of likes). De keuze van accounts (tot 8) onthoudt de site per platform. Een accountlink is `#account/naam` (TikTok) of `#account/ig/naam` (Instagram); de openbare data kent geen koppeling tussen de twee accounts van een leerling, dus de schakelaar op een accountpagina verschijnt alleen als **dezelfde handle** op beide platforms bestaat.
+- **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen (Instagram) volgers erbij, volgers en posts, of (TikTok) weergaven, volgers, posts en likes, en tussen **Alles / 7 dagen / 48 uur** (met 12 metingen per dag zie je zo het verloop binnen een dag; bij korte periodes staan er ook uren op de as). Overige accounts kunnen grijs erbij. Een account *buiten schaal* staat als grijs ▲ bovenaan met zijn echte getal.
+- **Groei**: erbij per dag of per week (per dag = laatste meting van die dag min die van de dag ervoor), plus de grootste stijgers van het gekozen platform (Instagram: volgers en posts erbij).
+- **Video's**: *Snelste stijgers*, de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur. Alleen TikTok (Instagram heeft geen weergaven per post).
+- **Hashtags** (alleen TikTok; die van Instagram staan op de beheerpagina): de meest gebruikte hashtags en de hashtags met de meeste weergaven (van campagneposts), met het aantal accounts. Klik op een hashtag om te zien welke accounts hem gebruiken.
 - **Twee accounts**: een deelnemer met twee accounts staat als `@merk + @reclame` in de stand, met ▸ *2 accounts* voor de cijfers per account; op de accountpagina kies je *beide accounts samen* of één account.
-- **Account**: klik op een account voor details, de eigen hashtags, **weergaven per video over tijd** (de snelste stijger van de laatste 24 uur in oranje) en alle posts.
+- **Account**: klik op een account voor details. *Instagram*: positie, volgers erbij (met de datum van de eerste meting), volgers, posts, grafieken van volgers erbij en volgers, volgers erbij per dag, de hashtags en alle posts (soort en link). *TikTok*: de eigen hashtags, **weergaven per video over tijd** (de snelste stijger van de laatste 24 uur in oranje) en alle posts.
 - **Finale**: bovenaan een aftelklok met LIVE; na de deadline *Eindstand* boven de stand.
 - Knop **▶ Presentatie** rechtsboven: opent de presentatiemodus in een nieuw tabblad.
 
 **Snelheid** (getest met 4× langzamere processor en 10 Mbit/s, met data van het einde van de campagne): presentatie eerste dia ≈ 1,8 s, verversen ≈ 1,2 s; site ≈ 1,7 s. De presentatie laadt `post_history` nooit. Het tabblad *Video's* laadt het wel: aan het eind van de campagne ≈ 5–6 MB, ≈ 7 s de eerste keer (daarna 10 minuten in het geheugen). Wordt dat te traag, dan kan de collector een klein voorberekend tabblad (`video_trends`) schrijven.
+
+**De Instagram-tabbladen op de site (stap 6): geen handmatige stappen.** De vier tabbladen `ig_handles`, `ig_history`, `ig_posts` en `ig_baseline` (en `ig_outliers`) hebben vaste gids (702500002 t/m 702500006) die al in `site/config.js` staan; *Publiceren op internet → Hele document* publiceert ze vanzelf mee, en ze bestaan al sinds de eerste Instagram-run. De workflow *Check website* controleert na elke deploy dat de vier gegevenstabbladen bereikbaar zijn (met de juiste kolommen en CORS); mist er één, dan faalt die. Handmatig hoeft alleen als je de sheet ooit opnieuw publiceert en de link verandert (dan `publishedId` aanpassen).
 
 **Na het toevoegen van een nieuw openbaar tabblad** (eerder `post_history` en `finale`; `outliers` heeft een vaste `gid` en wordt door de collector zelf aangemaakt, dus daarvoor hoeft niets): draai eenmalig **Actions → Collect TikTok stats → `setup`** (geen dry-run). Die maakt de tabbladen aan en zet in de samenvatting hun `gid`; die horen in `site/config.js` onder `gids`.
 

@@ -26,6 +26,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   raw: null, view: "overzicht", detail: null,
   sort: { key: "rank", dir: 1 }, search: "", onlyWarn: false,
+  board: "instagram",    // Overzicht: which platform's standings (Instagram first, TikTok)
   tagSort: "posts", tagQuery: "", tagMissing: false, shDraft: null, accSearch: "", format: "nl",
   videoRange: 24, postHistory: null, finaleCardKey: null,
   warnOpen: null,        // Overzicht: handle whose warning details are shown
@@ -107,6 +108,9 @@ function build(raw) {
   for (const list of igSeries.values()) list.sort((a, b) => a.t - b.t);
   const igBaseline = new Map((raw.igBaseline || []).map((r) => [String(r.handle),
     { t: lib.parseTs(r.baseline_at), followers: lib.toNum(r.baseline_followers) }]));
+  // "Buiten schaal" is set per platform (tab ig_outliers); an account added later has a later baseline (marked in the standings).
+  const igOutliers = new Set(raw.igOutliers || []);
+  const firstBaseline = Math.min(...[...igBaseline.values()].map((b) => b.t).filter((x) => x !== null));
   const igPosts = new Map();
   for (const p of lib.instagramPosts(raw.igPosts)) {
     const h = String(p.handle);
@@ -138,7 +142,8 @@ function build(raw) {
     return { handle, key: lib.instagramKey(handle), platform: "instagram", info, series, cur, posts: list, followers,
       baseline: base && base.t !== null ? base : null,
       gained: base && followers != null && base.followers != null ? followers - base.followers : null,
-      views: 0, gain: null, isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: false,
+      late: Boolean(base && base.t !== null && Number.isFinite(firstBaseline) && base.t - firstBaseline > lib.IG_LATE_MS),
+      views: 0, gain: null, isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: igOutliers.has(handle),
       stats: lib.studentStats(list, cfg, now, tasks, { from: igFrom }) };
   };
   // One row per student; a student with two accounts (main_account) gets both added up. Every
@@ -177,10 +182,13 @@ function build(raw) {
   });
   const sorted = [...students].sort((x, y) => y.views - x.views || x.handle.localeCompare(y.handle));
   sorted.forEach((s, i) => { s.rank = i > 0 && sorted[i - 1].views === s.views ? sorted[i - 1].rank : i + 1; });
+  // Instagram standings: followers gained since each account's baseline (equal gains share a place).
+  const igPlaces = lib.rankInstagram(students.filter((s) => s.ig).map((s) => ({ key: s.handle, gained: s.ig.gained, followers: s.ig.followers })));
+  for (const s of students) s.igRank = igPlaces.get(s.handle) ?? null;
   // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account), and so does
   // "instagram:<handle>" (the Instagram account's own row).
   const byHandle = new Map(students.flatMap((s) => [...s.handles.map((h) => [h, s]), ...(s.ig ? [[s.ig.key, s]] : []), [s.handle, s]]));
-  return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tasks, outliers, settings: raw.settings || { schoolHashtags: [], schoolHashtagsDefault: [] }, series: history,
+  return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tasks, outliers, igOutliers, settings: raw.settings || { schoolHashtags: [], schoolHashtagsDefault: [] }, series: history,
     taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle };
 }
 
@@ -288,30 +296,76 @@ const SORTS = {
   views: (s) => s.views, gain: (s) => s.gain, followers: (s) => s.followers, posts: (s) => s.stats.posts,
   likes: (s) => s.stats.likes, last: (s) => s.stats.last, warnings: (s) => overviewWarnings(s).length,
 };
+// Instagram standings: ranked on followers gained since the account's baseline, with the total followers next to it.
+const SORTS_IG = {
+  rank: (s) => s.igRank, name: SORTS.name, handle: (s) => (s.ig ? s.ig.handle : null),
+  gained: (s) => (s.ig ? s.ig.gained : null), followers: (s) => (s.ig ? s.ig.followers : null),
+  posts: (s) => (s.ig ? s.stats.instagramPosts : null), last: SORTS.last, warnings: SORTS.warnings,
+};
 const DEFAULT_DIR = { rank: 1, name: 1, handle: 1 }; // others start high -> low
+
+// Column headers per platform (Overzicht shows one platform's standings at a time, Instagram first).
+const OV_HEAD = {
+  instagram: `
+    <th class="num" data-sort="rank"><button type="button" class="sort">#</button></th>
+    <th data-sort="name"><button type="button" class="sort">Naam</button></th>
+    <th class="wide-only" data-sort="handle"><button type="button" class="sort">Instagram</button></th>
+    <th class="num" data-sort="gained" title="Volgers erbij sinds de eerste meting van het account"><button type="button" class="sort">Volgers erbij</button></th>
+    <th class="num" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+    <th class="num opt" data-sort="posts" title="Posts op Instagram"><button type="button" class="sort">Posts</button></th>
+    <th class="opt" data-sort="last" title="Laatste post op TikTok of Instagram"><button type="button" class="sort">Laatste post</button></th>
+    <th class="wide-only" data-sort="warnings"><button type="button" class="sort">Let op</button></th>`,
+  tiktok: `
+    <th class="num" data-sort="rank"><button type="button" class="sort">#</button></th>
+    <th data-sort="name"><button type="button" class="sort">Naam</button></th>
+    <th class="wide-only" data-sort="handle"><button type="button" class="sort">Handle</button></th>
+    <th class="num" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
+    <th class="num opt" data-sort="gain"><button type="button" class="sort">+ 24 uur</button></th>
+    <th class="num opt" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+    <th class="num" data-sort="posts" title="Posts op TikTok en Instagram samen"><button type="button" class="sort">Posts</button></th>
+    <th class="num opt" data-sort="likes"><button type="button" class="sort">Likes</button></th>
+    <th class="opt" data-sort="last"><button type="button" class="sort">Laatste post</button></th>
+    <th class="wide-only" data-sort="warnings"><button type="button" class="sort">Let op</button></th>`,
+};
+const BOARDS = { instagram: "Instagram", tiktok: "TikTok" };
 
 function renderOverview(m) {
   const all = m.students;
+  const ig = state.board === "instagram";
   const withWarn = all.filter((s) => overviewWarnings(s).length).length;
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+  const gains = all.filter((s) => s.ig && s.ig.gained != null).map((s) => s.ig.gained);
   $("ov-tiles").innerHTML =
     tile("Leerlingen gevolgd", fmt(all.length), `${m.cfg.campaign.start} t/m ${m.cfg.campaign.end}`)
-    + tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)),
-      all.length ? `mediaan per leerling: <strong>${fmt(Math.round(lib.median(all.map((s) => s.views))))}</strong>` : "")
+    + (ig
+      ? tile("Volgers erbij", signed(gains.reduce((n, g) => n + g, 0)),
+        gains.length ? `mediaan per account: <strong>${signed(Math.round(lib.median(gains)))}</strong>` : "nog geen meting")
+      : tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)),
+        all.length ? `mediaan per leerling: <strong>${fmt(Math.round(lib.median(all.map((s) => s.views))))}</strong>` : ""))
     + tile("Posts", fmt(all.reduce((n, s) => n + s.stats.posts, 0)),
       all.some((s) => s.ig) ? `TikTok ${fmt(all.reduce((n, s) => n + s.stats.tiktokPosts, 0))} · Instagram ${fmt(all.reduce((n, s) => n + s.stats.instagramPosts, 0))}` : "")
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
+
+  // The platform switch and the column headers (they differ per platform).
+  $("ov-board").innerHTML = Object.entries(BOARDS).map(([k, label]) =>
+    `<button type="button" data-board="${k}" aria-pressed="${state.board === k}">${label}</button>`).join("");
+  $("ov-head").innerHTML = `<tr>${OV_HEAD[state.board]}</tr>`;
+  const sorts = ig ? SORTS_IG : SORTS;
+  if (!sorts[state.sort.key]) state.sort = { key: "rank", dir: 1 };
+  const cols = ig ? 8 : 10;
 
   const q = state.search.trim().toLowerCase().replace(/^@/, "");
   let rows = all.filter((s) => (!state.onlyWarn || overviewWarnings(s).length)
     && (!q || s.handles.some((h) => h.includes(q)) || (s.ig && s.ig.handle.toLowerCase().includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
   const { key, dir } = state.sort;
-  const val = SORTS[key];
+  const val = sorts[key];
+  // Ties and unknown values fall back on the place in this platform's standings (Instagram: students without a place last, by name).
+  const place = ig ? (s) => s.igRank ?? Infinity : (s) => s.rank;
   rows = rows.sort((a, b) => {
     const va = val(a), vb = val(b);
-    if (va == null || vb == null) return (va == null) - (vb == null) || a.rank - b.rank;
+    if (va == null || vb == null) return (va == null) - (vb == null) || place(a) - place(b) || byName(a, b);
     const c = typeof va === "string" ? va.localeCompare(vb) : va - vb;
-    return c * dir || a.rank - b.rank;
+    return c * dir || place(a) - place(b) || byName(a, b);
   });
   for (const th of document.querySelectorAll("#ov-table th[data-sort]")) {
     const on = th.dataset.sort === key;
@@ -320,7 +374,19 @@ function renderOverview(m) {
   }
   renderActions(m);
   $("ov-ig-note").hidden = m.igFetched || !all.some((s) => s.ig);
-  $("ov-body").innerHTML = rows.map((s) => `
+  const detail = (s) => (state.warnOpen === s.handle && overviewWarnings(s).length
+    ? `<tr class="warn-detail"><td colspan="${cols}">${warnDetails(s, overviewWarnings(s))}</td></tr>` : "");
+  $("ov-body").innerHTML = (ig ? rows.map((s) => `
+    <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
+      <td class="num strong">${s.igRank ?? "–"}</td>
+      <td>${nameCell(s)}${s.ig && s.ig.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${s.ig ? "@" + esc(s.ig.handle) : "geen Instagram-handle"}</span><span class="phone-only">${warnButtons(s)}</span></td>
+      <td class="handle wide-only">${s.ig ? "@" + esc(s.ig.handle) : `<span class="badge info" title="Zonder Instagram-handle is niet te zien wat deze leerling op Instagram post">geen handle</span>`}</td>
+      <td class="num strong">${s.ig && s.ig.gained != null ? signed(s.ig.gained) : "–"}${igLate(s.ig)}</td>
+      <td class="num">${fmt(s.ig ? s.ig.followers : null)}</td>
+      <td class="num opt">${s.ig ? fmt(s.stats.instagramPosts) : "–"}</td>
+      <td class="opt">${s.stats.lastDay ? dayLabel(s.stats.lastDay) : "–"}</td>
+      <td class="wide-only">${warnButtons(s)}</td>
+    </tr>${detail(s)}`) : rows.map((s) => `
     <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.rank}</td>
       <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${esc(handlesText(s))}</span>${accToggle(s, "phone-only")}<span class="phone-only">${warnButtons(s)}</span></td>
@@ -344,9 +410,13 @@ function renderOverview(m) {
       <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.stats.likes)}</td>
       <td class="opt">${a.stats.lastDay ? dayLabel(a.stats.lastDay) : "–"}</td>
       <td class="wide-only">${accountBadges(a)}</td>
-    </tr>`).join("") : ""}${state.warnOpen === s.handle && overviewWarnings(s).length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s, overviewWarnings(s))}</td></tr>` : ""}`).join("")
-    || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
+    </tr>`).join("") : ""}${detail(s)}`)).join("")
+    || `<tr><td colspan="${cols}">Geen leerlingen gevonden.</td></tr>`;
 }
+
+// "vanaf 12 okt": the Instagram account was added later; its gain counts from its own first measurement.
+const igLate = (ig) => (ig && ig.late
+  ? ` <span class="badge info" title="Later toegevoegd: de volgers erbij tellen vanaf de eerste meting van dit account (${esc(dayLabel(lib.localDay(ig.baseline.t)))}), niet vanaf de start.">vanaf ${esc(shortDay(lib.localDay(ig.baseline.t)))}</span>` : "");
 
 // "▸ 2 accounts": shows or hides the per-account rows of a student with more than one account (two on TikTok, or TikTok and Instagram).
 const accToggle = (s, cls = "") => (s.split ? `<button type="button" class="acc-toggle ${cls}" data-open="${esc(s.handle)}"
@@ -742,17 +812,22 @@ function renderAdmin(m) {
   $("acc-count").textContent = `(${raw.accounts.filter((a) => a.tracked).length} actief, ${raw.accounts.filter((a) => a.active === false).length} inactief)`;
   $("acc-body").innerHTML = accounts.map((a) => {
     const out = a.tracked && m.outliers.has(a.handle);
+    const igOut = a.instagramTracked && m.igOutliers.has(a.instagram);
     const extra = a.tracked && a.group !== a.handle;
     const status = (a.issue ? `<span class="badge bad">${esc(a.issue)}</span>`
       : a.active ? `<span class="badge good">actief</span>` : `<span class="badge info">inactief</span>`)
       + (extra ? ` <span class="badge info" title="Telt samen met het eerste account">tweede account van @${esc(a.group)}</span>` : "")
       + (a.groupIssue ? ` <span class="badge warn" title="${esc(a.groupIssue)}">telt apart</span>` : "")
-      + (out ? ` <span class="badge info">buiten schaal</span>` : "");
+      + (out ? ` <span class="badge info">buiten schaal (TikTok)</span>` : "")
+      + (igOut ? ` <span class="badge info">buiten schaal (Instagram)</span>` : "");
     // "+ account": a second account for this student (only on a tracked first account).
     const add = a.tracked && !extra && !a.main ? `<button type="button" class="btn small" data-add-for="${esc(a.handle)}"
       title="Tweede TikTok-account van deze leerling toevoegen; de weergaven tellen samen">+ account</button>` : "";
     const scale = a.tracked ? `<button type="button" class="btn small" data-outlier="${esc(a.handle)}" data-on="${!out}"
-      title="${out ? "Weer meetellen in de schaal van de grafieken" : "Uit de schaal van de grafieken halen (plaats en cijfers blijven gelijk)"}">${out ? "In schaal" : "Buiten schaal"}</button>` : "";
+      title="${out ? "Weer meetellen in de schaal van de grafieken" : "Uit de schaal van de TikTok-grafieken halen (plaats en cijfers blijven gelijk)"}">${out ? "In schaal" : "Buiten schaal"}</button>` : "";
+    // The same for the student's Instagram account: its own switch (the graphs of each platform have their own scale).
+    const igScale = a.instagramTracked ? `<button type="button" class="btn small" data-outlier="${esc(a.instagram)}" data-platform="instagram" data-on="${!igOut}"
+      title="${igOut ? "Weer meetellen in de schaal van de Instagram-grafieken" : "Uit de schaal van de Instagram-grafieken halen (plaats en cijfers blijven gelijk)"}">${igOut ? "In schaal (Instagram)" : "Buiten schaal (Instagram)"}</button>` : "";
     // A row is identified by its TikTok handle, or (a student with only Instagram) by its Instagram handle.
     const key = a.handle ? `data-handle="${esc(a.handle)}"` : a.instagram ? `data-instagram="${esc(a.instagram)}"` : "";
     const btn = !key ? "" : a.active
@@ -768,7 +843,7 @@ function renderAdmin(m) {
     return `<tr class="${a.active === false ? "inactive" : ""}${a.issue ? " issue-row" : ""}">
       <td class="num">${a.row}</td><td>${a.name ? esc(a.name) : `<mark class="unknown">onbekend</mark>`}</td>
       <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || (a.instagram ? `<span class="meta">alleen Instagram</span>` : "–")}</td>
-      <td class="handle ig">${igCell}</td><td class="st">${status}</td><td class="buttons-cell">${btn} ${scale} ${add}</td></tr>
+      <td class="handle ig">${igCell}</td><td class="st">${status}</td><td class="buttons-cell">${btn} ${scale} ${igScale} ${add}</td></tr>
       ${state.igFor === a.row ? `<tr class="add-row"><td></td><td colspan="5">
         <form class="add-form" data-ig-form="${a.row}" data-was="${esc(a.instagram || "")}" autocomplete="off">
           <label>Instagram-handle van ${a.name ? esc(a.name) : "deze leerling"} <input name="instagram" value="${esc(a.instagramRaw)}" placeholder="@naam of instagram.com/naam"></label>
@@ -1493,6 +1568,13 @@ function openRow(ev, attr, go) {
   if (tr && !ev.target.closest("a, button")) go(tr.getAttribute(attr));
 }
 
+$("ov-board").addEventListener("click", (ev) => {
+  const b = ev.target.closest("button[data-board]");
+  if (!b || b.dataset.board === state.board) return;
+  state.board = b.dataset.board;
+  state.warnOpen = null;
+  renderOverview(model);
+});
 $("ov-table").querySelector("thead").addEventListener("click", (ev) => {
   const th = ev.target.closest("th[data-sort]");
   if (!th) return;
@@ -1665,7 +1747,7 @@ $("acc-body").addEventListener("click", async (ev) => {
   if (scale) {
     scale.disabled = true;
     try {
-      const res = await api("/api/outliers", { handle: scale.dataset.outlier, on: scale.dataset.on === "true" });
+      const res = await api("/api/outliers", { handle: scale.dataset.outlier, platform: scale.dataset.platform || "tiktok", on: scale.dataset.on === "true" });
       flash(res.message, true, "acc-msg");
       await load();
     } catch (err) {

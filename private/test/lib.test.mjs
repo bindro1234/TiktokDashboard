@@ -581,6 +581,26 @@ test("lastTodayCheck: from the activity log (dispatch) or run_log (today_check, 
   assert.equal(lib.lastProfilesRun([{ run_type: "today_check", timestamp: "2026-10-06T10:00:00Z", snapshot_ids: "sd" }]), null);
 });
 
+test("rankInstagram: places on followers gained since the baseline; equal gains share a place; no gain, no place", () => {
+  const places = lib.rankInstagram([
+    { key: "a", gained: 7, followers: 107 }, { key: "b", gained: 12, followers: 132 }, { key: "c", gained: 7, followers: 500 },
+    { key: "d", gained: 0, followers: 90 }, { key: "e", gained: null, followers: 40 }, { key: "f", gained: -2, followers: 10 },
+  ]);
+  // b first; a and c are level on +7 (place 2 for both); d on 0 is place 4; a loss comes after; no baseline yet: no place.
+  assert.deepEqual([...places], [["b", 1], ["c", 2], ["a", 2], ["d", 4], ["f", 5]]);
+  assert.equal(places.has("e"), false);
+  assert.deepEqual([...lib.rankInstagram([])], []);
+  // The same gain with the same followers: stable, by key.
+  assert.deepEqual([...lib.rankInstagram([{ key: "y", gained: 1, followers: 5 }, { key: "x", gained: 1, followers: 5 }])], [["x", 1], ["y", 1]]);
+  // An account whose baseline is more than 90 minutes after the first one was added later.
+  assert.equal(lib.IG_LATE_MS, 90 * 60 * 1000);
+});
+
+test("parseOutliers: Instagram handles use Instagram's own rules", () => {
+  const rows = [{ handle: "@Big.One", buiten_schaal: "ja" }, { handle: "https://www.instagram.com/Other_Acc/?igsh=x", buiten_schaal: "ja" }, { handle: "no.way", buiten_schaal: "nee" }];
+  assert.deepEqual([...lib.parseOutliers(rows, lib.normalizeInstagramHandle)], ["big.one", "other_acc"]);
+});
+
 test("parseOutliers and median", () => {
   assert.deepEqual([...lib.parseOutliers([{ handle: "@Big.One", buiten_schaal: "ja" }, { handle: "x", buiten_schaal: "nee" }, { handle: "", buiten_schaal: "ja" }])], ["big.one"]);
   assert.equal(lib.median([5, 1, 3]), 3);

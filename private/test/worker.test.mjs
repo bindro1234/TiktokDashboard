@@ -440,6 +440,37 @@ test("buiten schaal: one row per handle in the public outliers tab (fixed tab id
   assert.ok(!JSON.stringify(sheets.outliers).includes("Anna"), "handles only in the public sheet");
 });
 
+test("buiten schaal per platform: Instagram has its own tab and switch; the same handle on both platforms is two settings", async () => {
+  // Eva has the same handle on TikTok and Instagram.
+  let res = await req("/api/accounts", { body: { name: "Eva", handle: "eva_t", instagram: "@Eva_T" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  res = await req("/api/outliers", { body: { handle: "@Eva_T", platform: "instagram", on: true } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.match((await res.json()).message, /^Instagram @eva_t staat nu buiten de schaal/);
+  const add = calls.find((c) => c.url.includes(":batchUpdate") && c.body.includes('"ig_outliers"'));
+  assert.equal(JSON.parse(add.body).requests[0].addSheet.properties.sheetId, CONFIG.fixedGids.ig_outliers);
+  assert.deepEqual(sheets.ig_outliers[0], ["handle", "buiten_schaal", "updated_at"]);
+  assert.deepEqual(sheets.ig_outliers[1].slice(0, 2), ["eva_t", "ja"]);
+  assert.equal(sheets.outliers, undefined, "the TikTok tab is not touched");
+  let data = await (await req("/api/data")).json();
+  assert.deepEqual([data.outliers, data.igOutliers], [[], ["eva_t"]]);
+  // Without a platform it is the TikTok account (as before); the Instagram switch stays as it was.
+  assert.equal((await req("/api/outliers", { body: { handle: "eva_t", on: true } })).status, 200);
+  data = await (await req("/api/data")).json();
+  assert.deepEqual([data.outliers, data.igOutliers], [["eva_t"], ["eva_t"]]);
+  // Off again: in place, never a second row, only for that platform.
+  assert.equal((await req("/api/outliers", { body: { handle: "eva_t", platform: "instagram", on: false } })).status, 200);
+  assert.equal(sheets.ig_outliers.length, 2);
+  data = await (await req("/api/data")).json();
+  assert.deepEqual([data.outliers, data.igOutliers], [["eva_t"], []]);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "buiten schaal aan" && r[3] === "Instagram @eva_t"));
+  assert.ok(sheets.activity_log.some((r) => r[2] === "buiten schaal uit" && r[3] === "Instagram @eva_t"));
+  // Only accounts that are followed on that platform: Anna has no Instagram account, nobody has this one.
+  assert.equal((await req("/api/outliers", { body: { handle: "anna_1", platform: "instagram", on: true } })).status, 409);
+  assert.match((await (await req("/api/outliers", { body: { handle: "nobody.ig", platform: "instagram", on: true } })).json()).error, /Instagram @nobody\.ig wordt niet gevolgd/);
+  assert.equal((await req("/api/outliers", { body: { handle: "https://www.instagram.com/p/DeRh47eptOn", platform: "instagram", on: true } })).status, 400);
+});
+
 test("dagopdrachten: add, refuse bad input and doubles, edit, remove (never deleted), logged", async () => {
   const day = CONFIG.campaign.start;
   let res = await req("/api/tasks", { body: { action: "add", date: day, min: 3, label: "Kerstspecial" } });

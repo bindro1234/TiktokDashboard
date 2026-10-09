@@ -700,14 +700,30 @@ export function parseAssignments(rows) {
   return [...byDate.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
-/** Handles marked "buiten schaal" in the public outliers tab. */
-export function parseOutliers(rows) {
+/** Handles marked "buiten schaal" in a public outliers tab (outliers = TikTok, ig_outliers = Instagram: pass its normaliser). */
+export function parseOutliers(rows, normalize = normalizeHandle) {
   const out = new Set();
   for (const r of rows || []) {
-    const { handle } = normalizeHandle(r.handle);
+    const { handle } = normalize(r.handle);
     if (handle && truthy(r.buiten_schaal)) out.add(handle);
   }
   return out;
+}
+
+/** An Instagram account measured this long after the first account got its baseline was added later (same rule as the public site). */
+export const IG_LATE_MS = 90 * 60 * 1000;
+
+/**
+ * Instagram standings: ranked on followers gained since the account's baseline (its first successful measurement),
+ * with the total followers next to it. Equal gains share a place (listed by followers); rows without a gain have no place.
+ * rows: [{ key, gained, followers }] -> Map(key -> place)
+ */
+export function rankInstagram(rows) {
+  const ranked = rows.filter((r) => r.gained != null)
+    .sort((a, b) => b.gained - a.gained || (b.followers ?? 0) - (a.followers ?? 0) || String(a.key).localeCompare(String(b.key)));
+  const places = new Map();
+  ranked.forEach((r, i) => places.set(r.key, i > 0 && ranked[i - 1].gained === r.gained ? places.get(ranked[i - 1].key) : i + 1));
+  return places;
 }
 
 export function median(values) {
