@@ -347,7 +347,20 @@ const sumOk = await page.evaluate(() => {
 });
 if (!sumOk) fail("overzicht: Anna's views are not the sum of her two accounts");
 await page.click('#ov-body td.wide-only button[data-open="test_01"]');
-for (const w of ["privé", "niet gevonden", "verdwenen", "geen post", "privé (Instagram)", "niet gevonden (Instagram)", "privé (TikTok)"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+for (const w of ["privé", "niet gevonden", "verdwenen", "privé (Instagram)", "niet gevonden (Instagram)", "privé (TikTok)"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+// Instagram has started and most students have no (valid) handle: for them "geen Instagram-handle" replaces "dagen geen post"
+// (test_04 stopped posting on TikTok on 4 Oct but may post on Instagram), and nobody else is warned about silence.
+const noHandleCount = [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((g) => !g.instagram).length;
+{
+  const quiet = await page.textContent('#ov-body tr[data-handle="test_04"]');
+  if (!quiet.includes("geen Instagram-handle") || /geen post/.test(quiet)) fail(`overzicht: student without a handle who stopped posting wrong (${quiet.replace(/\s+/g, " ").slice(0, 160)})`);
+  const flagged = await page.$$eval("#ov-body tr[data-handle]", (r) => r.filter((x) => x.textContent.includes("geen Instagram-handle")).length);
+  if (flagged !== noHandleCount) fail(`overzicht: ${flagged} rows with "geen Instagram-handle", expected ${noHandleCount}`);
+  if (/geen post/.test(text)) fail("overzicht: a 'geen post' warning although everybody quiet lacks an Instagram handle");
+  const handleOf = await page.$eval('#ov-body tr[data-handle="test_04"]', (r) => r.querySelector('button[data-warn]').textContent);
+  if (!handleOf) fail("overzicht: no clickable warning on the student without a handle");
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-overzicht-nohandle-1280px.png`, fullPage: true });
+}
 // Pim has only Instagram: a row with the Instagram handle, no TikTok handle.
 const pimRow = await page.textContent('#ov-body tr[data-handle="instagram:pim.only"]');
 if (!pimRow.includes("IG @pim.only") || pimRow.includes("@test")) fail(`overzicht: Instagram-only student wrong (${pimRow.slice(0, 120)})`);
@@ -374,6 +387,12 @@ if (Math.abs(worstChip) > 2) fail(`overzicht: handles in Actie nodig are ${worst
 // Actie nodig, median, clickable warnings (which video, since when).
 const actions = await page.textContent("#ov-actions");
 for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet gehaald", "Dagopdracht vandaag"]) if (!actions.includes(w)) fail(`overzicht: Actie nodig has no "${w}"`);
+{
+  const group = await page.$eval('#ov-actions .action-group:has(a[href="#beheer/instagram"])', (g) => g.textContent.replace(/\s+/g, " "));
+  if (!group.includes("Geen Instagram-handle: niet te controleren") || !group.includes(`(${noHandleCount})`) || !group.includes("Handles invullen")) fail(`overzicht: Actie nodig group for missing handles wrong (${group.slice(0, 160)})`);
+  const todoGroup = await page.$eval("#ov-actions", (a) => [...a.querySelectorAll(".action-group")].filter((g) => /Nog niet gepost vandaag|Dagopdracht vandaag/.test(g.querySelector("h3").textContent)).map((g) => g.textContent).join(" "));
+  if (todoGroup.includes("Dewi")) fail("overzicht: a student without a handle is listed as 'nog niet gepost vandaag'");
+}
 if (!/mediaan per leerling/.test(await page.textContent("#ov-tiles"))) fail("overzicht: no median next to the total");
 await page.click('#ov-body td.wide-only button[data-warn]:text("verdwenen")');
 const detail = await page.textContent("#ov-body tr.warn-detail");
@@ -426,6 +445,24 @@ if (merge.subs !== 3 || merge.bad) fail(`leerlingen: accounts not combined right
   if (!/nog niet gevolgd/.test(pimTitle)) fail(`leerlingen: Pim's first day has no explanation (${pimTitle})`);
   if (!(await page.textContent("#ll-content .legend-row")).includes("Stories worden niet meegeteld.")) fail("leerlingen: no note about stories");
 }
+// No Instagram handle: since the Instagram start a day without a post is "niet te controleren" (striped), not "gemist";
+// before it, and on days with a post, nothing changes. Students with a handle have no such cells.
+{
+  const days = lib.campaignDays(CFG);
+  const dewi = lib.studentStats(posts.filter((p) => p.handle === "test_04"), CFG, NOW, tasks, { unknownFrom: IG_START });
+  const classes = await page.$$eval('.heat tr[data-handle="test_04"] td.day', (c) => c.map((x) => x.className.split(/\s+/)));
+  const unknownDays = days.filter((d, i) => classes[i].includes("unverified")), missedDays = days.filter((d, i) => classes[i].includes("miss"));
+  if (!dewi.unknownList.length || unknownDays.join() !== dewi.unknownList.join()) fail(`leerlingen: "niet te controleren" cells ${unknownDays} vs ${dewi.unknownList}`);
+  if (missedDays.join() !== dewi.missedList.join() || missedDays.some((d) => d >= IG_START)) fail(`leerlingen: missed cells of a student without a handle ${missedDays} (all before ${IG_START}?)`);
+  const title = await page.$eval(`.heat tr[data-handle="test_04"] td.day:nth-child(${days.indexOf(dewi.unknownList[0]) + 2})`, (c) => c.title);
+  if (!/geen Instagram-handle: niet te controleren/.test(title)) fail(`leerlingen: tooltip of an unknown day (${title})`);
+  const withHandle = await page.$$eval('.heat tr[data-handle="test_03"] td.unverified, .heat tr[data-handle="test_01"]:not(.sub-row) td.unverified', (c) => c.length);
+  if (withHandle) fail(`leerlingen: ${withHandle} "niet te controleren" cells for students with a handle`);
+  if (!(await page.textContent(".legend-row")).includes("niet te controleren (geen Instagram-handle)")) fail("leerlingen: no legend entry for unknown days");
+  const gemist = await page.$eval('.heat tr[data-handle="test_04"]', (tr) => tr.querySelector("td.num:nth-last-child(3)")?.textContent);
+  console.log(`leerlingen: Dewi (no handle) ${dewi.unknownList.length} days niet te controleren, ${dewi.missedList.length} gemist (${gemist})`);
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-kalender-nohandle-1280px.png`, fullPage: true });
+}
 if (!missCells) fail("leerlingen: no missed days marked");
 if (!offCells || offMissed) fail(`leerlingen: free days wrong (${offCells} vrij, ${offMissed} weekend cells marked gemist)`);
 const taskCells = await page.$$eval(".heat td.task-miss", (c) => c.map((x) => x.textContent));
@@ -472,6 +509,21 @@ const pimTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) 
 const pimLinks = await page.$$eval("#ll-content .detail-head a", (a) => a.map((x) => x.textContent.trim()));
 if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only op Instagram ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
 if ((await page.$$eval("#st-ig-posts tbody tr", (r) => r.length)) !== igPosts.filter((p) => p.handle === "pim.only").length) fail("student detail: Pim's Instagram posts not all listed");
+await page.evaluate(() => { location.hash = "leerlingen/test_04"; });
+await page.waitForSelector(".cal");
+{
+  const dewi = lib.studentStats(posts.filter((p) => p.handle === "test_04"), CFG, NOW, tasks, { unknownFrom: IG_START });
+  const unk = await page.$$eval(".cal .d.unverified", (d) => d.map((x) => x.textContent));
+  if (unk.length !== dewi.unknownList.length || !unk.every((t) => t.includes("?"))) fail(`student detail: ${unk.length} unknown calendar days (${unk.join("|")}), expected ${dewi.unknownList.length}`);
+  const tile = await page.$eval("#ll-content .tile:has(.label:text('Gemiste dagen'))", (t) => t.textContent.replace(/\s+/g, " "));
+  if (!tile.includes(` ${dewi.missedDays} `) && !tile.includes(`${dewi.missedDays}tot`) || !tile.includes(`${dewi.unknownDays} dagen niet te controleren (geen Instagram-handle)`)) fail(`student detail: missed-days tile (${tile})`);
+  const hint = await page.textContent("#ll-content .card .hint:has-text('Niet te controleren')");
+  if (!hint.includes("geen Instagram-handle")) fail("student detail: no list of the days that can't be checked");
+  const warn = await page.textContent("#ll-content .warn-list");
+  if (!warn.includes("geen Instagram-handle") || !warn.includes("Laatste TikTok-post") || !(await page.$('#ll-content .warn-list a[href="#beheer/instagram"]'))) fail(`student detail: warning without the explanation or the link (${warn.slice(0, 160)})`);
+  const badges = await page.$$eval("#ll-content .detail-head .badge", (b) => b.map((x) => x.textContent));
+  if (badges.some((t) => /geen post/.test(t)) || !badges.includes("geen Instagram-handle")) fail(`student detail: badges of a student without a handle (${badges.join("|")})`);
+}
 await page.evaluate(() => { location.hash = "leerlingen/test_01"; });
 await page.waitForSelector(".cal");
 
@@ -486,6 +538,23 @@ if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${c
 if (!/^(\d+) accounts, \1 records \((\d+) TikTok, 1 Instagram\)$/.test(cost)) fail(`vandaag: cost does not split TikTok and Instagram (${cost})`);
 if (!(await page.textContent("#view-vandaag")).includes("TikTok- én Instagram-accounts")) fail("vandaag: the hint does not say that Instagram is fetched too");
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
+// No Instagram handle and nothing on TikTok today: "niet te controleren", in a group of their own with a link to the handle form,
+// not under "nog niet gepost". Together the four lists hold every student once.
+{
+  const v = await page.evaluate(() => {
+    const names = (id) => [...document.querySelectorAll(`#${id} li`)].map((li) => li.textContent.replace(/\s+/g, " ").trim());
+    return { n: document.getElementById("td-nohandle-n").textContent, hidden: document.getElementById("td-nohandle-card").hidden, list: names("td-nohandle"),
+      todo: names("td-todo"), done: names("td-done"), priv: names("td-priv"), link: document.querySelector('#td-nohandle-card a[href="#beheer/instagram"]')?.textContent,
+      title: document.querySelector("#td-nohandle-card h3").textContent.replace(/\s+/g, " ").trim() };
+  });
+  const dewiLine = v.list.find((t) => t.startsWith("Dewi"));
+  if (v.hidden || !dewiLine || v.todo.some((t) => t.startsWith("Dewi"))) fail(`vandaag: Dewi (no handle, stopped posting) not in the "niet te controleren" group (${JSON.stringify(v)})`);
+  if (!/laatste TikTok-post/.test(dewiLine) || !v.link || !/^Geen Instagram-handle: niet te controleren \(\d+\)$/.test(v.title)) fail(`vandaag: group text wrong (${dewiLine} / ${v.link} / ${v.title})`);
+  if (Number(v.n) !== v.list.length) fail("vandaag: group count differs from its list");
+  if (v.list.length + Number(todayCounts[0]) + Number(todayCounts[1]) + Number(todayCounts[2]) !== students) fail(`vandaag: lists do not add up to ${students} students (${v.list.length}/${todayCounts.join("/")})`);
+  console.log(`vandaag: ${v.list.length} students "niet te controleren" (no Instagram handle), todo ${todayCounts[0]}`);
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-vandaag-nohandle-1280px.png`, fullPage: true });
+}
 // Pim (only Instagram) posted twice today on Instagram: done (dagopdracht 2), with the platform and a link to the post.
 const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram%3Apim.only"])', (li) => ({ text: li.textContent.replace(/\s+/g, " "), href: li.querySelector('a[target]')?.href }));
 if (!/2\/2/.test(pimToday.text) || !/op Instagram/.test(pimToday.text) || !pimToday.href?.startsWith("https://www.instagram.com/")) fail(`vandaag: Instagram-only student wrong (${JSON.stringify(pimToday)})`);
@@ -648,6 +717,27 @@ await page.waitForFunction(() => /opgeslagen/.test(document.getElementById("ig-m
 const quick = posted.find((p) => p.url === "/api/accounts/instagram");
 if (!quick || quick.body.handle !== "@Quick.IG" || quick.body.was !== "") fail(`beheer: quick Instagram did not post right (${JSON.stringify(quick && quick.body)})`);
 await page.waitForFunction((n) => document.querySelectorAll("#ig-missing form[data-ig-quick]").length === n, wantMissing - 1);
+// With the handle filled in, the same student is judged again: "dagen geen post" is back, the "niet te controleren" days
+// turn into "gemist", and the missing-handle warning is gone (Dewi stopped posting on TikTok on 4 Oct).
+{
+  const fresh = await open({ width: 1280, height: 900 }, "#overzicht");
+  await fresh.waitForSelector('#ov-body tr[data-handle="test_04"]');
+  const row = await fresh.textContent('#ov-body tr[data-handle="test_04"]');
+  if (!/dagen geen post/.test(row) || row.includes("geen Instagram-handle")) fail(`overzicht: student with a new handle still treated as without (${row.replace(/\s+/g, " ").slice(0, 160)})`);
+  const flagged = await fresh.$$eval("#ov-body tr[data-handle]", (r) => r.filter((x) => x.textContent.includes("geen Instagram-handle")).length);
+  if (flagged !== noHandleCount - 1) fail(`overzicht: ${flagged} students flagged after one handle was added, expected ${noHandleCount - 1}`);
+  await fresh.evaluate(() => { location.hash = "leerlingen"; });
+  await fresh.waitForSelector(".heat tbody tr");
+  const again = await fresh.$$eval('.heat tr[data-handle="test_04"] td.day', (c) => ({ unknown: c.filter((x) => x.classList.contains("unverified")).length, miss: c.filter((x) => x.classList.contains("miss")).length }));
+  const dewiNow = lib.studentStats(posts.filter((p) => p.handle === "test_04"), CFG, NOW, tasks);
+  if (again.unknown || again.miss !== dewiNow.missedList.length || again.miss < 3) fail(`leerlingen: Dewi with a handle: ${JSON.stringify(again)}, expected ${dewiNow.missedList.length} missed and none unknown`);
+  await fresh.evaluate(() => { location.hash = "vandaag"; });
+  await fresh.waitForSelector("#td-todo li");
+  const todo = await fresh.textContent("#td-todo");
+  if (!todo.includes("Dewi")) fail("vandaag: Dewi, now with a handle, is not under 'nog niet gepost'");
+  console.log(`beheer: after filling in a handle Dewi is judged again (${again.miss} gemist, "dagen geen post" back)`);
+  await fresh.close();
+}
 // Change an existing handle from the table (was = the current one).
 await page.click('#acc-body button[data-ig-edit="2"]');
 await page.fill('#acc-body form[data-ig-form] [name=instagram]', "anna.new");
@@ -704,6 +794,19 @@ const chrisIg = igPosts.filter((p) => p.handle === "chris.ig").length;
 if (col("instagram_handle") !== "'@chris.ig" || col("instagram_posts") !== String(chrisIg) || col("instagram_volgers_sinds_start") !== "7") fail(`export: Chris's Instagram columns wrong (${col("instagram_handle")}, ${col("instagram_posts")}, ${col("instagram_volgers_sinds_start")})`);
 if (Number(col("posts")) !== Number(col("tiktok_posts")) + chrisIg) fail("export: posts is not TikTok + Instagram");
 if (!lines.find((l) => l.startsWith("Pim;;")) && !lines.find((l) => l.startsWith("Pim;"))) fail("export: Instagram-only student missing");
+if (!lines[0].includes("dagen_niet_te_controleren")) fail("export: no dagen_niet_te_controleren column");
+{
+  // A student who still has no handle and has days without a post since the Instagram start (Dewi got one on Beheer above).
+  const pick = tracked.map((h, i) => ({ h, name: names[i], st: lib.studentStats(posts.filter((p) => p.handle === h), CFG, NOW, tasks, { unknownFrom: IG_START }) }))
+    .find((x) => x.name && x.h !== "test_04" && x.h !== "test_12" && x.st.unknownDays > 0 && !accountsSheet.find((r) => r.tiktok_handle.replace("@", "") === x.h)?.instagram_handle);
+  if (!pick) fail("fixture: no student without a handle has days that can't be checked");
+  else {
+    const line = cells(lines.find((l) => l.startsWith(pick.name + ";")));
+    const got = [line[head.indexOf("dagen_niet_te_controleren")], line[head.indexOf("gemiste_dagen")]].join("/");
+    if (got !== `${pick.st.unknownDays}/${pick.st.missedDays}`) fail(`export: ${pick.name} (no handle) unknown/missed days ${got}, expected ${pick.st.unknownDays}/${pick.st.missedDays}`);
+    if (!line[head.indexOf("let_op")].includes("geen Instagram-handle")) fail("export: let_op has no 'geen Instagram-handle'");
+  }
+}
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
 if (page.errors.length) fail(`browser errors: ${page.errors.join(" | ")}`);

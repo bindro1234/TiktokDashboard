@@ -115,16 +115,17 @@ function build(raw) {
   // "+ 24 uur": compared with the run of ~24 hours earlier (rolling, runs are every 2 hours).
   const target = latest - DAY_MS + 45 * 60 * 1000;
   // Numbers of one series (an account, or a student's accounts added up).
-  const numbers = (series, postList) => {
+  const numbers = (series, postList, opts = {}) => {
     const cur = series.at(-1) || null;
     let base = null;
     for (let i = series.length - 1; i >= 0; i--) if (series[i].t <= target) { base = series[i]; break; }
     return { series, cur, views: cur ? cur.views : 0, gain: cur && base ? cur.views - base.views : null,
-      followers: cur ? cur.followers : null, posts: postList, stats: lib.studentStats(postList, cfg, now, tasks) };
+      followers: cur ? cur.followers : null, posts: postList, stats: lib.studentStats(postList, cfg, now, tasks, opts) };
   };
   // Instagram was not followed before its start date: for the Instagram account alone, and for a student without
   // TikTok, those days are neither missed nor part of the streak.
   const igFrom = cfg.instagram?.startDate || null;
+  const igStarted = Boolean(igFrom) && lib.localDay(now) >= igFrom;
   // The Instagram account of a student, shaped like a TikTok account (stats, posts, info, series) plus its followers.
   const igAccount = (handle) => {
     const info = igInfo.get(handle) || null;
@@ -143,9 +144,13 @@ function build(raw) {
   // student keeps `accounts` (the TikTok accounts): the numbers per account, for the "per account" dropdowns.
   // A student can also have one Instagram account (`ig`) or only that (no TikTok accounts).
   const students = [...lib.groupAccounts(raw.accounts).values()].map((g) => {
+    // A student without a (valid) Instagram handle, once Instagram has started: their Instagram posts are invisible,
+    // so a day without a TikTok post is "niet te controleren" instead of "gemist".
+    const noHandle = igStarted && !g.instagram;
+    const unk = noHandle ? { unknownFrom: igFrom } : {};
     const accounts = g.accounts.map((a) => {
       const info = handleInfo.get(a.handle) || null;
-      return { ...a, key: a.handle, info, ...numbers(history.get(a.handle) || [], posts.get(a.handle) || []),
+      return { ...a, key: a.handle, info, ...numbers(history.get(a.handle) || [], posts.get(a.handle) || [], unk),
         isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: outliers.has(a.handle) };
     });
     const ig = g.instagram ? igAccount(g.instagram) : null;
@@ -155,7 +160,8 @@ function build(raw) {
     const s = {
       ...main, name: g.name, handle: g.key, handles: accounts.map((a) => a.handle), accounts, multi, ig, parts,
       split: parts.length > 1,
-      ...(multi ? numbers(lib.mergeSeries(accounts.map((a) => a.series)), accounts.flatMap((a) => a.posts)) : {}),
+      ...(multi ? numbers(lib.mergeSeries(accounts.map((a) => a.series)), accounts.flatMap((a) => a.posts), unk) : {}),
+      noHandle,
       isPrivate: parts.some((a) => a.isPrivate), isOutlier: accounts.some((a) => a.isOutlier),
       // The student's one Instagram account (tracked), the first row it is typed on, and what that cell holds now.
       instagram: g.instagram, instagramRow: g.instagramRow, instagramIssue: g.instagramIssue,
@@ -217,8 +223,16 @@ function warnings(s, cfg, now, igFetched = true) {
   }
   const anyInfo = s.accounts.some((a) => a.info) || Boolean(s.ig?.info);
   const today = lib.localDay(now);
-  // Counted in days on which posting is expected: weekends and holidays (off_days) are left out.
-  if (anyInfo && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
+  if (s.noHandle) {
+    const since = shortDay(cfg.instagram.startDate);
+    out.push({ cls: "warn", kind: "nohandle", text: "geen Instagram-handle", title: "Niet te controleren op Instagram",
+      detail: `${s.instagramIssue ? `De Instagram-handle is niet geldig (${esc(s.instagramIssue)})` : "Er is geen Instagram-handle ingevuld"}, dus wat deze leerling op Instagram post is niet te zien. `
+        + `Dagen sinds ${since} zonder TikTok-post tellen daarom niet als gemist en er komt geen waarschuwing «dagen geen post». `
+        + `${s.stats.last ? `Laatste TikTok-post: ${stampFmt.format(s.stats.last)}.` : "Nog geen TikTok-post gezien."} <a href="#beheer/instagram">Handle invullen →</a>` });
+  }
+  // Counted in days on which posting is expected: weekends and holidays (off_days) are left out. Not for a student
+  // without an Instagram handle: after a quiet spell on TikTok we can't tell whether they post on Instagram.
+  if (anyInfo && !s.noHandle && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
     out.push({ cls: "warn", kind: "quiet", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
       title: s.ig ? "Weekenden en vakantiedagen tellen niet mee; TikTok en Instagram tellen allebei" : "Weekenden en vakantiedagen tellen niet mee",
       detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}${s.ig ? ` op ${PLATFORM_NL[s.stats.lastPlatform]}` : ""}. Weekenden en vakantiedagen tellen niet mee. Een post op TikTok of Instagram telt.`
@@ -334,7 +348,7 @@ const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">privé</spa
 
 // Vandaag (Amsterdam) for every tracked student: posts today, required (1 or the dagopdracht), done.
 function todayOf(m) {
-  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.allPosts,
+  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.allPosts, noHandle: s.noHandle,
     accounts: s.parts.map((a) => ({ handle: a.handle, isPrivate: a.isPrivate, platform: a.platform || "tiktok" })) })),
     m.tasks, m.now);
   st.byHandle = new Map(st.rows.map((r) => [r.handle, r]));
@@ -348,7 +362,7 @@ function renderActions(m) {
   const groups = [];
   const today = todayOf(m);
   if (today.inCampaign && (!today.offDay || today.task)) {
-    const todo = m.students.filter((s) => { const r = today.byHandle.get(s.handle); return r && !r.done && !r.private; }).sort(byName);
+    const todo = m.students.filter((s) => { const r = today.byHandle.get(s.handle); return r && !r.done && !r.private && !r.noHandle; }).sort(byName);
     if (todo.length) {
       groups.push({ title: today.task ? `Dagopdracht vandaag nog niet gehaald (minimaal ${today.task.min})` : "Nog niet gepost vandaag",
         more: `<a href="#vandaag">Naar Vandaag →</a>`,
@@ -356,6 +370,12 @@ function renderActions(m) {
     }
   }
   const pick = (kind) => m.students.filter((s) => s.warnings.some((w) => w.kind === kind)).sort(byName);
+  // Instagram can't be checked without a handle; filling the handles in is the action.
+  const noHandle = pick("nohandle");
+  if (noHandle.length) {
+    groups.push({ title: "Geen Instagram-handle: niet te controleren", more: `<a href="#beheer/instagram">Handles invullen →</a>`,
+      items: noHandle.map((s) => studentLink(s)) });
+  }
   for (const [kind, title] of [["private", "Privé"], ["notfound", "Niet gevonden"]]) {
     const list = pick(kind);
     if (list.length) groups.push({ title, items: list.map((s) => studentLink(s)) });
@@ -381,7 +401,7 @@ function dayCellClass(s, day, today, cfg) {
   const task = s.stats.tasks.find((t) => t.date === day);
   const taskCls = task ? (task.status === "missed" ? " task task-miss" : " task") : "";
   if (day > today) return (off ? "future off" : "future") + taskCls;
-  return [n ? heatClass(n) : off ? "off" : day < today ? "miss" : "", day === today ? "today" : ""].filter(Boolean).join(" ") + taskCls;
+  return [n ? heatClass(n) : off ? "off" : day < today ? (s.stats.isUnknown(day) ? "unverified" : "miss") : "", day === today ? "today" : ""].filter(Boolean).join(" ") + taskCls;
 }
 
 // Cell text: number of posts (2+), or "posts/minimum" on a dagopdracht day.
@@ -389,6 +409,7 @@ function dayCellText(s, day, today, always = false) {
   const n = s.stats.perDay.get(day) || 0;
   const task = s.stats.tasks.find((t) => t.date === day);
   if (task) return day > today ? `/${task.min}` : `${n}/${task.min}`;
+  if (!n && day < today && s.stats.isUnknown(day)) return always ? "?" : "";
   return day > today ? "" : always || n > 1 ? String(n) : "";
 }
 
@@ -398,6 +419,7 @@ function dayTitle(cfg, day, n, task = null, on = null, stats = null) {
   const free = stats ? stats.offName(day) : lib.offDayName(cfg, day);
   const split = on && n ? ` (${[on.tiktok && `${on.tiktok} op TikTok`, on.instagram && `${on.instagram} op Instagram`].filter(Boolean).join(", ")})` : "";
   return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${split}${free ? ` (vrij: ${free})` : ""}`
+    + (!n && stats?.isUnknown(day) ? " · geen Instagram-handle: niet te controleren" : "")
     + (task ? ` · dagopdracht: minimaal ${task.min}${task.label ? ` (${task.label})` : ""}` : "");
 }
 
@@ -425,7 +447,7 @@ function renderStudents(m) {
   $("ll-content").innerHTML = `
     <div class="legend-row">
       <span><span class="sw p1"></span>1 post</span><span><span class="sw p2"></span>2</span><span><span class="sw p3"></span>3+</span>
-      <span><span class="sw miss"></span>gemist</span><span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
+      <span><span class="sw miss"></span>gemist</span>${list.some((s) => s.stats.unknownDays) ? `<span><span class="sw unverified"></span>niet te controleren (geen Instagram-handle)</span>` : ""}<span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
       <span>Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</span>
       ${m.tasks.length ? `<span><span class="sw task-miss"></span>dagopdracht niet gehaald (posts/minimum)</span>` : ""}
       <span>Dagen volgens Nederlandse tijd. Vandaag telt nog niet als gemist.</span>
@@ -507,10 +529,11 @@ function renderStudent(m, handle) {
       ${showTT ? tile("Positie", s.rank, `van ${m.students.length}`) : ""}
       ${showTT ? tile(tt("Weergaven"), fmt(v.views), v.gain == null ? "" : `${signed(v.gain)} in 24 uur`) : ""}
       ${tile("Posts", fmt(st.posts), postsLine)}
-      ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren, zonder vrije dagen")}
+      ${tile("Gemiste dagen", fmt(st.missedDays), `tot en met gisteren, zonder vrije dagen${st.unknownDays ? `; ${st.unknownDays} dag${st.unknownDays === 1 ? "" : "en"} niet te controleren (geen Instagram-handle)` : ""}`)}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
-      ${st.tasks.length ? tile("Dagopdrachten", `${st.tasks.filter((t) => t.status === "reached").length}/${st.tasks.filter((t) => t.status !== "pending").length}`,
-        st.tasksMissed ? `niet gehaald: ${st.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : "gehaald") : ""}
+      ${st.tasks.length ? tile("Dagopdrachten", `${st.tasks.filter((t) => t.status === "reached").length}/${st.tasks.filter((t) => ["reached", "missed"].includes(t.status)).length}`,
+        [st.tasksMissed ? `niet gehaald: ${st.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : "gehaald",
+          st.tasks.some((t) => t.status === "unknown") ? `niet te controleren: ${st.tasks.filter((t) => t.status === "unknown").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : ""].filter(Boolean).join("; ")) : ""}
       ${showTT ? tile("Gem. weergaven/post", fmt(st.avgViews)) : ""}
       ${showTT ? tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee") : ""}
       ${showTT ? tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven") : ""}
@@ -524,6 +547,7 @@ function renderStudent(m, handle) {
         <h3 style="margin-top:0">Kalender</h3>
         <div class="cal">${["ma", "di", "wo", "do", "vr", "za", "zo"].map((d) => `<div class="dow">${d}</div>`).join("")}${cells.join("")}</div>
         ${st.missedList.length ? `<p class="hint">Gemist: ${st.missedList.map((d) => shortDate.format(Date.parse(d + "T00:00:00Z"))).join(", ")}</p>` : ""}
+        ${st.unknownList.length ? `<p class="hint">Niet te controleren (geen Instagram-handle): ${st.unknownList.map((d) => shortDate.format(Date.parse(d + "T00:00:00Z"))).join(", ")}</p>` : ""}
         ${ig ? `<p class="hint">Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</p>` : ""}
       </div>
       <div class="card">
@@ -846,7 +870,9 @@ function renderTasks(m) {
   $("task-body").innerHTML = tasks.map((t) => {
     const judged = m.students.map((s) => s.stats.tasks.find((x) => x.date === t.date)).filter(Boolean);
     const missed = judged.filter((x) => x.status === "missed").length;
-    const result = t.date < today ? `${judged.length - missed} gehaald, ${missed} niet` : t.date === today ? "vandaag" : "komt nog";
+    const unknown = judged.filter((x) => x.status === "unknown").length;
+    const result = t.date < today ? `${judged.filter((x) => x.status === "reached").length} gehaald, ${missed} niet${unknown ? `, ${unknown} niet te controleren` : ""}`
+      : t.date === today ? "vandaag" : "komt nog";
     return `<tr${state.taskEdit === t.row ? ' class="editing"' : ""}><td>${esc(dayLabel(t.date))}</td><td class="num">${t.min}</td><td>${esc(t.label) || "–"}</td>
       <td class="meta">${result}</td>
       <td class="buttons-cell"><button type="button" class="btn small" data-task-edit="${t.row}">Wijzig</button>
@@ -1165,9 +1191,9 @@ function renderToday(m) {
   const where = (s, p) => (p.platform === "instagram" ? " op Instagram" : s.ig ? ` op TikTok${s.multi ? " @" + esc(p.handle) : ""}` : s.multi ? ` op @${esc(p.handle)}` : "");
   const href = (p) => (p.platform === "instagram" ? instagramPost(p) : tiktok(p.handle, p.video_id));
   const sorted = [...m.students].sort(byName);
-  const todo = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return !r.done && !r.private; });
-  const done = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return r.done && !r.private; });
-  const priv = sorted.filter((s) => st.byHandle.get(s.handle).private);
+  const groups = lib.todayGroups(st);
+  const pick = (rows) => { const keys = new Set(rows.map((r) => r.handle)); return sorted.filter((s) => keys.has(s.handle)); };
+  const todo = pick(groups.todo), done = pick(groups.done), priv = pick(groups.priv), noHandle = pick(groups.unverifiable);
   const mark = (s) => {
     const r = st.byHandle.get(s.handle);
     return st.task ? `<span class="badge ${r.done ? "good" : "warn"}">${r.count}/${st.task.min}</span>` : r.done ? `<span class="tick" aria-label="gepost">✓</span>` : "";
@@ -1195,6 +1221,11 @@ function renderToday(m) {
   $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span></li>`).join("")
     || `<li class="meta">Geen.</li>`;
   $("td-priv-card").hidden = !priv.length;
+  // No Instagram handle and nothing on TikTok today: can't tell, so not "nog niet gepost".
+  $("td-nohandle-n").textContent = noHandle.length;
+  $("td-nohandle").innerHTML = noHandle.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}${
+    s.stats.last ? ` · laatste TikTok-post ${esc(dayLabel(s.stats.lastDay))}` : ""}</span></li>`).join("");
+  $("td-nohandle-card").hidden = !noHandle.length || !st.inCampaign;
   // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
   const n = lib.todayTargets(st).length;
   const next = raw.lastTodayCheck ? raw.lastTodayCheck + cool * 60e3 : 0;
@@ -1286,8 +1317,8 @@ function renderSignals(m) {
 // ---------- Export ----------
 
 // posts, dagen_met_post, gemiste_dagen, huidige_reeks, langste_reeks, laatste_post, hashtags and opdrachten_niet_gehaald count both
-// platforms; weergaven, volgers, likes, reacties, gedeeld, engagement and beste_video are TikTok only (Instagram has none of these).
-const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen", "opdrachten_niet_gehaald",
+// platforms; dagen_niet_te_controleren are days without a post of a student with no Instagram handle (not in gemiste_dagen); weergaven, volgers, likes, reacties, gedeeld, engagement and beste_video are TikTok only (Instagram has none of these).
+const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen", "dagen_niet_te_controleren", "opdrachten_niet_gehaald",
   "huidige_reeks", "langste_reeks", "gem_weergaven_per_post", "mediaan_weergaven_per_video", "likes", "reacties", "gedeeld", "engagement_pct",
   "beste_video", "beste_video_weergaven", "laatste_post", "hashtags", "privé", "let_op",
   "tiktok_posts", "instagram_handle", "instagram_posts", "instagram_volgers", "instagram_volgers_sinds_start"];
@@ -1295,7 +1326,7 @@ const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "pos
 function exportRows(m) {
   return [...m.students].sort(byName).map((s) => {
     const st = s.stats;
-    return [s.name || "onbekend", s.handles.map((h) => "@" + h).join(", "), s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.tasksMissed,
+    return [s.name || "onbekend", s.handles.map((h) => "@" + h).join(", "), s.rank, s.views, s.followers, st.posts, st.daysPosted, st.missedDays, st.unknownDays, st.tasksMissed,
       st.streak, st.longest, st.avgViews, st.medianViews, st.likes, st.comments, st.shares,
       st.engagement == null ? null : Math.round(st.engagement * 1000) / 10,
       st.best ? tiktok(st.best.handle || s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
@@ -1364,6 +1395,8 @@ function route() {
   if (state.detail) window.scrollTo(0, 0);
   render();
   if (state.view === "beheer" && prev !== "beheer") loadRuns();
+  // "#beheer/instagram" (the links to "Handle invullen") lands on the section where the handles are filled in.
+  if (state.view === "beheer" && arg === "instagram") $("ig-card").scrollIntoView({ block: "start" });
 }
 
 async function load() {

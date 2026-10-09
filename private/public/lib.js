@@ -453,8 +453,12 @@ export const isInstagramPost = (p) => p.platform === "instagram";
  * a free day (isOffDay): a post on it extends the streak, no post simply doesn't count.
  * options.from: first day that can be judged (the Instagram start date for a student with only Instagram:
  * nothing was measured before it). Earlier days count as free: never missed, never a broken streak.
+ * options.unknownFrom: from this day on a day WITHOUT a post can't be judged, because the student posts on
+ * Instagram and has no (valid) Instagram handle, so we can't see those posts (the Instagram start date). Such a
+ * day is "niet te controleren": not missed (missedDays/missedList), no broken streak, and a dagopdracht that
+ * isn't reached stays "unknown" instead of "missed". A day with a post is judged as usual.
  */
-export function studentStats(posts, cfg, nowMs, assignments = [], { from = null } = {}) {
+export function studentStats(posts, cfg, nowMs, assignments = [], { from = null, unknownFrom = null } = {}) {
   const days = campaignDays(cfg);
   const today = localDay(nowMs);
   const perDay = new Map(days.map((d) => [d, 0]));
@@ -490,19 +494,22 @@ export function studentStats(posts, cfg, nowMs, assignments = [], { from = null 
   const past = days.filter((d) => d < today);
   const off = (day) => (from !== null && day < from) || isOffDay(cfg, day);
   const offName = (day) => offDayName(cfg, day) || (from !== null && day < from ? "nog niet gevolgd" : null);
-  const missed = past.filter((d) => perDay.get(d) === 0 && !off(d));
+  // A free day is never "unknown": free wins. Only days that were really expected to have a post are.
+  const unjudged = (day) => unknownFrom !== null && day >= unknownFrom && !off(day);
+  const missed = past.filter((d) => perDay.get(d) === 0 && !off(d) && !unjudged(d));
+  const unknown = past.filter((d) => perDay.get(d) === 0 && unjudged(d));
   // Streak = days with a post, counted back from today (from the last campaign day once it is over).
-  // Only a missed day breaks it: nothing yet today and free days without a post are skipped.
+  // Only a missed day breaks it: nothing yet today, free days and days that can't be judged are skipped.
   let streak = 0;
   for (let d = today < days.at(-1) ? today : days.at(-1); perDay.has(d); d = addDays(d, -1)) {
     if (perDay.get(d) > 0) streak++;
-    else if (d < today && !off(d)) break;
+    else if (d < today && !off(d) && !unjudged(d)) break;
   }
   let longest = 0, run = 0;
   for (const day of days) {
     if (day > today) break;
     if (perDay.get(day) > 0) run++;
-    else if (day < today && !off(day)) run = 0;
+    else if (day < today && !off(day) && !unjudged(day)) run = 0;
     longest = Math.max(longest, run);
   }
   const lastDay = last !== null ? localDay(last) : null;
@@ -515,13 +522,15 @@ export function studentStats(posts, cfg, nowMs, assignments = [], { from = null 
   // touches the streak or missed days (one post is enough for those).
   const tasks = assignments.filter((a) => perDay.has(a.date)).map((a) => {
     const count = perDay.get(a.date);
-    return { ...a, count, status: count >= a.min ? "reached" : a.date < today ? "missed" : "pending" };
+    return { ...a, count, status: count >= a.min ? "reached" : a.date < today ? (unjudged(a.date) ? "unknown" : "missed") : "pending" };
   });
   return {
     perDay, byDay, today, isOff: off, offName,
+    // A past day without a post that can't be judged (no Instagram handle): shown as "niet te controleren".
+    isUnknown: (day) => day < today && perDay.get(day) === 0 && unjudged(day),
     posts: counted.length, tiktokPosts: tiktok.length, instagramPosts: counted.length - tiktok.length,
     daysPosted: days.filter((x) => x <= today && perDay.get(x) > 0).length,
-    missedDays: missed.length, missedList: missed,
+    missedDays: missed.length, missedList: missed, unknownDays: unknown.length, unknownList: unknown,
     streak, longest,
     views, likes, comments, shares,
     avgViews: tiktok.length ? Math.round(views / tiktok.length) : null,
@@ -593,11 +602,28 @@ export function todayStatus(cfg, students, assignments, nowMs) {
     const today = (s.posts || []).map((p) => parseTs(p.created_at)).filter((t) => t !== null && localDay(t) === day).sort((a, b) => a - b);
     const accounts = s.accounts || [{ handle: s.handle, isPrivate: s.isPrivate }];
     return { handle: s.handle, count: today.length, required, done: today.length >= required,
+      // No (valid) Instagram handle while students post on Instagram: not posted on TikTok today means "can't tell".
+      noHandle: Boolean(s.noHandle),
       private: accounts.every((a) => a.isPrivate),
       checkable: accounts.filter((a) => !a.isPrivate).map((a) => (a.platform === "instagram" ? instagramKey(a.handle) : a.handle)),
       first: today[0] ?? null, last: today.at(-1) ?? null };
   });
   return { day, task, offDay: isOffDay(cfg, day), rows };
+}
+
+/**
+ * Splits the rows of todayStatus into the lists the pages show: todo (not posted), done, priv (all accounts private)
+ * and unverifiable. A student without an Instagram handle who hasn't posted on TikTok today is "niet te controleren"
+ * (we can't see Instagram), not "nog niet gepost"; that goes before "privé" because filling in the handle fixes it.
+ */
+export function todayGroups(status) {
+  const stuck = (r) => r.noHandle && !r.done;
+  return {
+    unverifiable: status.rows.filter(stuck),
+    todo: status.rows.filter((r) => !r.done && !r.private && !r.noHandle),
+    done: status.rows.filter((r) => r.done && !r.private),
+    priv: status.rows.filter((r) => r.private && !stuck(r)),
+  };
 }
 
 /** Accounts "Controleer nu" fetches: every non-private account (TikTok and Instagram) of the students not done yet today. */
