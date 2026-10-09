@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from . import instagram, model
+from . import config, instagram, model
 from .brightdata import BrightData
 from .config import PLATFORMS, UTC, Config
 from .handles import account_groups, instagram_url, parse_accounts, parse_instagram_accounts, profile_url
@@ -64,6 +64,28 @@ class Collector:
         self.stamp = model.iso(self.now_utc)
 
     # ---------- shared helpers ----------
+
+    def apply_settings(self) -> None:
+        """The pull frequency chosen on Beheer (private settings tab) replaces the config.yaml start value for
+        this run, so the scheduler, the budget reservation and every skip rule below read the same setting as the
+        Worker's backup timer. A missing tab or a value that is not a known step keeps the start value."""
+        if "settings" not in self.admin_tabs():
+            return
+        chosen, problems = config.parse_frequency_settings(self.admin.read("settings"), self.cfg.frequency_steps)
+        for problem in problems:
+            logging.warning(problem)
+        if chosen:
+            self.cfg = config.with_frequency(self.cfg, chosen)
+            print("pull frequency from the settings tab: "
+                  + ", ".join(f"{p} {self.cfg.frequency[p]}" for p in PLATFORMS))
+
+    def skip_if_off(self, res: RunResult, platform: str) -> bool:
+        """True (run marked skipped, with the reason) when the platform is set to "off" on Beheer."""
+        if self.cfg.platform_on(platform):
+            return False
+        res.status = "skipped"
+        res.notes.append(f"SKIPPED: {platform} is set to off (Beheer, Schema)")
+        return True
 
     def accounts(self) -> tuple[list[str], list[str]]:
         return parse_accounts(self.admin.read("accounts"))
@@ -180,7 +202,10 @@ class Collector:
         return None if last is None else (self.now_utc - last).total_seconds() / 60
 
     def _force_refresh(self, res: RunResult) -> None:
-        """On-demand profiles run; refused when a real profiles run happened too recently (double tap)."""
+        """On-demand profiles run; refused when a real profiles run happened too recently (double tap).
+        Skipped when TikTok is set to off."""
+        if self.skip_if_off(res, "tiktok"):
+            return
         minutes = self.minutes_since_profiles()
         if minutes is not None and minutes < self.cfg.force_min_minutes:
             res.status = "refused"
@@ -212,6 +237,8 @@ class Collector:
         return self.run_guarded(res, lambda r: self._today_check(r, handles))
 
     def _today_check(self, res: RunResult, requested: list[str]) -> None:
+        if self.skip_if_off(res, "tiktok"):
+            return
         active, _ = self.accounts()
         private = {r["handle"] for r in self.data.read("handles") if model.truthy(r.get("is_private"))}
         targets = [h for h in dict.fromkeys(requested) if h in active and h not in private]
@@ -361,6 +388,8 @@ class Collector:
         self._ig_profiles(res)
 
     def _ig_force_refresh(self, res: RunResult) -> None:
+        if self.skip_if_off(res, "instagram"):
+            return
         minutes = self.minutes_since_profiles(model.IG_PROFILE_RUN_TYPES)
         if minutes is not None and minutes < self.cfg.force_min_minutes:
             res.status = "refused"
@@ -370,6 +399,8 @@ class Collector:
         self._ig_profiles(res)
 
     def _ig_today_check(self, res: RunResult, requested: list[str]) -> None:
+        if self.skip_if_off(res, "instagram"):
+            return
         active, _ = self.ig_accounts()
         private = set()
         if "ig_handles" in self.sheet_tabs(self.data):
@@ -504,6 +535,9 @@ class Collector:
         return self.run_guarded(RunResult("posts_refresh", window, self.dry_run), self._refresh)
 
     def _refresh(self, res: RunResult) -> None:
+        # The weekly posts refresh is a TikTok pull: with TikTok set to off it doesn't run either.
+        if self.skip_if_off(res, "tiktok"):
+            return
         handles, issues = self.accounts()
         res.notes.extend(issues)
         windows = {r["handle"]: r for r in self.admin.read("profile_window")}
@@ -619,11 +653,15 @@ class Collector:
         finale = self.finale()
         ran = False
         if finale and finale["phase"] == "live":
-            # Finale: a run every few minutes instead of the normal windows (double-checked here,
-            # whoever started this workflow). Budget cap and run-once-per-window still apply.
+            # Finale: Instagram every few minutes instead of the normal windows, TikTok only at the start and at the
+            # last run (double-checked here, whoever started this workflow). Budget cap and run-once-per-window still apply.
             key = model.finale_window_key(self.now_local, self.cfg.finale.every_minutes)
-            ran |= self._maybe(key, self.run_scheduled_profiles)
-            ran |= self._maybe(key.replace("/finale-", "/ig-finale-"), self.run_scheduled_ig_profiles)
+            # Instagram runs in every slot, TikTok only at the start and at the last run. A platform set to off has no
+            # finale runs at all.
+            if self.cfg.platform_on("tiktok") and model.finale_tiktok_slot(finale, self.now_utc, self.cfg.finale.every_minutes):
+                ran |= self._maybe(key, self.run_scheduled_profiles)
+            if self.cfg.platform_on("instagram"):
+                ran |= self._maybe(key.replace("/finale-", "/ig-finale-"), self.run_scheduled_ig_profiles)
         elif not (camp.start <= today <= camp.collect_until):
             print(f"{self.now_local:%Y-%m-%d %H:%M} Amsterdam: outside collection period, nothing to do")
             return

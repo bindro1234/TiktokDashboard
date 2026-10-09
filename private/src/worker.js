@@ -24,7 +24,7 @@ const TASKS_HEADER = ["date", "min_posts", "label", "active", "updated_at", "upd
 const OUTLIERS_TAB = "outliers"; // public sheet: handles only
 const IG_TABS = ["ig_handles", "ig_history", "ig_posts", "ig_baseline"]; // public sheet: Instagram, handles only
 const OUTLIERS_HEADER = ["handle", "buiten_schaal", "updated_at"];
-const SETTINGS_TAB = "settings"; // private sheet: key/value settings changed on Beheer (school hashtags, later the pull frequency)
+const SETTINGS_TAB = "settings"; // private sheet: key/value settings changed on Beheer (school hashtags, pull frequency per platform)
 const SETTINGS_HEADER = ["key", "value", "updated_at", "updated_by"];
 const MAX_TASK_POSTS = 20;
 
@@ -59,6 +59,15 @@ const igColumn = (header) => header.findIndex((h) => [IG_COLUMN, "insta"].includ
 
 const nowIso = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
 
+/**
+ * The config with the pull frequency chosen on Beheer (private settings tab, one row per platform) over the config.yaml
+ * start value: the windows, the budget reservation and every "off" rule read the same setting as the collector does.
+ * `values` = the raw rows of the settings tab (null when the tab doesn't exist yet).
+ */
+function effectiveConfig(values) {
+  return lib.withFrequency(CONFIG, lib.frequencySettings(lib.parseSettings(lib.rowsToObjects(values)), CONFIG));
+}
+
 function withHeaders(res) {
   const out = new Response(res.body, res);
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
@@ -86,11 +95,12 @@ export default {
 export async function runSchedule(env, fetchImpl = fetch, nowMs = Date.now()) {
   const sheets = new Sheets(env.GOOGLE_SERVICE_ACCOUNT_B64, fetchImpl);
   // Cheap check first: outside the platforms' windows only a live finale can need a run.
-  const { run_log: values, [FINALE_TAB]: finaleValues } =
-    await sheets.readTabs(CONFIG.sheets.adminId, ["run_log", FINALE_TAB]);
+  const { run_log: values, [FINALE_TAB]: finaleValues, [SETTINGS_TAB]: settingsValues } =
+    await sheets.readTabs(CONFIG.sheets.adminId, ["run_log", FINALE_TAB, SETTINGS_TAB]);
+  const cfg = effectiveConfig(settingsValues);   // the frequency chosen on Beheer, like the collector
   const finale = lib.finaleState(lib.rowsToObjects(finaleValues), nowMs, CONFIG.finale.maxHours);
-  if (!lib.openWindows(CONFIG, nowMs, finale).length) return { action: "no window open" };
-  const due = lib.dueWindows(CONFIG, lib.rowsToObjects(values), nowMs, finale);
+  if (!lib.openWindows(cfg, nowMs, finale).length) return { action: "no window open" };
+  const due = lib.dueWindows(cfg, lib.rowsToObjects(values), nowMs, finale);
   if (!due.length) return { action: "windows already done", due };
   if (!env.GH_DISPATCH_TOKEN) return { action: "GH_DISPATCH_TOKEN missing", due };
   const gh = (path, init = {}) => fetchImpl(`https://api.github.com/repos/${env.GITHUB_REPO}${path}`, {
@@ -152,6 +162,7 @@ export async function handle(request, env, ctx, fetchImpl = fetch) {
       case "POST /api/outliers": return json(await api.setOutlier(await request.json()));
       case "POST /api/tasks": return json(await api.saveTask(await request.json()));
       case "POST /api/settings/hashtags": return json(await api.saveSchoolHashtags(await request.json()));
+      case "POST /api/settings/frequency": return json(await api.saveFrequency(await request.json()));
       case "POST /api/today/check": return json(await api.todayCheck());
       default: return json({ error: "Onbekende route" }, 404);
     }
@@ -214,14 +225,18 @@ class Api {
     const strip = ({ _row, ...rest }) => rest;
     const finaleRows = lib.rowsToObjects(admin[FINALE_TAB]);
     const finale = lib.finaleState(finaleRows, now, CONFIG.finale.maxHours);
+    const cfg = effectiveConfig(admin[SETTINGS_TAB]);
     return {
       me: this.email,
       serverTime: now,
       config: {
-        campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: CONFIG.schedule,
+        campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: cfg.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
         finale: CONFIG.finale, offDays: CONFIG.offDays, todayCheck: CONFIG.todayCheck, signals: CONFIG.signals,
-        frequency: CONFIG.frequency, instagram: CONFIG.instagram,
+        // What applies now (the choice saved on Beheer, else the start value), the start value, and the steps (to
+        // work out the cost of a choice on the page before it is saved).
+        frequency: cfg.frequency, frequencyDefault: CONFIG.frequency, frequencySteps: CONFIG.frequencySteps,
+        instagram: CONFIG.instagram,
       },
       finale: finale && { ...finale, row: undefined },
       // Any finale that really ran (not cancelled): hides the "start the finale" reminder.
@@ -237,7 +252,10 @@ class Api {
       igBaseline: lib.rowsToObjects(data.ig_baseline).map(strip),
       runLog: runLog.slice(-60).reverse().map(strip),
       activity: activity.slice(-80).reverse().map(strip),
-      budget: lib.budget(CONFIG, runLog, { tiktok: tracked, instagram: igTracked }, now),
+      budget: lib.budget(cfg, runLog, { tiktok: tracked, instagram: igTracked }, now),
+      // What the Schema preview on Beheer starts from (this page only gets the last rows of run_log): records used this
+      // month and the windows of this month that are done.
+      budgetBase: { used: lib.monthUsage(runLog, now), done: [...lib.doneWindows(runLog)].filter((k) => k.startsWith(today.slice(0, 7))) },
       lastProfilesRun: last,
       lastInstagramRun: lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES),
       lastTodayCheck: lib.lastTodayCheck(runLog, activity),
@@ -287,10 +305,18 @@ class Api {
   async refresh() {
     // "Nu verversen" refreshes TikTok and Instagram, each with its own cooldown (the collector checks again).
     // Refused here only when every platform that has accounts was refreshed less than forceMinMinutes ago.
-    const { run_log: values, accounts } = await this.sheets.readTabs(this.admin, ["run_log", "accounts"]);
+    // A platform set to "off" on Beheer is skipped (the collector skips it too), and the page says so.
+    const { run_log: values, accounts, [SETTINGS_TAB]: settingsValues } =
+      await this.sheets.readTabs(this.admin, ["run_log", "accounts", SETTINGS_TAB]);
+    const cfg = effectiveConfig(settingsValues);
     const runLog = lib.rowsToObjects(values);
     const igCount = lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.instagramTracked).length;
-    const lasts = [lib.lastProfilesRun(runLog), ...(igCount ? [lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES)] : [])];
+    const tiktokOn = lib.platformOn(cfg, "tiktok"), igOn = lib.platformOn(cfg, "instagram");
+    if (!tiktokOn && !(igOn && igCount)) {
+      throw new HttpError(409, !igOn ? "TikTok en Instagram staan uit (Schema hieronder): er is niets om te verversen."
+        : "TikTok staat uit (Schema hieronder) en er zijn geen Instagram-accounts: er is niets om te verversen.");
+    }
+    const lasts = [...(tiktokOn ? [lib.lastProfilesRun(runLog)] : []), ...(igOn && igCount ? [lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES)] : [])];
     const minutes = lasts.map((t) => (t === null ? Infinity : (Date.now() - t) / 60000));
     if (minutes.every((m) => m < CONFIG.forceMinMinutes)) {
       const wait = Math.min(...minutes); // the platform that can be refreshed first
@@ -304,8 +330,10 @@ class Api {
     await this.github(`/actions/workflows/${CONFIG.workflows.force}/dispatches`, {
       method: "POST", body: JSON.stringify({ ref: "main" }),
     });
-    await this.log("nu verversen");
-    return { ok: true, message: `Verversen gestart${igCount ? " (TikTok en Instagram)" : ""}. Nieuwe cijfers staan er over ongeveer 5–7 minuten.` };
+    const skipped = [...(!tiktokOn ? ["TikTok"] : []), ...(!igOn && igCount ? ["Instagram"] : [])];
+    const which = skipped.length ? ` (alleen ${tiktokOn ? "TikTok" : "Instagram"})` : igCount ? " (TikTok en Instagram)" : "";
+    await this.log("nu verversen", skipped.length ? `${skipped.join(" en ")} stond uit: overgeslagen` : "");
+    return { ok: true, message: `Verversen gestart${which}.${skipped.length ? ` ${skipped.join(" en ")} staat uit en wordt overgeslagen.` : ""} Nieuwe cijfers staan er over ongeveer 5–7 minuten.` };
   }
 
   async readAccounts() {
@@ -456,16 +484,17 @@ class Api {
 
   async finaleNow() {
     await this.sheets.ensureTab(this.admin, FINALE_TAB, FINALE_HEADER);
-    const { [FINALE_TAB]: values, run_log: log, accounts } =
-      await this.sheets.readTabs(this.admin, [FINALE_TAB, "run_log", "accounts"]);
+    const { [FINALE_TAB]: values, run_log: log, accounts, [SETTINGS_TAB]: settingsValues } =
+      await this.sheets.readTabs(this.admin, [FINALE_TAB, "run_log", "accounts", SETTINGS_TAB]);
     const now = Date.now();
+    const parsed = lib.parseAccounts(lib.rowsToObjects(accounts));
     return {
       now,
       state: lib.finaleState(lib.rowsToObjects(values), now, CONFIG.finale.maxHours),
       runLog: lib.rowsToObjects(log),
-      // Both platforms run every 15 minutes during a finale, one record per account on each.
-      active: lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.tracked || a.instagramTracked)
-        .reduce((n, a) => n + (a.tracked ? 1 : 0) + (a.instagramTracked ? 1 : 0), 0),
+      // The finale runs each platform that is not set to "off", one record per account.
+      cfg: effectiveConfig(settingsValues),
+      counts: { tiktok: parsed.filter((a) => a.tracked).length, instagram: parsed.filter((a) => a.instagramTracked).length },
     };
   }
 
@@ -481,14 +510,21 @@ class Api {
   }
 
   // The finale must fit in this month's budget, like every run (the collector checks each run again).
-  checkBudget(runLog, active, runs, now) {
-    const used = lib.monthUsage(runLog, now);
-    const need = runs * active;
-    if (used + need > CONFIG.budget.monthlyCap) {
+  checkBudget(runLog, counts, cfg, startMs, endMs) {
+    const used = lib.monthUsage(runLog, startMs);   // the finale starts now
+    const cost = lib.finaleCost(cfg, counts, startMs, endMs);
+    if (!cost.total) throw new HttpError(409, "TikTok en Instagram staan uit (Schema hieronder): een finale heeft dan geen runs.");
+    if (used + cost.total > CONFIG.budget.monthlyCap) {
       throw new HttpError(409, `Past niet in het budget: al ${used} van ${CONFIG.budget.monthlyCap} records gebruikt, `
-        + `deze finale kost tot ${need} (${runs} runs × ${active} accounts). Kies een eerdere deadline of verhoog budget.monthly_cap.`);
+        + `deze finale kost tot ${cost.total} (${this.finaleParts(cost, counts)}). Kies een eerdere deadline of verhoog budget.monthly_cap.`);
     }
-    return need;
+    return cost;
+  }
+
+  // "32 runs × 23 Instagram-accounts + 2 runs × 60 TikTok-accounts" for the messages and the log (a platform without accounts is left out).
+  finaleParts(cost, counts) {
+    return [cost.instagramRuns && counts.instagram && `${cost.instagramRuns} runs × ${counts.instagram} Instagram-accounts`,
+      cost.tiktokRuns && counts.tiktok && `${cost.tiktokRuns} runs × ${counts.tiktok} TikTok-accounts`].filter(Boolean).join(" + ");
   }
 
   async writePublicFinale(row) {
@@ -497,18 +533,17 @@ class Api {
   }
 
   async finaleStart(body) {
-    const { now, state, runLog, active } = await this.finaleNow();
+    const { now, state, runLog, cfg, counts } = await this.finaleNow();
     if (state && state.phase === "live") throw new HttpError(409, "Er loopt al een finale.");
     const deadline = this.parseDeadline(body?.deadline, now + MIN_FINALE_MINUTES * 60e3,
       now + CONFIG.finale.maxHours * 3600e3);
-    const runs = lib.finaleRuns(now, deadline, CONFIG.finale.everyMinutes);
-    const need = this.checkBudget(runLog, active, runs, now);
+    const cost = this.checkBudget(runLog, counts, cfg, now, deadline);
     const start = new Date(now).toISOString().replace(/\.\d+Z$/, "Z");
     const end = new Date(deadline).toISOString().replace(/\.\d+Z$/, "Z");
     await this.sheets.append(this.admin, FINALE_TAB, [[start, this.email, end, "active", "", ""]]);
     await this.writePublicFinale([start, end, "active", ""]);
     await this.log("finale gestart", `deadline ${lib.localDay(deadline)} ${lib.localTime(deadline)}, `
-      + `${runs} runs × ${active} accounts ≈ ${need} records`);
+      + `${this.finaleParts(cost, counts)} ≈ ${cost.total} records`);
     // Start the first run right away instead of waiting for the timer (best effort).
     try {
       const wf = CONFIG.workflows.collect;
@@ -520,14 +555,15 @@ class Api {
     } catch (err) {
       console.log(`finale: first run not started now (${err.message}); the timer starts it`);
     }
-    return { ok: true, message: `Finale gestart tot ${lib.localTime(deadline)}. Elke ${CONFIG.finale.everyMinutes} minuten nieuwe cijfers.` };
+    return { ok: true, message: `Finale gestart tot ${lib.localTime(deadline)}. ${cfg && lib.platformOn(cfg, "instagram") ? `Instagram elke ${CONFIG.finale.everyMinutes} minuten nieuwe cijfers` : "Instagram staat uit"}`
+      + `${lib.platformOn(cfg, "tiktok") ? "; TikTok bij de start en bij de laatste run" : "; TikTok staat uit"}.` };
   }
 
   async finaleDeadline(body) {
-    const { now, state, runLog, active } = await this.finaleNow();
+    const { now, state, runLog, cfg, counts } = await this.finaleNow();
     if (!state || state.phase !== "live") throw new HttpError(409, "Er loopt geen finale.");
     const deadline = this.parseDeadline(body?.deadline, now + 5 * 60e3, state.start + CONFIG.finale.maxHours * 3600e3);
-    if (deadline > state.end) this.checkBudget(runLog, active, lib.finaleRuns(now, deadline, CONFIG.finale.everyMinutes), now);
+    if (deadline > state.end) this.checkBudget(runLog, counts, cfg, now, deadline);
     const end = new Date(deadline).toISOString().replace(/\.\d+Z$/, "Z");
     await this.sheets.update(this.admin, FINALE_TAB, `C${state.row}`, [[end]]);
     await this.writePublicFinale([new Date(state.start).toISOString().replace(/\.\d+Z$/, "Z"), end, "active", ""]);
@@ -645,14 +681,62 @@ class Api {
     return { ok: true, tags, message: `Schoolhashtags opgeslagen: ${text(tags)}.` };
   }
 
+  // The pull frequency per platform (Beheer, Schema): one of Uit, 1× per dag, 12, 6, 4 or 2 uur, stored per platform in
+  // the settings tab (frequency_tiktok, frequency_instagram) so it changes without a deploy. `was` = what the page
+  // showed (refused when someone else changed it meanwhile). A choice whose month total doesn't fit under the cap is
+  // refused, unless it doesn't raise the planned total (so a setting can always be lowered); the collector and the
+  // backup timer read the same rows at each run. Every change goes in the activity log.
+  async saveFrequency(body) {
+    const choice = {};
+    for (const p of lib.PLATFORMS) {
+      choice[p] = lib.frequencyChoice(body?.[p], CONFIG);
+      if (!choice[p]) throw new HttpError(400, `Kies voor ${lib.PLATFORM_NL[p]} Uit, 1× per dag of elke 12, 6, 4 of 2 uur.`);
+    }
+    const { [SETTINGS_TAB]: values, run_log: log, accounts, [FINALE_TAB]: finaleValues } =
+      await this.sheets.readTabs(this.admin, [SETTINGS_TAB, "run_log", "accounts", FINALE_TAB]);   // a missing tab reads as empty
+    const settings = lib.parseSettings(lib.rowsToObjects(values));
+    const current = lib.withFrequency(CONFIG, lib.frequencySettings(settings, CONFIG)).frequency;
+    if (body?.was && lib.PLATFORMS.some((p) => lib.frequencyChoice(body.was[p], CONFIG) !== current[p])) {
+      throw new HttpError(409, "De instelling is intussen veranderd. Laad de pagina opnieuw.");
+    }
+    const changed = lib.PLATFORMS.filter((p) => choice[p] !== current[p]);
+    const nl = (n) => Math.round(n).toLocaleString("nl-NL");
+    if (!changed.length) return { ok: true, frequency: current, message: "Ongewijzigd: het schema was al zo." };
+    const parsed = lib.parseAccounts(lib.rowsToObjects(accounts));
+    const counts = { tiktok: parsed.filter((a) => a.tracked).length, instagram: parsed.filter((a) => a.instagramTracked).length };
+    const now = Date.now();
+    const finaleDone = lib.rowsToObjects(finaleValues).some((r) => ["active", "stopped"].includes(String(r.status)));
+    const preview = lib.frequencyPreview(CONFIG, lib.budgetBase(lib.rowsToObjects(log), now), counts, now, choice, current, { finaleDone });
+    if (!preview.allowed) {
+      throw new HttpError(409, `Past niet in het budget: ${nl(preview.projected)} verwacht deze maand`
+        + `${preview.refresh ? ` + ${nl(preview.refresh)} weekrefresh` : ""}${preview.finale ? ` + ${nl(preview.finale)} finale` : ""}`
+        + ` = ${nl(preview.total)}, meer dan de limiet van ${nl(preview.cap)}. Kies een lagere frequentie.`);
+    }
+    await this.sheets.ensureTab(this.admin, SETTINGS_TAB, SETTINGS_HEADER);   // only when something is really written
+    for (const p of changed) {
+      const key = lib.FREQUENCY_KEYS[p];
+      const cells = [key, choice[p], nowIso(), this.email];
+      const saved = settings.get(key);
+      if (saved?.row) await this.sheets.update(this.admin, SETTINGS_TAB, `A${saved.row}:D${saved.row}`, [cells]);
+      else await this.sheets.append(this.admin, SETTINGS_TAB, [cells]);
+    }
+    const nlName = (step) => lib.FREQUENCY_NL[step];
+    await this.log("frequentie gewijzigd", lib.PLATFORMS.map((p) => (changed.includes(p)
+      ? `${lib.PLATFORM_NL[p]}: ${nlName(current[p])} → ${nlName(choice[p])}` : `${lib.PLATFORM_NL[p]}: ongewijzigd (${nlName(current[p])})`)).join("; ")
+      + ` · verwacht ${nl(preview.projected)} van ${nl(preview.cap)} records deze maand`);
+    return { ok: true, frequency: choice, projected: preview.projected,
+      message: `Schema opgeslagen: ${lib.PLATFORMS.map((p) => `${lib.PLATFORM_NL[p]} ${nlName(choice[p])}`).join(", ")}. Verwacht ${nl(preview.projected)} van ${nl(preview.cap)} records deze maand.` };
+  }
+
   // ---------- Vandaag: "Controleer nu" ----------
 
   async todayCheck() {
     const [admin, data] = await Promise.all([
-      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, TASKS_TAB]),
+      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, TASKS_TAB, SETTINGS_TAB]),
       this.sheets.readTabs(this.dataId, ["handles", "posts_latest", "ig_handles", "ig_posts"]),
     ]);
     const now = Date.now();
+    const cfg = effectiveConfig(admin[SETTINGS_TAB]);   // a platform set to "off" is skipped, like in the collector
     const runLog = lib.rowsToObjects(admin.run_log);
     const last = lib.lastTodayCheck(runLog, lib.rowsToObjects(admin[ACTIVITY_TAB]));
     const cool = CONFIG.todayCheck.cooldownMinutes;
@@ -685,9 +769,14 @@ class Api {
         ...(g.instagram ? [{ handle: g.instagram, platform: "instagram", isPrivate: lib.truthy(igInfo.get(g.instagram)?.is_private) }] : [])],
     }));
     const status = lib.todayStatus(CONFIG, students, lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
-    const targets = lib.todayTargets(status);
-    if (!targets.length) throw new HttpError(409, "Iedereen die gecontroleerd kan worden heeft vandaag al gepost.");
-    const b = lib.budget(CONFIG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, now);
+    const targets = lib.todayTargets(status, cfg.frequency);
+    const skipped = lib.todaySkipped(status, cfg.frequency).map((p) => lib.PLATFORM_NL[p]);
+    const skipNote = skipped.length ? ` ${skipped.join(" en ")} staat uit en wordt overgeslagen.` : "";
+    if (!targets.length) {
+      throw new HttpError(409, skipped.length ? `Wat nog te controleren valt staat op ${skipped.join(" en ")}, en dat staat uit (Schema).`
+        : "Iedereen die gecontroleerd kan worden heeft vandaag al gepost.");
+    }
+    const b = lib.budget(cfg, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, now);
     if (b.projected + targets.length > CONFIG.budget.monthlyCap) {
       throw new HttpError(409, `Past niet in het budget: ${b.used} gebruikt + ${b.reserved} nodig voor de resterende profielruns `
         + `+ ${targets.length} voor deze controle is meer dan ${CONFIG.budget.monthlyCap}.`);
@@ -702,9 +791,9 @@ class Api {
     const both = split.tiktok > 0 && split.instagram > 0;
     const parts = both ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
     const accountsText = `${targets.length} account${targets.length === 1 ? "" : "s"}`;
-    await this.log(lib.TODAY_CHECK_ACTION, `${accountsText}, ${targets.length} records${parts}`);
+    await this.log(lib.TODAY_CHECK_ACTION, `${accountsText}, ${targets.length} records${parts}${skipped.length ? `; ${skipped.join(" en ")} stond uit` : ""}`);
     return { ok: true, count: targets.length, startedAt: now, tiktok: split.tiktok, instagram: split.instagram,
-      message: `Controle gestart voor ${accountsText}${parts} (${targets.length} records). `
+      message: `Controle gestart voor ${accountsText}${parts} (${targets.length} records).${skipNote} `
         + `Nieuwe cijfers staan er over ongeveer ${both ? "5–10" : "5–7"} minuten; deze pagina ververst vanzelf zodra de run klaar is.` };
   }
 

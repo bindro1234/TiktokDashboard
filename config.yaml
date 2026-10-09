@@ -49,7 +49,7 @@ budget:
   # Hard cap on Bright Data records per calendar month (free records renew on the 1st;
   # above 5,000 it is pay as you go). October, campaign until 30 Oct, with 48 accounts:
   # ≈17,300 for profile runs (30 days x 12 runs), a refresh reserve of ≈1,920 (48 x 40) and
-  # ≈1,350 for an 8-hour finale: ≈20,500. 23,000 leaves room for "Controleer nu" checks
+  # ≈860 for an 8-hour finale (32 Instagram runs of 23 accounts + 2 TikTok runs of 61): ≈20,000. 23,000 leaves room for "Controleer nu" checks
   # (Vandaag tab). Refreshes and checks also reserve the month's remaining profile runs.
   monthly_cap: 23000
 
@@ -108,8 +108,9 @@ posts_refresh:
 
 finale:
   # Finale for the last lesson, started by hand on the private site (Beheer tab), which also
-  # sets the deadline. While it runs: profile runs every `every_minutes` (instead of the
-  # windows above; TikTok and Instagram both for now), a countdown and LIVE labels on the presentation; after the deadline the
+  # sets the deadline. While it runs: Instagram profile runs every `every_minutes` (instead of the
+  # windows above); TikTok only in the slot the finale starts in and in its last slot (a platform set to "off" on Beheer
+  # does not take part), a countdown and LIVE labels on the presentation; after the deadline the
   # sites show the "Eindstand", frozen at the last run before it. It always ends by itself at
   # the deadline, and never lasts longer than `max_hours`. The budget cap still applies.
   every_minutes: 15

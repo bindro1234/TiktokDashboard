@@ -294,6 +294,108 @@ export function platformWindows(cfg, platform) {
   return cfg.schedule.windows?.[platform] ?? (platform === "tiktok" ? cfg.schedule.profileRuns : []);
 }
 
+// ---------- pull frequency (the setting on Beheer; same rules as collector/config.py) ----------
+
+export const FREQUENCY_CHOICES = ["off", "daily", "12h", "6h", "4h", "2h"];
+/** Keys in the private settings tab. */
+export const FREQUENCY_KEYS = { tiktok: "frequency_tiktok", instagram: "frequency_instagram" };
+export const FREQUENCY_NL = { off: "uit", daily: "1× per dag", "12h": "elke 12 uur", "6h": "elke 6 uur", "4h": "elke 4 uur", "2h": "elke 2 uur" };
+export const PLATFORM_NL = { tiktok: "TikTok", instagram: "Instagram" };
+
+/** False when the platform is set to "off": no scheduled runs, weekly refresh or finale runs, and "Nu verversen" and "Controleer nu" skip it. */
+export const platformOn = (cfg, platform) => (cfg.frequency?.[platform] ?? "off") !== "off";
+
+/** A frequency value of the settings tab -> a valid choice, or null (a typo is ignored: the config.yaml start value stays). */
+export function frequencyChoice(value, cfg = null) {
+  const v = String(value ?? "").trim().toLowerCase();
+  if (!FREQUENCY_CHOICES.includes(v)) return null;
+  return v === "off" || !cfg?.frequencySteps || cfg.frequencySteps[v] ? v : null;
+}
+
+/** The frequency saved on Beheer per platform ({ tiktok?, instagram? }), from parseSettings(); only valid choices. */
+export function frequencySettings(settings, cfg = null) {
+  const out = {};
+  for (const [platform, key] of Object.entries(FREQUENCY_KEYS)) {
+    const choice = settings.has(key) ? frequencyChoice(settings.get(key).value, cfg) : null;
+    if (choice) out[platform] = choice;
+  }
+  return out;
+}
+
+/** The windows of a platform at a frequency step: that step's windows out of the pool schedule.profileRuns (Instagram: ig-08u). */
+export function windowsFor(cfg, platform, step) {
+  if (!step || step === "off") return [];
+  const names = new Set(cfg.frequencySteps?.[step] || []);
+  const chosen = cfg.schedule.profileRuns.filter((w) => names.has(w.name));
+  return platform === "instagram" ? chosen.map((w) => ({ ...w, name: `ig-${w.name}` })) : chosen;
+}
+
+/** cfg with the frequency of each platform replaced (choice = { tiktok, instagram }, missing = unchanged): frequency and schedule.windows. */
+export function withFrequency(cfg, choice = {}) {
+  const frequency = { ...cfg.frequency };
+  for (const p of PLATFORMS) if (choice[p]) frequency[p] = choice[p];
+  const windows = {};
+  for (const p of PLATFORMS) windows[p] = windowsFor(cfg, p, frequency[p]);
+  return { ...cfg, frequency, schedule: { ...cfg.schedule, windows } };
+}
+
+/** Weekly refreshes (a Friday window) still to come this calendar month, TikTok on or not. */
+function refreshesLeft(cfg, nowMs, done) {
+  const today = localDay(nowMs), now = localTime(nowMs);
+  const r = cfg.schedule.refresh, month = today.slice(0, 7);
+  let n = 0;
+  for (let day = today; day <= cfg.campaign.collectUntil && day.slice(0, 7) === month; day = addDays(day, 1)) {
+    if (day < cfg.campaign.start || done.has(`${day}/${r.name}`)) continue;
+    if (weekdayFmt.format(Date.parse(`${day}T12:00:00Z`)).toLowerCase() !== r.weekday) continue;
+    if (day === today && r.end <= now) continue;
+    n++;
+  }
+  return n;
+}
+
+/**
+ * What a frequency choice costs, the same numbers the collector's budget uses (budget() with the windows of the
+ * choice): records per day per platform, what is used and still planned this month, and what stays reserved for
+ * the weekly refresh (up to refreshNumOfPosts per TikTok account, only if TikTok is on and a Friday is still to
+ * come) and for a finale that has not happened yet (its longest possible length). A choice "fits" when all of that
+ * stays under the cap; one that doesn't raise the planned total is always allowed, so a setting can always be lowered.
+ * base: budgetBase(runLog, nowMs); choice and current: { tiktok, instagram }; counts: { tiktok, instagram } accounts;
+ * finaleDone: a finale already ran.
+ */
+export function frequencyPreview(cfg, base, counts, nowMs, choice, current = null, { finaleDone = false } = {}) {
+  const next = withFrequency(cfg, choice);
+  const b = budgetFrom(next, base, counts, nowMs);
+  const { done } = base;
+  const platforms = PLATFORMS.map((platform) => {
+    const runsPerDay = next.schedule.windows[platform].length, accounts = counts[platform] ?? 0;
+    return { platform, step: next.frequency[platform], runsPerDay, accounts, perDay: runsPerDay * accounts,
+      runsLeft: b.byPlatform[platform].runsLeft, planned: b.byPlatform[platform].reserved };
+  });
+  const refresh = platformOn(next, "tiktok") && refreshesLeft(next, nowMs, done) > 0 ? (cfg.refreshNumOfPosts || 0) * (counts.tiktok ?? 0) : 0;
+  const finaleThisMonth = !finaleDone && cfg.campaign.end >= localDay(nowMs) && cfg.campaign.end.slice(0, 7) === localDay(nowMs).slice(0, 7);
+  const finale = finaleThisMonth ? finaleCost(next, counts, 0, cfg.finale.maxHours * 3600e3).total : 0;
+  const total = b.projected + refresh + finale;
+  const before = current ? budgetFrom(withFrequency(cfg, current), base, counts, nowMs).projected : null;
+  const fits = total <= b.cap;
+  return { platforms, perDay: platforms.reduce((n, p) => n + p.perDay, 0), used: b.used, planned: b.reserved, projected: b.projected,
+    refresh, finale, total, cap: b.cap, fits, headroom: b.cap - total,
+    allowed: fits || (before !== null && b.projected <= before) };
+}
+
+/**
+ * Records a finale costs between startMs and endMs, one record per account per run: Instagram in every slot of
+ * cfg.finale.everyMinutes, TikTok only at the start and at the last run (one run when the finale fits in one slot),
+ * and nothing for a platform that is set to "off". started: the finale is already running, so its start run is behind
+ * us (a deadline change). { tiktokRuns, instagramRuns, tiktok, instagram, total }.
+ */
+export function finaleCost(cfg, counts, startMs, endMs, { started = false } = {}) {
+  const { count } = finaleSlots(startMs, endMs, cfg.finale.everyMinutes);
+  const instagramRuns = platformOn(cfg, "instagram") ? count : 0;
+  const tiktokRuns = platformOn(cfg, "tiktok") ? Math.min(count, started ? 1 : 2) : 0;
+  const tiktok = tiktokRuns * (counts.tiktok ?? 0), instagram = instagramRuns * (counts.instagram ?? 0);
+  return { tiktokRuns, instagramRuns, tiktok, instagram, total: tiktok + instagram };
+}
+
 /** Scheduled profile windows of a platform still to come this calendar month that have not run yet. */
 export function remainingProfileRuns(cfg, nowMs, done, platform = "tiktok") {
   const today = localDay(nowMs);
@@ -356,24 +458,45 @@ export function finaleRuns(startMs, endMs, everyMinutes) {
   return Math.max(0, Math.ceil((endMs - startMs) / (everyMinutes * 60e3)));
 }
 
+/** The every-minutes slot of the clock a moment falls in (Amsterdam is a whole number of hours from UTC: the slots finaleWindowKey names). */
+const slotOf = (ms, everyMinutes) => Math.floor(ms / (everyMinutes * 60e3));
+
+/** The slots of a finale: the one it starts in up to the one before its end. { first, last, count } (slot numbers). */
+export function finaleSlots(startMs, endMs, everyMinutes) {
+  const first = slotOf(startMs, everyMinutes);
+  const last = Math.max(first, slotOf(endMs - 1, everyMinutes));
+  return { first, last, count: last - first + 1 };
+}
+
+/**
+ * Instagram is pulled in every slot of a finale, TikTok only at the start and at the last run: true when nowMs is in
+ * the slot the finale started in or in its last slot (same rule as finale_tiktok_slot in collector/model.py).
+ */
+export function finaleTiktokSlot(finale, nowMs, everyMinutes) {
+  const { first, last } = finaleSlots(finale.start, finale.end, everyMinutes);
+  const slot = slotOf(nowMs, everyMinutes);
+  return slot === first || slot === last;
+}
+
 /** Window keys ("YYYY-MM-DD/name") that are open right now, Amsterdam time. */
 export function openWindows(cfg, nowMs, finale = null) {
   const day = localDay(nowMs);
   const time = localTime(nowMs);
   const inside = (w) => w.start <= time && time <= w.end;
   // A live finale replaces the normal windows (runs every few minutes, even after campaign.end), for both platforms.
+  // The weekly posts refresh is a TikTok pull: with TikTok set to "off" it has no window either.
+  const refreshOpen = () => {
+    const r = cfg.schedule.refresh;
+    return platformOn(cfg, "tiktok") && weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r) ? [`${day}/${r.name}`] : [];
+  };
   if (finale && finale.phase === "live") {
     const key = finaleWindowKey(nowMs, cfg.finale.everyMinutes);
-    const open = [key, key.replace("/finale-", "/ig-finale-")];
-    const r = cfg.schedule.refresh;
-    if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
-    return open;
+    // Instagram in every slot, TikTok only in the first and the last one; a platform that is off has no finale runs.
+    const tiktok = platformOn(cfg, "tiktok") && finaleTiktokSlot(finale, nowMs, cfg.finale.everyMinutes);
+    return [...(tiktok ? [key] : []), ...(platformOn(cfg, "instagram") ? [key.replace("/finale-", "/ig-finale-")] : []), ...refreshOpen()];
   }
   if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
-  const open = PLATFORMS.flatMap((p) => platformWindows(cfg, p)).filter(inside).map((w) => `${day}/${w.name}`);
-  const r = cfg.schedule.refresh;
-  if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
-  return open;
+  return [...PLATFORMS.flatMap((p) => platformWindows(cfg, p)).filter(inside).map((w) => `${day}/${w.name}`), ...refreshOpen()];
 }
 
 /**
@@ -406,8 +529,16 @@ export function dueWindows(cfg, runLog, nowMs, finale = null) {
  * Same numbers as Collector.reserve_by_platform in collector/runner.py.
  */
 export function budget(cfg, runLog, counts, nowMs) {
-  const used = monthUsage(runLog, nowMs);
-  const done = doneWindows(runLog);
+  return budgetFrom(cfg, budgetBase(runLog, nowMs), counts, nowMs);
+}
+
+/** What the month's budget starts from: records used this month and the windows already done, from run_log. */
+export function budgetBase(runLog, nowMs) {
+  return { used: monthUsage(runLog, nowMs), done: doneWindows(runLog) };
+}
+
+/** The same as budget(), from a budgetBase (the page gets one from the Worker: it only has the last rows of run_log). */
+export function budgetFrom(cfg, { used, done }, counts, nowMs) {
   const accounts = typeof counts === "number" ? { tiktok: counts, instagram: 0 } : counts;
   const byPlatform = {};
   let runsLeft = 0, reserved = 0;
@@ -626,9 +757,19 @@ export function todayGroups(status) {
   };
 }
 
-/** Accounts "Controleer nu" fetches: every non-private account (TikTok and Instagram) of the students not done yet today. */
-export function todayTargets(status) {
-  return status.rows.filter((r) => !r.done && !r.private).flatMap((r) => r.checkable);
+/**
+ * Accounts "Controleer nu" fetches: every non-private account (TikTok and Instagram) of the students not done yet today,
+ * except those of a platform set to "off" (frequency = cfg.frequency; without it nothing is left out).
+ */
+export function todayTargets(status, frequency = null) {
+  const on = (t) => !frequency || (frequency[t.startsWith("instagram:") ? "instagram" : "tiktok"] ?? "off") !== "off";
+  return status.rows.filter((r) => !r.done && !r.private).flatMap((r) => r.checkable).filter(on);
+}
+
+/** The platforms "Controleer nu" skips because they are set to "off" while there was something to check there. */
+export function todaySkipped(status, frequency) {
+  const all = todayTargets(status);
+  return PLATFORMS.filter((p) => (frequency?.[p] ?? "off") === "off" && all.some((t) => t.startsWith("instagram:") === (p === "instagram")));
 }
 
 /** How many of the targets are Instagram accounts ("instagram:<handle>") and how many TikTok. */
@@ -775,10 +916,57 @@ export function hashtagPosts(posts, startDay) {
     .sort((a, b) => b.t - a.t);
 }
 
+/** Edit distance between two hashtags (insert, delete, replace or swap two neighbours: one slip of the keyboard is 1). */
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
 /**
- * Who uses a hashtag. students: [{ id, posts (Instagram posts), note? }] (note: why nothing can be seen, e.g. "privé").
+ * Is `other` a hashtag that was probably meant as `tag`: the start of it or the other way round (#grafischlyceum for
+ * #grafischlyceumutrecht, from 6 letters up) or a typo of it (#grafischlyceumutecht: one slip from 7 letters up, two
+ * from 12)? Short hashtags (glu, av) are never "close" to anything, or every search would find relatives.
+ */
+export function closeTag(tag, other) {
+  if (!tag || !other || tag === other) return false;
+  const [short, long] = tag.length <= other.length ? [tag, other] : [other, tag];
+  if (short.length >= 6 && long.startsWith(short)) return true;
+  if (long.length < 7) return false;
+  return editDistance(tag, other) <= (long.length >= 12 ? 2 : 1);
+}
+
+/**
+ * The hashtags a student used that are close to `tag` (see closeTag) in their posts from startDay on, most used first:
+ * [{ tag, instagram, tiktok, total }]. Instagram posts are the ones this tab is about; TikTok posts only add a hint
+ * (a student may use the school hashtag, with a typo, on TikTok), they never count as "uses".
+ */
+export function nearTags(tag, instagramPosts, tiktokPosts, startDay) {
+  const found = new Map();
+  for (const [platform, posts] of [["instagram", instagramPosts], ["tiktok", tiktokPosts]]) {
+    for (const x of hashtagPosts(posts, startDay)) {
+      for (const t of x.tags) {
+        if (!closeTag(tag, t)) continue;
+        if (!found.has(t)) found.set(t, { tag: t, instagram: 0, tiktok: 0, total: 0 });
+        found.get(t)[platform]++;
+        found.get(t).total++;
+      }
+    }
+  }
+  return [...found.values()].sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
+}
+
+/**
+ * Who uses a hashtag. students: [{ id, posts (Instagram posts), tiktokPosts?, note? }] (note: why nothing can be seen,
+ * e.g. "privé"; tiktokPosts only for the hints of nearTags).
  * uses: { id, used, total, last (ms of the latest post with it), lastPost, onLast (does the newest post have it?) }
- * notUse: { id, total, note }
+ * notUse: { id, total, note, near } (near: close hashtags this student used instead, see nearTags)
  */
 export function tagUsage(students, tag, startDay) {
   const uses = [], notUse = [];
@@ -786,7 +974,7 @@ export function tagUsage(students, tag, startDay) {
     const posts = hashtagPosts(s.posts, startDay);
     const withTag = posts.filter((x) => x.tags.has(tag));
     if (withTag.length) uses.push({ id: s.id, used: withTag.length, total: posts.length, last: withTag[0].t, lastPost: withTag[0].post, onLast: posts[0].tags.has(tag) });
-    else notUse.push({ id: s.id, total: posts.length, note: s.note || null });
+    else notUse.push({ id: s.id, total: posts.length, note: s.note || null, near: nearTags(tag, s.posts, s.tiktokPosts, startDay) });
   }
   return { uses, notUse };
 }

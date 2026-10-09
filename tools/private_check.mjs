@@ -79,7 +79,8 @@ const igPost = (handle, iso, type = "reel", tags = "glu fotografie") => igPosts.
 [["2026-09-30", "glu fotografie"], ["2026-10-01", "glu"], ["2026-10-02", "fotografie"]].forEach(([day, tags]) => igPost("anna.gram", `${day}T09:15:00Z`, "reel", tags));
 const chrisMissed = lib.studentStats(posts.filter((p) => p.handle === "test_03"), CFG, NOW, []).missedList;
 const chrisRescued = chrisMissed.filter((d) => d >= IG_START).slice(0, 2);   // days Instagram counts (from IG_START)
-chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo", i === 0 ? "av" : "glu"));
+// (Chris's #glu post also carries a typo of #fotografie: a close hashtag for the "gebruiken niet" list.)
+chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo", i === 0 ? "av" : "glu fotografi"));
 for (const day of ["2026-09-30", "2026-10-02"]) igPost("pim.only", `${day}T14:00:00Z`, "carousel");
 igPost("pim.only", "2026-10-05T08:00:00Z"); igPost("pim.only", "2026-10-05T18:00:00Z");
 igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo", "av"); // today: reaches the dagopdracht (2)
@@ -90,6 +91,16 @@ igTracked.forEach((h, i) => {
   }
 });
 const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: "2026-09-30T05:00:00Z", baseline_followers: 100 + i * 10 }));
+// "Video verdwenen": test_06 (Finn) lost one video on 6 Oct (recent) and one on 30 Sep (old); test_07 (Gijs) only the old one.
+// Overzicht warns only about videos of the last 3 days; the student page lists them all.
+const oldGone = "2026-09-30T16:00:00Z";
+posts.find((p) => p.handle === "test_06" && !p.missing_since).missing_since = oldGone;
+posts.find((p) => p.handle === "test_07" && !p.missing_since).missing_since = oldGone;
+// Eva (test_05, no Instagram handle) put the same typo on a TikTok post after the Instagram start.
+{
+  const evaPost = posts.filter((p) => p.handle === "test_05" && p.created_at >= `${IG_START}T00:00:00Z`).at(-1);
+  evaPost.hashtags = `${evaPost.hashtags} fotografi`.trim();
+}
 // Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
 Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
 Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
@@ -113,6 +124,8 @@ const students_for_tags = () => [...lib.groupAccounts(lib.parseAccounts(accounts
   id: g.key, posts: g.instagram ? lib.instagramPosts(igPosts.filter((p) => p.handle === g.instagram)) : [] }));
 const posted = [];
 let schoolTags = [...CFG.hashtags.school];   // the school hashtags as saved on Beheer
+let frequency = { ...CFG.frequency };        // the pull frequency as saved on Beheer (settings tab); starts at the config.yaml value
+const effective = () => lib.withFrequency(CFG, frequency);
 let todayStarted = null;
 let finale = null;       // { start, end, phase } like the Worker returns
 let finaleHasRun = false;
@@ -125,14 +138,16 @@ const postHistory = posts.flatMap((p) => {
 function api(req, body) {
   const accounts = lib.parseAccounts(accountsSheet);
   if (req.method === "GET" && req.url === "/api/data") {
+    const cfgNow = effective();
     return [200, { me: "docent@school.nl", serverTime: NOW,
-      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
+      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: cfgNow.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
         forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
-        frequency: CFG.frequency, instagram: igConfig },
+        frequency: cfgNow.frequency, frequencyDefault: CFG.frequency, frequencySteps: CFG.frequencySteps, instagram: igConfig },
       finale, finaleHasRun,
       settings: { schoolHashtags: schoolTags, schoolHashtagsDefault: [...CFG.hashtags.school] },
       accounts, handles, history, posts, igHandles, igHistory, igPosts, igBaseline, runLog, activity,
-      budget: lib.budget(CFG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
+      budget: lib.budget(cfgNow, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
+      budgetBase: { used: lib.monthUsage(runLog, NOW), done: [...lib.doneWindows(runLog)] },
       lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
       lastTodayCheck: null, tasks, outliers: [...outliers] }];
   }
@@ -170,6 +185,17 @@ function api(req, body) {
       if (body.was !== schoolTags.join(" ")) return [409, { error: "De lijst is intussen veranderd. Laad de pagina opnieuw." }];
       schoolTags = tags;
       return [200, { ok: true, tags, message: `Schoolhashtags opgeslagen: ${tags.map((t) => "#" + t).join(" ")}.` }];
+    }
+    if (req.url === "/api/settings/frequency") {
+      const current = effective().frequency;
+      if (lib.PLATFORMS.some((pl) => !lib.frequencyChoice(body[pl], CFG))) return [400, { error: "Kies voor TikTok Uit, 1× per dag of elke 12, 6, 4 of 2 uur." }];
+      if (lib.PLATFORMS.some((pl) => body.was?.[pl] !== current[pl])) return [409, { error: "De instelling is intussen veranderd. Laad de pagina opnieuw." }];
+      const accountsNow = lib.parseAccounts(accountsSheet);
+      const pv = lib.frequencyPreview(CFG, lib.budgetBase(runLog, NOW), { tiktok: tracked.length, instagram: accountsNow.filter((a) => a.instagramTracked).length },
+        NOW, body, current, { finaleDone: finaleHasRun });
+      if (!pv.allowed) return [409, { error: `Past niet in het budget: ${pv.total} is meer dan de limiet van ${pv.cap}. Kies een lagere frequentie.` }];
+      frequency = { tiktok: body.tiktok, instagram: body.instagram };
+      return [200, { ok: true, frequency, message: `Schema opgeslagen: TikTok ${lib.FREQUENCY_NL[body.tiktok]}, Instagram ${lib.FREQUENCY_NL[body.instagram]}.` }];
     }
     if (req.url === "/api/log") return [200, { ok: true }];
     if (req.url === "/api/outliers") {
@@ -397,6 +423,18 @@ if (!/mediaan per leerling/.test(await page.textContent("#ov-tiles"))) fail("ove
 await page.click('#ov-body td.wide-only button[data-warn]:text("verdwenen")');
 const detail = await page.textContent("#ov-body tr.warn-detail");
 if (!/verdwenen sinds/.test(detail) || !/open ↗/.test(detail)) fail(`overzicht: warning details missing (${detail.slice(0, 80)})`);
+{
+  // Finn lost a video on 6 Oct and one on 30 Sep: Overzicht only knows about the recent one, and says where the rest is.
+  const finn = await page.$eval('#ov-body tr[data-handle="test_06"]', (r) => r.textContent.replace(/\s+/g, " "));
+  if (!/1 video verdwenen/.test(finn) || /2 video's verdwenen/.test(finn)) fail(`overzicht: Finn's "verdwenen" badge (${finn.slice(0, 200)})`);
+  const items = await page.$$eval("#ov-body tr.warn-detail li li", (li) => li.filter((x) => /verdwenen sinds/.test(x.textContent)).map((x) => x.textContent.replace(/\s+/g, " ")));
+  if (items.length !== 1 || !/6 okt/.test(items[0]) && !/di 6/.test(items[0])) fail(`overzicht: the details list ${items.length} videos (${items.join(" | ")})`);
+  const detailBox = await page.textContent("#ov-body tr.warn-detail");
+  if (!/Alleen de laatste 3 dagen; in totaal 2 video's verdwenen/.test(detailBox.replace(/\s+/g, " ")) || !(await page.$('#ov-body tr.warn-detail a[href="#leerlingen/test_06"]'))) fail(`overzicht: no pointer to the student page (${detailBox.replace(/\s+/g, " ").slice(0, 300)})`);
+  // Gijs only lost a video 9 days ago: no warning on Overzicht at all.
+  const gijs = await page.$eval('#ov-body tr[data-handle="test_07"]', (r) => r.textContent);
+  if (/verdwenen/.test(gijs)) fail(`overzicht: an old "verdwenen" is still on Overzicht (${gijs.slice(0, 120)})`);
+}
 await page.click('#ov-body td.wide-only button[data-warn]:text("privé")');
 if (!/privé sinds/.test(await page.textContent("#ov-body tr.warn-detail"))) fail("overzicht: privé has no 'since'");
 if (!(await page.textContent("#ov-body")).includes("opdracht 1 okt")) fail("overzicht: no dagopdracht badge");
@@ -509,6 +547,14 @@ const pimTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) 
 const pimLinks = await page.$$eval("#ll-content .detail-head a", (a) => a.map((x) => x.textContent.trim()));
 if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only op Instagram ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
 if ((await page.$$eval("#st-ig-posts tbody tr", (r) => r.length)) !== igPosts.filter((p) => p.handle === "pim.only").length) fail("student detail: Pim's Instagram posts not all listed");
+// The student page keeps the full list of videos that disappeared, however long ago.
+for (const [h, n] of [["test_06", 2], ["test_07", 1]]) {
+  await page.evaluate((x) => { location.hash = "leerlingen/" + x; }, h);
+  await page.waitForSelector(".cal");
+  const head = (await page.textContent("#ll-content .detail-head")).replace(/\s+/g, " ");
+  const items = await page.$$eval("#ll-content .warn-list li li", (li) => li.length);
+  if (!head.includes(`${n} video${n > 1 ? "'s" : ""} verdwenen`) || items !== n) fail(`student detail: ${h} shows "${head.slice(-80)}" with ${items} videos, expected ${n}`);
+}
 await page.evaluate(() => { location.hash = "leerlingen/test_04"; });
 await page.waitForSelector(".cal");
 {
@@ -536,7 +582,11 @@ console.log(`vandaag: nog niet/gepost/privé = ${todayCounts.join("/")}, knop: "
 if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${cost})`);
 // "Controleer nu" fetches both platforms: the cost names them (Chris is the only one not done with a public Instagram account).
 if (!/^(\d+) accounts, \1 records \((\d+) TikTok, 1 Instagram\)$/.test(cost)) fail(`vandaag: cost does not split TikTok and Instagram (${cost})`);
-if (!(await page.textContent("#view-vandaag")).includes("TikTok- én Instagram-accounts")) fail("vandaag: the hint does not say that Instagram is fetched too");
+// Under "Controleer nu": one short line (what counts, stories, how long), not two paragraphs; the cost line above names the platforms.
+{
+  const hints = await page.$$eval("#view-vandaag .card:first-child p.hint", (p) => p.map((x) => x.textContent.replace(/\s+/g, " ").trim()));
+  if (hints.length !== 1 || hints[0].length > 160 || !hints[0].includes("Stories worden niet meegeteld.") || !/5–7 minuten per platform/.test(hints[0])) fail(`vandaag: the explanation under Controleer nu (${hints.length} paragraphs: ${hints.join(" | ")})`);
+}
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
 // No Instagram handle and nothing on TikTok today: "niet te controleren", in a group of their own with a link to the handle form,
 // not under "nog niet gepost". Together the four lists hold every student once.
@@ -632,6 +682,20 @@ if ((await page.inputValue("#tag-search")) !== "fotografie" || !(await page.text
 // Who has posted without it comes first, those nothing can be seen of (no Instagram, private, not found) last.
 const notFoto = await rowsText("#tag-notuse");
 if (!notFoto[0].startsWith("Chris") || !/0 van 2 posts/.test(notFoto[0]) || !/geen Instagram-handle/.test(notFoto.at(-1))) fail(`hashtags: order of the "gebruiken niet" list (${notFoto.join(" | ")})`);
+// A hashtag that looks like the one searched is named next to the student: Chris on Instagram, Eva (no handle) on TikTok.
+{
+  const chris = notFoto.find((t) => t.startsWith("Chris")), eva = notFoto.find((t) => t.startsWith("Eva"));
+  if (!/gebruikt #fotografi \(1× Instagram\)$/.test(chris)) fail(`hashtags: Chris's close hashtag (${chris})`);
+  if (!/geen Instagram-handle/.test(eva) || !/gebruikt #fotografi \(1× TikTok\)$/.test(eva)) fail(`hashtags: Eva's close hashtag on TikTok (${eva})`);
+  if ((await rowsText("#tag-uses")).some((t) => /gebruikt #/.test(t))) fail("hashtags: a student who uses the hashtag got a 'gebruikt #' hint");
+  // The numbers stay Instagram: Eva does not count as a user because of TikTok.
+  if (!notFoto.some((t) => t.startsWith("Eva")) || (await rowsText("#tag-uses")).some((t) => t.startsWith("Eva"))) fail("hashtags: a TikTok post made Eva a user");
+  // A short school hashtag has no relatives.
+  await page.fill("#tag-search", "glu");
+  if ((await rowsText("#tag-notuse")).some((t) => /gebruikt #/.test(t))) fail("hashtags: #glu got close-hashtag hints");
+  await page.fill("#tag-search", "fotografie");
+  if (process.env.SHOTS) await page.locator("#tag-result").screenshot({ path: `${process.env.SHOTS}/private-hashtags-near-1280px.png` });
+}
 {
   // The same at phone size: the lists stack, nothing pushes the page sideways.
   const hp = await open({ width: 390, height: 844 }, "#hashtags");
@@ -652,10 +716,99 @@ if (!budgetText.includes(String(CFG.budget.monthlyCap).replace(/\B(?=(\d{3})+(?!
 const igAccounts = lib.parseAccounts(accountsSheet).filter((a) => a.instagramTracked).length;
 if (!/TikTok: nog \d+ geplande profielruns deze maand × 13 accounts/.test(budgetText)) fail(`beheer: no TikTok budget line: ${budgetText.slice(0, 200)}`);
 if (!new RegExp(`Instagram: nog \\d+ geplande profielruns deze maand × ${igAccounts} accounts`).test(budgetText)) fail(`beheer: no Instagram budget line: ${budgetText.slice(0, 300)}`);
-const scheduleText = await page.textContent("#bh-schedule");
+const scheduleText = await page.textContent("#freq-preview");
 if (!/TikTok: 2× per dag, elke 12 uur: 08:00, 20:00/.test(scheduleText)) fail(`beheer: TikTok schedule wrong: ${scheduleText.slice(0, 200)}`);
 if (!/Instagram: 6× per dag, elke 4 uur: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00/.test(scheduleText)) fail(`beheer: Instagram schedule wrong: ${scheduleText.slice(0, 300)}`);
 console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)}…"`);
+// Schema: a choice per platform in fixed steps (no slider), what it costs before anything is saved, saving, refusing what doesn't fit
+// under the cap (lowering is always allowed), and "Uit" showing up on Beheer and Vandaag.
+{
+  const nlNum = (n) => new Intl.NumberFormat("nl-NL").format(n);
+  const counts = { tiktok: tracked.length, instagram: igAccounts };
+  const pvOf = (choice) => lib.frequencyPreview(CFG, lib.budgetBase(runLog, NOW), counts, NOW, choice, { tiktok: "12h", instagram: "4h" }, { finaleDone: finaleHasRun });
+  const labels = ["Uit", "1× per dag", "Elke 12 uur", "Elke 6 uur", "Elke 4 uur", "Elke 2 uur"];
+  for (const pl of ["tiktok", "instagram"]) {
+    const opts = await page.$$eval(`#freq-${pl} option`, (o) => o.map((x) => [x.value, x.textContent]));
+    if (opts.map((o) => o[1]).join() !== labels.join() || opts.map((o) => o[0]).join() !== "off,daily,12h,6h,4h,2h") fail(`beheer: choices for ${pl} are ${opts.join(" | ")}`);
+  }
+  if (await page.$('#freq-form input[type="range"], #freq-form input[type="number"]')) fail("beheer: the frequency is a free input, not fixed steps");
+  const select = async (tiktok, instagram) => { await page.selectOption("#freq-tiktok", tiktok); await page.selectOption("#freq-instagram", instagram); };
+  const preview = async () => (await page.textContent("#freq-preview")).replace(/\s+/g, " ");
+  // What is saved (the config.yaml start value) is selected, nothing to save yet.
+  if ((await page.inputValue("#freq-tiktok")) !== "12h" || (await page.inputValue("#freq-instagram")) !== "4h" || !(await page.isDisabled("#freq-save"))) fail("beheer: the saved frequency is not what is selected");
+  let text = await preview();
+  const base = pvOf({ tiktok: "12h", instagram: "4h" });
+  if (!text.includes("Dit is het huidige schema.") || !text.includes(`× ${counts.tiktok} accounts = ${nlNum(base.platforms[0].perDay)} records per dag`)
+      || !text.includes(`× ${counts.instagram} accounts = ${nlNum(base.platforms[1].perDay)} records per dag`)) fail(`beheer: schedule preview wrong (${text.slice(0, 300)})`);
+  if (!text.includes(`= ${nlNum(base.projected)}`) || !text.includes(`weekrefresh ${nlNum(base.refresh)}`) || !text.includes(`van de limiet van ${nlNum(CFG.budget.monthlyCap)}`)) fail(`beheer: month total / reserves wrong (${text.slice(0, 500)})`);
+  // Choosing shows the cost at once (before saving) and enables Opslaan.
+  await select("2h", "2h");
+  const big = pvOf({ tiktok: "2h", instagram: "2h" });
+  text = await preview();
+  if (!text.includes("12× per dag") || !text.includes(`${nlNum(big.perDay)} records per dag`) || !text.includes(`= ${nlNum(big.projected)}`) || !text.includes("Past binnen de limiet.") || (await page.isDisabled("#freq-save"))) {
+    fail(`beheer: preview of "2h" wrong (${text.slice(0, 400)})`);
+  }
+  if (process.env.SHOTS) await page.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-2h-1280px.png` });
+  // Reload data while a choice is open: the choice stays (a reload must not throw it away).
+  await page.evaluate(() => document.querySelector("#freq-form").dispatchEvent(new Event("change", { bubbles: true })));
+  if ((await page.inputValue("#freq-tiktok")) !== "2h") fail("beheer: the open choice was reset");
+  // A full month: bigger doesn't fit (refused, Opslaan off), lowering is allowed even though the month is over the cap.
+  runLog.push({ timestamp: new Date(NOW).toISOString(), run_type: "profiles", window: "big", dry_run: false, expected_records: 1,
+    actual_records: CFG.budget.monthlyCap - 300, errors: 0, status: "ok", snapshot_ids: "sd_big", notes: "" });
+  await page.reload();
+  await page.waitForSelector("#acc-body tr");
+  await select("2h", "4h");
+  text = await preview();
+  if (!/Past niet in het budget: [\d.]+ is meer dan de limiet van 23\.000/.test(text) || !(await page.isDisabled("#freq-save"))) fail(`beheer: a choice that doesn't fit is not refused (${text.slice(-260)})`);
+  if (process.env.SHOTS) await page.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-refused-1280px.png` });
+  await select("daily", "off");
+  text = await preview();
+  if (!text.includes("kost minder dan het huidige schema") || (await page.isDisabled("#freq-save"))) fail(`beheer: lowering is not allowed over the cap (${text.slice(-260)})`);
+  runLog.pop();
+  await page.reload();
+  await page.waitForSelector("#acc-body tr");
+  if (process.env.SHOTS) {
+    const ph = await open({ width: 390, height: 844 }, "#beheer");
+    await ph.waitForSelector("#freq-form");
+    await ph.selectOption("#freq-tiktok", "off");
+    await ph.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-off-390px.png` });
+    if (!(await noHScroll(ph))) fail("390px: Beheer with the schedule form scrolls sideways");
+    await ph.close();
+  }
+  // Save TikTok "Uit": posted with what the page showed, the page follows, and Nu verversen and Controleer nu say it is skipped.
+  await select("off", "4h");
+  text = await preview();
+  if (!text.includes("TikTok: uit: geen geplande runs, 0 records per dag") || !/TikTok staat uit: geen geplande runs, geen weekrefresh en geen finale-runs/.test(text) || !text.includes("weekrefresh uit")) fail(`beheer: preview of "Uit" wrong (${text.slice(0, 400)})`);
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /Schema opgeslagen: TikTok uit, Instagram elke 4 uur/.test(document.getElementById("freq-msg").textContent));
+  const savedBody = posted.filter((x) => x.url === "/api/settings/frequency").at(-1).body;
+  if (JSON.stringify(savedBody) !== JSON.stringify({ tiktok: "off", instagram: "4h", was: { tiktok: "12h", instagram: "4h" } })) fail(`beheer: frequency posted ${JSON.stringify(savedBody)}`);
+  await page.waitForFunction(() => /huidige schema/.test(document.getElementById("freq-preview").textContent));
+  if (!(await page.textContent("#bh-refresh-note")).includes("TikTok staat uit en wordt overgeslagen.")) fail("beheer: no note on Nu verversen that TikTok is skipped");
+  if (!(await page.textContent("#bh-schedule")).includes("uit: TikTok staat uit")) fail("beheer: weekrefresh line does not say it is off");
+  await page.evaluate(() => { location.hash = "vandaag"; });
+  await page.waitForSelector("#td-todo li");
+  const cost = await page.textContent("#td-cost");
+  if (!/TikTok staat uit en wordt overgeslagen/.test(cost) || /TikTok\)/.test(cost.replace("TikTok staat", ""))) fail(`vandaag: cost line with TikTok off (${cost})`);
+  if (!/Geplande runs: TikTok uit, Instagram elke 4 uur/.test((await page.textContent("#view-vandaag")).replace(/\s+/g, " "))) fail("vandaag: planned runs do not show TikTok as off");
+  let confirmed = "";
+  page.once("dialog", (d) => { confirmed = d.message(); d.dismiss(); });
+  await page.click("#td-check");
+  if (!/TikTok staat uit en wordt overgeslagen\./.test(confirmed) || /TikTok,/.test(confirmed.replace("TikTok staat", ""))) fail(`vandaag: the confirmation does not name the skipped platform (${confirmed})`);
+  // Back to the start value (and a refused save: someone changed it meanwhile).
+  await page.evaluate(() => { location.hash = "beheer"; });
+  await page.waitForSelector("#freq-form");
+  await select("12h", "4h");
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /Schema opgeslagen: TikTok elke 12 uur/.test(document.getElementById("freq-msg").textContent));
+  await page.waitForFunction(() => /huidige schema/.test(document.getElementById("freq-preview").textContent));
+  frequency = { tiktok: "daily", instagram: "daily" };   // another teacher saves in the meantime
+  await select("6h", "4h");
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /intussen veranderd/.test(document.getElementById("freq-msg").textContent));
+  frequency = { ...CFG.frequency };
+  console.log(`beheer: schema ${labels.length} steps, preview, save, refusal, lowering, Uit on Beheer and Vandaag`);
+}
 const issuesText = await page.textContent("#acc-issues");
 if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`beheer: problems list incomplete: ${issuesText}`);
 // Schoolhashtags: the saved list, a live preview, a refused entry, a save, "Standaardlijst" and the new presets on the Hashtags tab.
@@ -806,6 +959,9 @@ if (!lines[0].includes("dagen_niet_te_controleren")) fail("export: no dagen_niet
     if (got !== `${pick.st.unknownDays}/${pick.st.missedDays}`) fail(`export: ${pick.name} (no handle) unknown/missed days ${got}, expected ${pick.st.unknownDays}/${pick.st.missedDays}`);
     if (!line[head.indexOf("let_op")].includes("geen Instagram-handle")) fail("export: let_op has no 'geen Instagram-handle'");
   }
+  // The export keeps every video that disappeared (Finn lost two); only Overzicht limits it to the last days.
+  const finnExport = cells(lines.find((l) => l.startsWith("Finn;")));
+  if (!finnExport[head.indexOf("let_op")].includes("2 video's verdwenen")) fail(`export: Finn's let_op (${finnExport[head.indexOf("let_op")]})`);
 }
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
@@ -842,13 +998,18 @@ await page.close();
   if (await fp.isVisible("#reminder")) fail("reminder banner visible outside the reminder period");
   const card = await fp.textContent("#bh-finale");
   if (!/records per uur/.test(card) || !/elke 15 minuten/.test(card) || !/Eindstand/.test(card)) fail("finale card: explanation or cost per hour missing");
+  // Instagram every 15 minutes, TikTok only at the start and the last run: said in the text and in the cost.
+  const flat = card.replace(/\s+/g, " ");
+  if (!/Instagram-profielen elke 15 minuten/.test(flat) || !/TikTok alleen bij de start en bij de laatste run/.test(flat)
+      || !/records per uur voor Instagram \(4 runs × \d+ accounts\), plus voor TikTok [\d.]+ records in totaal \(2 runs × \d+ accounts: bij de start en bij de laatste run\)/.test(flat)) fail(`finale card: cost text wrong (${flat.slice(0, 600)})`);
   // Dutch 24-hour fields instead of the browser's own date/time inputs ("02:00 AM").
   if (await fp.$('#bh-finale input[type="date"], #bh-finale input[type="time"]')) fail("finale card: native date/time inputs");
   const hours = await fp.$$eval('#finale-start [name="hour"] option', (o) => o.map((x) => x.textContent));
   const dayText = await fp.$eval('#finale-start [name="date"] option', (o) => o.textContent);
   if (hours.length !== 24 || hours[23] !== "23" || !/^(ma|di|wo|do|vr|za|zo) \d+ /.test(dayText)) fail(`finale card: not Dutch 24-hour fields (${dayText}, ${hours.length} hours)`);
   const est = await fp.textContent("#finale-start-estimate");
-  if (!/runs × \d+ accounts/.test(est)) fail(`finale card: no estimate (${est})`);
+  const m = est.match(/(\d+) Instagram-runs × (\d+) accounts \+ 2 TikTok-runs × (\d+) accounts ≈ ([\d.]+) records/);
+  if (!m || Number(m[1]) * Number(m[2]) + 2 * Number(m[3]) !== Number(m[4].replace(/\./g, ""))) fail(`finale card: estimate wrong (${est})`);
   fp.once("dialog", (d) => d.accept());
   await fp.click('#finale-start button[type="submit"]');
   await fp.waitForSelector("#finale-stop", { timeout: 10000 });
@@ -977,6 +1138,34 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   }
   console.log(`presentatie ${w}x${h}: ${total} slides checked`);
   await pp.close();
+}
+
+// Beheer: "Leerlingen zonder Instagram" is only there while somebody lacks a handle. This goes last: it gives students handles.
+{
+  const igMissing = () => [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((g) => !g.instagram);
+  const bp = await open({ width: 1280, height: 900 }, "#beheer");
+  await bp.waitForSelector("#acc-body tr");
+  if (await bp.$eval("#ig-card", (c) => c.hidden) || !igMissing().length) fail("beheer: 'Leerlingen zonder Instagram' hidden while students lack a handle");
+  // Everybody but one has a handle: the last one is filled in through the form, which then makes the block disappear.
+  const [last, ...rest] = igMissing();
+  for (const g of rest) accountsSheet.find((r) => r._row === g.instagramRow).instagram_handle = `fill.ig${g.instagramRow}`;
+  await bp.reload();
+  await bp.waitForSelector("#ig-missing form[data-ig-quick]");
+  if ((await bp.$$eval("#ig-missing form[data-ig-quick]", (f) => f.length)) !== 1 || await bp.$eval("#ig-card", (c) => c.hidden)) fail("beheer: the block should show the one student without a handle");
+  await bp.fill("#ig-missing form[data-ig-quick] input", "@Last.One");
+  await bp.click("#ig-missing form[data-ig-quick] button[type=submit]");
+  await bp.waitForFunction(() => document.getElementById("ig-card").hidden, null, { timeout: 10000 });
+  const said = await bp.textContent("#acc-msg");
+  if (!/Instagram van .*@last\.one opgeslagen/.test(said)) fail(`beheer: no confirmation after saving the last handle (${said})`);
+  if (!(await bp.isVisible("#acc-body tr")) || !(await bp.isVisible("#freq-form"))) fail("beheer: the rest of Beheer disappeared with the block");
+  // The students' Vandaag/Overzicht groups agree: nobody without a handle is left either.
+  await bp.evaluate(() => { location.hash = "overzicht"; });
+  await bp.waitForSelector("#ov-body tr[data-handle]");
+  if (/geen Instagram-handle/.test(await bp.textContent("#ov-actions"))) fail("overzicht: Actie nodig still lists students without a handle");
+  if (process.env.SHOTS) { await bp.evaluate(() => { location.hash = "beheer"; }); await bp.screenshot({ path: `${process.env.SHOTS}/private-beheer-no-ig-block-1280px.png`, fullPage: true }); }
+  if (bp.errors.length) fail(`beheer without the Instagram block: browser errors: ${bp.errors.join(" | ")}`);
+  console.log(`beheer: the Instagram block is gone once the last of ${rest.length + 1} students got a handle; the confirmation moved above the table`);
+  await bp.close();
 }
 
 await browser.close();

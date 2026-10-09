@@ -2,6 +2,7 @@
 import * as lib from "./lib.js";
 
 const WARN_DAYS = 2; // "no post for 2+ days" (free days don't count)
+const MISSING_RECENT_DAYS = 3; // Overzicht warns about "video verdwenen" only for videos that disappeared in the last 3 days
 const WEEKDAYS_NL = { monday: "maandag", tuesday: "dinsdag", wednesday: "woensdag", thursday: "donderdag",
   friday: "vrijdag", saturday: "zaterdag", sunday: "zondag" };
 const nf = new Intl.NumberFormat("nl-NL");
@@ -13,7 +14,7 @@ const fmt = (n) => (n == null ? "–" : nf.format(n));
 const signed = (n) => (n == null ? "–" : (n > 0 ? "+" : n < 0 ? "−" : "±") + nf.format(Math.abs(n)));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const PLATFORM_NL = { tiktok: "TikTok", instagram: "Instagram" };
-const FREQ_NL = { off: "uit", daily: "1× per dag", "12h": "elke 12 uur", "6h": "elke 6 uur", "4h": "elke 4 uur", "2h": "elke 2 uur" };
+const FREQ_NL = lib.FREQUENCY_NL;
 const dayLabel = (d) => dateFmt.format(Date.parse(d + "T00:00:00Z"));
 const instagram = (h) => `https://www.instagram.com/${encodeURIComponent(h)}/`;
 // Link to an Instagram post: the post's own url when it is an instagram.com link, else the profile.
@@ -239,15 +240,24 @@ function warnings(s, cfg, now, igFetched = true) {
         : "Nog geen enkele campagnepost gezien." });
   }
   if (s.stats.missing) {
+    // The student page lists every video that disappeared; Overzicht only the ones of the last few days (see overviewWarnings),
+    // otherwise the same warning stays on a student for the rest of the campaign.
     const gone = s.posts.filter((p) => String(p.missing_since || "").trim())
       .sort((a, b) => String(a.missing_since).localeCompare(String(b.missing_since)));
-    out.push({ cls: "warn", kind: "missing", text: `${s.stats.missing} video${s.stats.missing > 1 ? "'s" : ""} verdwenen`,
+    const recentFrom = now - MISSING_RECENT_DAYS * DAY_MS;
+    const recent = gone.filter((p) => (lib.parseTs(p.missing_since) ?? 0) >= recentFrom);
+    const warning = (list, extra = "") => ({ cls: "warn", kind: "missing", text: `${list.length} video${list.length > 1 ? "'s" : ""} verdwenen`,
       title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?",
-      detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.<ul>${gone.map((p) => {
+      detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.${extra}<ul>${list.map((p) => {
         const c = lib.parseTs(p.created_at), m = lib.parseTs(p.missing_since);
         return `<li>Video van ${c ? stampFmt.format(c) : "?"}${s.multi ? ` (@${esc(p.handle)})` : ""}, ${fmt(lib.toNum(p.views))} weergaven: verdwenen sinds ${m ? stampFmt.format(m) : esc(p.missing_since)}.
           <a href="${tiktok(p.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></li>`;
       }).join("")}</ul>` });
+    const all = warning(gone);
+    // `recent`: what Overzicht shows (null when nothing disappeared in the last days).
+    all.recent = recent.length ? { ...warning(recent, ` Alleen de laatste ${MISSING_RECENT_DAYS} dagen; ${gone.length > recent.length ? `in totaal ${gone.length} video's verdwenen: alle staan op <a href="#leerlingen/${encodeURIComponent(s.handle)}">de leerlingpagina</a>.` : "alle staan ook op de leerlingpagina."}`),
+      title: `Verdwenen in de laatste ${MISSING_RECENT_DAYS} dagen (verwijderd of verborgen?); alle staan op de leerlingpagina` } : null;
+    out.push(all);
   }
   for (const t of s.stats.tasks.filter((x) => x.status === "missed")) {
     out.push({ cls: "warn", kind: "task", text: `opdracht ${shortDay(t.date)}: ${t.count}/${t.min}`,
@@ -259,11 +269,13 @@ function warnings(s, cfg, now, igFetched = true) {
 // Alphabetical by name (Dutch rules); students without a name ("onbekend") go last.
 const byName = (a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", "nl") || a.handle.localeCompare(b.handle);
 const nameCell = (s) => (s.name ? esc(s.name) : `<mark class="unknown">onbekend</mark>`);
+// The warnings Overzicht shows: like s.warnings, but "video verdwenen" only for videos of the last few days.
+const overviewWarnings = (s) => s.warnings.flatMap((w) => (w.kind !== "missing" ? [w] : w.recent ? [w.recent] : []));
 const badges = (list) => list.map((w) => `<span class="badge ${w.cls}"${w.title ? ` title="${esc(w.title)}"` : ""}>${esc(w.text)}</span>`).join("");
 // Clickable badges (Overzicht): a click shows the details under the row.
-const warnButtons = (s) => s.warnings.map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
+const warnButtons = (s) => overviewWarnings(s).map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
   aria-expanded="${state.warnOpen === s.handle}" title="${esc(w.title || "Klik voor details")}">${esc(w.text)}</button>`).join("");
-const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.detail)
+const warnDetails = (s, list = s.warnings) => `<ul class="warn-list">${list.filter((w) => w.detail)
   .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
@@ -274,13 +286,13 @@ const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${enco
 const SORTS = {
   rank: (s) => s.rank, name: (s) => (s.name || "").toLowerCase() || null, handle: (s) => s.handle,
   views: (s) => s.views, gain: (s) => s.gain, followers: (s) => s.followers, posts: (s) => s.stats.posts,
-  likes: (s) => s.stats.likes, last: (s) => s.stats.last, warnings: (s) => s.warnings.length,
+  likes: (s) => s.stats.likes, last: (s) => s.stats.last, warnings: (s) => overviewWarnings(s).length,
 };
 const DEFAULT_DIR = { rank: 1, name: 1, handle: 1 }; // others start high -> low
 
 function renderOverview(m) {
   const all = m.students;
-  const withWarn = all.filter((s) => s.warnings.length).length;
+  const withWarn = all.filter((s) => overviewWarnings(s).length).length;
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   $("ov-tiles").innerHTML =
     tile("Leerlingen gevolgd", fmt(all.length), `${m.cfg.campaign.start} t/m ${m.cfg.campaign.end}`)
@@ -291,7 +303,7 @@ function renderOverview(m) {
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
 
   const q = state.search.trim().toLowerCase().replace(/^@/, "");
-  let rows = all.filter((s) => (!state.onlyWarn || s.warnings.length)
+  let rows = all.filter((s) => (!state.onlyWarn || overviewWarnings(s).length)
     && (!q || s.handles.some((h) => h.includes(q)) || (s.ig && s.ig.handle.toLowerCase().includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
   const { key, dir } = state.sort;
   const val = SORTS[key];
@@ -332,7 +344,7 @@ function renderOverview(m) {
       <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.stats.likes)}</td>
       <td class="opt">${a.stats.lastDay ? dayLabel(a.stats.lastDay) : "–"}</td>
       <td class="wide-only">${accountBadges(a)}</td>
-    </tr>`).join("") : ""}${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
+    </tr>`).join("") : ""}${state.warnOpen === s.handle && overviewWarnings(s).length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s, overviewWarnings(s))}</td></tr>` : ""}`).join("")
     || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
 }
 
@@ -623,7 +635,7 @@ function tagStudents(m) {
       : !ig.info ? "nog niet opgehaald"
       : ig.isPrivate ? "privé"
       : String(ig.info.last_status ?? "").startsWith("fout") ? "niet gevonden" : null;
-    return { id: s.handle, s, posts: ig ? ig.posts : [], note };
+    return { id: s.handle, s, posts: ig ? ig.posts : [], tiktokPosts: s.posts, note };
   });
 }
 
@@ -666,10 +678,13 @@ function renderHashtags(m) {
         <span class="meta">· laatst gebruikt ${esc(dayLabel(lib.localDay(u.last)))}</span> <a href="${esc(instagramPost(u.lastPost))}" target="_blank" rel="noopener">open ↗</a>${u.onLast ? ""
         : ` <span class="badge warn" title="De nieuwste Instagram-post van deze leerling heeft #${esc(tag)} niet">ontbreekt op laatste post</span>`}</li>`;
     };
+    // A hashtag that looks like the searched one ("gebruikt #grafischlyceum"): probably meant or a typo. Most used first, at most two.
+    const nearText = (n) => n.near.slice(0, 2).map((t) => `#${esc(t.tag)} (${[t.instagram && `${t.instagram}× Instagram`, t.tiktok && `${t.tiktok}× TikTok`].filter(Boolean).join(", ")})`).join(", ");
     const notItem = (n) => {
       const r = byId.get(n.id);
       return `<li>${name(r)} ${n.total ? `<span class="meta">0 van ${postsText(n.total)}</span>` : ""}${n.note ? ` <span class="badge info">${esc(n.note)}</span>`
-        : n.total ? "" : ` <span class="meta">nog geen posts sinds ${esc(dayLabel(start))}</span>`}</li>`;
+        : n.total ? "" : ` <span class="meta">nog geen posts sinds ${esc(dayLabel(start))}</span>`}${n.near.length
+        ? ` <span class="badge warn" title="Een hashtag die erop lijkt: bedoeld of een typefout? Telt niet mee als #${esc(tag)}.">gebruikt ${nearText(n)}</span>` : ""}</li>`;
     };
     // Nobody uses it: maybe a typo; offer the hashtags that start with what was typed.
     const similar = all.uses.length ? [] : table.filter((t) => t.tag.startsWith(tag)).sort((a, b) => b.posts - a.posts).slice(0, 6);
@@ -715,18 +730,11 @@ function renderAdmin(m) {
     <p class="meta">${["tiktok", "instagram"].map((pl) => `${PLATFORM_NL[pl]}: nog ${b.byPlatform[pl].runsLeft} geplande profielruns deze maand × ${b.byPlatform[pl].accounts} accounts ≈ ${fmt(b.byPlatform[pl].reserved)} records`).join("<br>")}<br>
       Verwacht totaal zonder weekrefreshes: <strong>${fmt(b.projected)}</strong> (${pct.format(b.projected / b.cap)} van de limiet). Beide platforms tellen mee voor dezelfde limiet.</p>
     <p class="meta">Weekrefresh (TikTok): max. ${cfg.refreshNumOfPosts} posts per account (reserveert tot ${fmt(cfg.refreshNumOfPosts * b.byPlatform.tiktok.accounts)} records vooraf).</p>`;
-  const s = cfg.schedule;
-  const platformLine = (pl) => {
-    const w = s.windows[pl];
-    return `<li>${PLATFORM_NL[pl]}: ${w.length ? `<strong>${w.length}× per dag</strong>, ${FREQ_NL[cfg.frequency[pl]] || cfg.frequency[pl]}: ${w.map((x) => x.start).join(", ")}
-      (elk tijdvak ${w[0].start}–${w[0].end}, enz.; 1 run per tijdvak)` : "<strong>uit</strong>: geen geplande runs"}</li>`;
-  };
-  $("bh-schedule").innerHTML = `<ul class="issues">
-    ${platformLine("tiktok")}${platformLine("instagram")}
-    <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)</li>
-    <li>Weekrefresh: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
-    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun van dat platform was</li>
-    <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
+  renderSchedule(m);
+  // "Nu verversen" skips a platform that is set to "off" (the collector does too).
+  const igAccounts = raw.budget.byPlatform.instagram.accounts;
+  const skipped = [...(!lib.platformOn(cfg, "tiktok") ? ["TikTok"] : []), ...(!lib.platformOn(cfg, "instagram") && igAccounts ? ["Instagram"] : [])];
+  $("bh-refresh-note").textContent = skipped.length ? `${skipped.join(" en ")} staat uit en wordt overgeslagen.` : "";
 
   // All account rows (active and inactive).
   const q = state.accSearch.trim().toLowerCase().replace(/^@/, "");
@@ -824,6 +832,53 @@ function renderSchoolHashtags(m) {
     || `<span class="meta">Geen schoolhashtags: er komen geen knoppen op het tabblad Hashtags.</span>`;
 }
 
+// ---------- Schema (Beheer): how often each platform is pulled ----------
+
+const freqLabel = (c) => FREQ_NL[c].charAt(0).toUpperCase() + FREQ_NL[c].slice(1);
+
+// The choice (a fixed step per platform), what it costs against the cap before anything is saved, and the other schedule lines.
+function renderSchedule(m) {
+  const raw = state.raw, cfg = m.cfg, s = cfg.schedule;
+  const saved = cfg.frequency;
+  const form = $("freq-form");
+  // The selects are filled once and keep what is being chosen while the data reloads; a change that was saved resets them.
+  if (form.dataset.saved !== JSON.stringify(saved)) {
+    form.dataset.saved = JSON.stringify(saved);
+    for (const pl of lib.PLATFORMS) {
+      $(`freq-${pl}`).innerHTML = lib.FREQUENCY_CHOICES.map((c) => `<option value="${c}">${esc(freqLabel(c))}</option>`).join("");
+      $(`freq-${pl}`).value = saved[pl];
+    }
+  }
+  const choice = Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, $(`freq-${pl}`).value]));
+  const counts = Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, raw.budget.byPlatform[pl].accounts]));
+  const base = { used: raw.budgetBase.used, done: new Set(raw.budgetBase.done) };
+  const pv = lib.frequencyPreview(cfg, base, counts, m.now, choice, saved, { finaleDone: raw.finaleHasRun });
+  const unchanged = lib.PLATFORMS.every((pl) => choice[pl] === saved[pl]);
+  const line = (p) => {
+    const w = lib.windowsFor(cfg, p.platform, p.step);
+    return `<li>${PLATFORM_NL[p.platform]}: ${p.step === "off" ? "<strong>uit</strong>: geen geplande runs, 0 records per dag"
+      : `<strong>${p.runsPerDay}× per dag</strong>, ${FREQ_NL[p.step]}: ${w.map((x) => x.start).join(", ")} `
+        + `(elk tijdvak ${w[0].start}–${w[0].end}, enz.; 1 run per tijdvak) × ${p.accounts} accounts = <strong>${fmt(p.perDay)} records per dag</strong>`}</li>`;
+  };
+  const offNames = pv.platforms.filter((p) => p.step === "off").map((p) => PLATFORM_NL[p.platform]);
+  $("freq-preview").innerHTML = `<ul class="issues">${pv.platforms.map(line).join("")}</ul>
+    <p class="meta">Samen ≈ <strong>${fmt(pv.perDay)}</strong> records per dag. Deze maand: ${fmt(pv.used)} gebruikt + ${fmt(pv.planned)} nog gepland = <strong>${fmt(pv.projected)}</strong>.<br>
+      Daarnaast gereserveerd: weekrefresh ${pv.refresh ? fmt(pv.refresh) : "uit"} · finale ${pv.finale ? fmt(pv.finale) : "geen"}.
+      Totaal <strong>${fmt(pv.total)}</strong> van de limiet van ${fmt(pv.cap)} (${pct.format(pv.total / pv.cap)}); ruimte over: ${fmt(pv.headroom)} records.</p>
+    ${offNames.length ? `<p class="meta">${esc(offNames.join(" en "))} staat uit: geen geplande runs, geen weekrefresh en geen finale-runs, en <em>Nu verversen</em> en <em>Controleer nu</em> slaan het over.</p>` : ""}
+    <p class="status ${unchanged ? "" : pv.fits ? "ok" : pv.allowed ? "" : "err"}">${unchanged ? "Dit is het huidige schema."
+      : pv.fits ? "Past binnen de limiet."
+      : pv.allowed ? "Past nog niet onder de limiet, maar kost minder dan het huidige schema: opslaan mag."
+      : `Past niet in het budget: ${fmt(pv.total)} is meer dan de limiet van ${fmt(pv.cap)}. Kies een lagere frequentie.`}</p>`;
+  $("freq-save").disabled = unchanged || !pv.allowed;
+  const tiktokOn = lib.platformOn(cfg, "tiktok");
+  $("bh-schedule").innerHTML = `<ul class="issues">
+    <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)${offNames.length ? `; ${esc(offNames.join(" en "))} staat uit en doet niet mee` : ""}</li>
+    <li>Weekrefresh${tiktokOn ? "" : " (uit: TikTok staat uit)"}: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
+    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun van dat platform was</li>
+    <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
+}
+
 // ---------- Leerlingen zonder Instagram (Beheer) ----------
 
 // Active students without a (valid) Instagram handle, each with a small form to fill it in.
@@ -831,6 +886,8 @@ function renderInstagramMissing(m) {
   const box = $("ig-missing");
   const focused = document.activeElement?.closest?.("form[data-ig-quick]")?.dataset.igQuick;
   const missing = m.students.filter((s) => !s.instagram).sort(byName);
+  // The whole block is only there while somebody still lacks a handle.
+  $("ig-card").hidden = !missing.length;
   $("ig-count").textContent = `(${missing.length} van ${m.students.length})`;
   box.innerHTML = missing.map((s) => {
     const row = s.instagramRow;
@@ -841,7 +898,7 @@ function renderInstagramMissing(m) {
       <button type="submit" class="btn small primary">Opslaan</button>
       ${s.instagramIssue ? `<span class="badge bad" title="${esc(s.instagramIssue)}">${esc(s.instagramIssue)}</span>` : ""}
     </form></li>`;
-  }).join("") || `<li class="meta">Alle actieve leerlingen hebben een Instagram-account.</li>`;
+  }).join("");
   if (focused) box.querySelector(`form[data-ig-quick="${focused}"] input`)?.focus();
 }
 
@@ -851,8 +908,9 @@ async function saveInstagram(row, was, handle, button, msgId) {
     const res = await api("/api/accounts/instagram", { row, was, handle });
     state.igFor = null;
     state.igDraft.delete(row);
-    flash(res.message, true, msgId);
     await load();
+    // Saving the last missing handle hides the block that holds its message: say it above the table instead.
+    flash(res.message, true, $("ig-card").hidden ? "acc-msg" : msgId);
   } catch (err) {
     flash(err.message, false, msgId);
     if (button) button.disabled = false;
@@ -928,24 +986,35 @@ function inputValues(ms) {
   return { date: lib.localDay(ms), time: lib.localTime(ms) };
 }
 
-// Accounts that are fetched on every finale run: TikTok and Instagram, one record each.
-const finaleAccounts = () => state.raw.budget.byPlatform.tiktok.accounts + state.raw.budget.byPlatform.instagram.accounts;
+// Accounts per platform; one record each per run. During a finale Instagram runs in every slot, TikTok at the start and at
+// the last run, and a platform that is set to "off" doesn't run at all.
+const finaleCounts = () => ({ tiktok: state.raw.budget.byPlatform.tiktok.accounts, instagram: state.raw.budget.byPlatform.instagram.accounts });
 
-function finaleEstimate(m, endMs) {
-  const cfg = m.cfg.finale;
-  const runs = lib.finaleRuns(Date.now(), endMs, cfg.everyMinutes);
-  return { runs, accounts: finaleAccounts(), records: runs * finaleAccounts() };
+// "32 Instagram-runs × 23 accounts + 2 TikTok-runs × 60 accounts" (a platform without runs or accounts is left out).
+function finaleParts(cost, counts) {
+  return [cost.instagramRuns && counts.instagram && `${cost.instagramRuns} Instagram-runs × ${counts.instagram} accounts`,
+    cost.tiktokRuns && counts.tiktok && `${cost.tiktokRuns} TikTok-run${cost.tiktokRuns === 1 ? "" : "s"} × ${counts.tiktok} accounts`].filter(Boolean).join(" + ") || "geen runs";
+}
+
+function finaleEstimate(m, endMs, started = false) {
+  const cost = lib.finaleCost(m.cfg, finaleCounts(), Date.now(), endMs, { started });
+  return { cost, text: finaleParts(cost, finaleCounts()), records: cost.total };
 }
 
 function renderFinaleCard(m) {
   const f = state.raw.finale;
   const phase = f ? (Date.now() >= f.end ? "ended" : "live") : "none";
-  const key = `${phase}|${f ? f.end : ""}|${finaleAccounts()}`;
+  const key = `${phase}|${f ? f.end : ""}|${JSON.stringify(finaleCounts())}|${JSON.stringify(m.cfg.frequency)}`;
   if (key === state.finaleCardKey) return tickFinale();
   state.finaleCardKey = key;
   const cfg = m.cfg.finale;
-  const perHour = (60 / cfg.everyMinutes) * finaleAccounts();
-  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${finaleAccounts()} actieve accounts, TikTok en Instagram), in plaats van de gewone runs die dan vervallen.`;
+  const counts = finaleCounts();
+  const igOn = lib.platformOn(m.cfg, "instagram"), ttOn = lib.platformOn(m.cfg, "tiktok");
+  const perHour = igOn ? (60 / cfg.everyMinutes) * counts.instagram : 0;
+  const offNames = [...(!ttOn ? ["TikTok"] : []), ...(!igOn ? ["Instagram"] : [])];
+  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> voor Instagram (${60 / cfg.everyMinutes} runs × ${counts.instagram} accounts)`
+    + `, plus voor TikTok <strong>${fmt(ttOn ? 2 * counts.tiktok : 0)} records</strong> in totaal (2 runs × ${counts.tiktok} accounts: bij de start en bij de laatste run)`
+    + `, in plaats van de gewone runs die dan vervallen.${offNames.length ? ` ${offNames.join(" en ")} staat uit (Schema hieronder) en doet niet mee.` : ""}`;
   // Dutch day names and 24-hour selects (the browser's own date/time inputs follow its language: "02:00 AM").
   const deadlineForm = (label, defMs, id) => {
     const v = inputValues(defMs);
@@ -967,8 +1036,8 @@ function renderFinaleCard(m) {
   const formTime = (form) => `${form.querySelector("[name=hour]").value}:${form.querySelector("[name=minute]").value}`;
   const quarter = (ms) => Math.ceil(ms / (15 * 60e3)) * 15 * 60e3;
   let html = `<h2>Finale</h2>
-    <p>Voor de laatste les. Tijdens de finale worden de profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
-      in plaats van de gewone runs. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
+    <p>Voor de laatste les. Tijdens de finale worden de <strong>Instagram</strong>-profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
+      in plaats van de gewone runs; <strong>TikTok</strong> alleen bij de start en bij de laatste run. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
       Na de deadline tonen de sites en de presentatie de <strong>Eindstand</strong>: het podium en de stand, bevroren op de laatste meting
       vóór de deadline. De finale stopt vanzelf bij de deadline en duurt nooit langer dan ${cfg.maxHours} uur. De budgetlimiet blijft gelden.</p>
     <p class="meta">${cost}</p>`;
@@ -994,9 +1063,9 @@ function renderFinaleCard(m) {
     if (!form) continue;
     const update = () => {
       const t = lib.amsMs(form.querySelector("[name=date]").value, formTime(form));
-      const est = finaleEstimate(m, t);
+      const est = finaleEstimate(m, t, id === "finale-change");
       $(`${id}-estimate`).textContent = Number.isFinite(t) && t > Date.now()
-        ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${est.accounts} accounts ≈ ${fmt(est.records)} records`
+        ? `Tot ${stampFmt.format(t)}: ${est.text} ≈ ${fmt(est.records)} records`
           + ` (budget: ${fmt(state.raw.budget.used)} van ${fmt(state.raw.budget.cap)} gebruikt).`
         : "Kies een moment in de toekomst.";
     };
@@ -1006,12 +1075,13 @@ function renderFinaleCard(m) {
       ev.preventDefault();
       const deadline = `${form.querySelector("[name=date]").value}T${formTime(form)}`;
       const start = id === "finale-start";
-      if (start && !confirm(`Finale starten tot ${dayLabel(deadline.slice(0, 10))} ${deadline.slice(11)}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers.`)) return;
+      if (start && !confirm(`Finale starten tot ${dayLabel(deadline.slice(0, 10))} ${deadline.slice(11)}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers van Instagram; TikTok bij de start en bij de laatste run.`)) return;
       finaleAction(start ? "/api/finale/start" : "/api/finale/deadline", { deadline });
     });
   }
   $("finale-stop")?.addEventListener("click", () => {
-    if (confirm("Finale nu stoppen? De Eindstand wordt de stand van de laatste meting.")) finaleAction("/api/finale/stop", { mode: "stop" });
+    if (confirm("Finale nu stoppen? De Eindstand wordt de stand van de laatste meting. Let op: TikTok wordt alleen bij de start en bij de laatste run opgehaald, "
+      + "dus de TikTok-cijfers in de Eindstand zijn die van de start van de finale (of de laatste gewone run).")) finaleAction("/api/finale/stop", { mode: "stop" });
   });
   $("finale-cancel")?.addEventListener("click", () => {
     if (confirm("Finale annuleren? Er komt geen Eindstand; alles gaat weer gewoon verder.")) finaleAction("/api/finale/stop", { mode: "cancel" });
@@ -1227,18 +1297,22 @@ function renderToday(m) {
     s.stats.last ? ` · laatste TikTok-post ${esc(dayLabel(s.stats.lastDay))}` : ""}</span></li>`).join("");
   $("td-nohandle-card").hidden = !noHandle.length || !st.inCampaign;
   // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
-  const n = lib.todayTargets(st).length;
+  // A platform set to "off" is left out (and named), like in the Worker and the collector.
+  const targets = lib.todayTargets(st, m.cfg.frequency);
+  const skipped = lib.todaySkipped(st, m.cfg.frequency).map((p) => PLATFORM_NL[p]);
+  const skipNote = skipped.length ? ` · ${skipped.join(" en ")} staat uit en wordt overgeslagen` : "";
+  const n = targets.length;
   const next = raw.lastTodayCheck ? raw.lastTodayCheck + cool * 60e3 : 0;
   const btn = $("td-check");
   const waiting = Boolean(state.todayRun);
   btn.disabled = waiting || !n || Date.now() < next || !st.inCampaign;
   btn.textContent = waiting ? "⏳ Controle loopt…" : "🔎 Controleer nu";
   // What the check would fetch: one record per account, TikTok and Instagram.
-  const split = lib.targetSplit(lib.todayTargets(st));
+  const split = lib.targetSplit(targets);
   const platforms = split.tiktok && split.instagram ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
-  $("td-cost").textContent = !st.inCampaign ? "" : !n ? "Niemand om te controleren."
-    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"}${platforms} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)`
-    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}${platforms}`;
+  $("td-cost").textContent = !st.inCampaign ? "" : !n ? `Niemand om te controleren${skipped.length ? `: wat nog te controleren valt staat op ${skipped.join(" en ")}, en dat staat uit` : ""}.`
+    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"}${platforms} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)${skipNote}`
+    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}${platforms}${skipNote}`;
 }
 
 // After "Controleer nu": wait for the collector run, then reload (it takes about 5-7 minutes).
@@ -1452,13 +1526,15 @@ $("ov-body").addEventListener("click", (ev) => {
 $("vid-out").addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
 $("td-check").addEventListener("click", async () => {
   const st = todayOf(model);
-  const targets = lib.todayTargets(st);
+  const targets = lib.todayTargets(st, model.cfg.frequency);
+  const skipped = lib.todaySkipped(st, model.cfg.frequency).map((p) => PLATFORM_NL[p]);
   const n = targets.length;
   const split = lib.targetSplit(targets);
   const both = split.tiktok > 0 && split.instagram > 0;
   const platforms = both ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
   if (!confirm(`Nu ${n} account${n === 1 ? "" : "s"}${platforms} controleren die vandaag nog niet ${st.task ? "klaar zijn" : "gepost hebben"}? `
-    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer ${both ? "5–10" : "5–7"} minuten voordat de nieuwe cijfers er staan.`)) return;
+    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer ${both ? "5–10" : "5–7"} minuten voordat de nieuwe cijfers er staan.`
+    + (skipped.length ? ` ${skipped.join(" en ")} staat uit en wordt overgeslagen.` : ""))) return;
   $("td-check").disabled = true;
   try {
     const res = await api("/api/today/check", {});
@@ -1676,6 +1752,20 @@ form.addEventListener("submit", async (ev) => {
     flash(err.message, false);
   } finally {
     btn.disabled = false;
+  }
+});
+
+$("freq-form").addEventListener("change", () => model && renderSchedule(model));
+$("freq-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("freq-save").disabled = true;
+  try {
+    const res = await api("/api/settings/frequency", { ...Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, $(`freq-${pl}`).value])), was: model.cfg.frequency });
+    flash(res.message, true, "freq-msg");
+    await load();
+  } catch (err) {
+    flash(err.message, false, "freq-msg");
+    renderSchedule(model);
   }
 });
 

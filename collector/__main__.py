@@ -85,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     data = Spreadsheet(session, cfg.data_sheet_id)
     bd = BrightData(cfg.poll_seconds, cfg.timeout_minutes)
     col = Collector(cfg, admin, data, bd, dry_run=args.dry_run)
+    if args.command != "setup":
+        col.apply_settings()   # the frequency chosen on Beheer (settings tab) over the config.yaml start value
 
     manual = f"{col.now_local:%Y-%m-%d}/manual-{col.now_local:%H%M}"
     if args.command == "setup":
