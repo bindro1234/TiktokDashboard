@@ -91,6 +91,11 @@ igTracked.forEach((h, i) => {
   }
 });
 const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: "2026-09-30T05:00:00Z", baseline_followers: 100 + i * 10 }));
+// "Video verdwenen": test_06 (Finn) lost one video on 6 Oct (recent) and one on 30 Sep (old); test_07 (Gijs) only the old one.
+// Overzicht warns only about videos of the last 3 days; the student page lists them all.
+const oldGone = "2026-09-30T16:00:00Z";
+posts.find((p) => p.handle === "test_06" && !p.missing_since).missing_since = oldGone;
+posts.find((p) => p.handle === "test_07" && !p.missing_since).missing_since = oldGone;
 // Eva (test_05, no Instagram handle) put the same typo on a TikTok post after the Instagram start.
 {
   const evaPost = posts.filter((p) => p.handle === "test_05" && p.created_at >= `${IG_START}T00:00:00Z`).at(-1);
@@ -418,6 +423,18 @@ if (!/mediaan per leerling/.test(await page.textContent("#ov-tiles"))) fail("ove
 await page.click('#ov-body td.wide-only button[data-warn]:text("verdwenen")');
 const detail = await page.textContent("#ov-body tr.warn-detail");
 if (!/verdwenen sinds/.test(detail) || !/open ↗/.test(detail)) fail(`overzicht: warning details missing (${detail.slice(0, 80)})`);
+{
+  // Finn lost a video on 6 Oct and one on 30 Sep: Overzicht only knows about the recent one, and says where the rest is.
+  const finn = await page.$eval('#ov-body tr[data-handle="test_06"]', (r) => r.textContent.replace(/\s+/g, " "));
+  if (!/1 video verdwenen/.test(finn) || /2 video's verdwenen/.test(finn)) fail(`overzicht: Finn's "verdwenen" badge (${finn.slice(0, 200)})`);
+  const items = await page.$$eval("#ov-body tr.warn-detail li li", (li) => li.filter((x) => /verdwenen sinds/.test(x.textContent)).map((x) => x.textContent.replace(/\s+/g, " ")));
+  if (items.length !== 1 || !/6 okt/.test(items[0]) && !/di 6/.test(items[0])) fail(`overzicht: the details list ${items.length} videos (${items.join(" | ")})`);
+  const detailBox = await page.textContent("#ov-body tr.warn-detail");
+  if (!/Alleen de laatste 3 dagen; in totaal 2 video's verdwenen/.test(detailBox.replace(/\s+/g, " ")) || !(await page.$('#ov-body tr.warn-detail a[href="#leerlingen/test_06"]'))) fail(`overzicht: no pointer to the student page (${detailBox.replace(/\s+/g, " ").slice(0, 300)})`);
+  // Gijs only lost a video 9 days ago: no warning on Overzicht at all.
+  const gijs = await page.$eval('#ov-body tr[data-handle="test_07"]', (r) => r.textContent);
+  if (/verdwenen/.test(gijs)) fail(`overzicht: an old "verdwenen" is still on Overzicht (${gijs.slice(0, 120)})`);
+}
 await page.click('#ov-body td.wide-only button[data-warn]:text("privé")');
 if (!/privé sinds/.test(await page.textContent("#ov-body tr.warn-detail"))) fail("overzicht: privé has no 'since'");
 if (!(await page.textContent("#ov-body")).includes("opdracht 1 okt")) fail("overzicht: no dagopdracht badge");
@@ -530,6 +547,14 @@ const pimTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) 
 const pimLinks = await page.$$eval("#ll-content .detail-head a", (a) => a.map((x) => x.textContent.trim()));
 if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only op Instagram ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
 if ((await page.$$eval("#st-ig-posts tbody tr", (r) => r.length)) !== igPosts.filter((p) => p.handle === "pim.only").length) fail("student detail: Pim's Instagram posts not all listed");
+// The student page keeps the full list of videos that disappeared, however long ago.
+for (const [h, n] of [["test_06", 2], ["test_07", 1]]) {
+  await page.evaluate((x) => { location.hash = "leerlingen/" + x; }, h);
+  await page.waitForSelector(".cal");
+  const head = (await page.textContent("#ll-content .detail-head")).replace(/\s+/g, " ");
+  const items = await page.$$eval("#ll-content .warn-list li li", (li) => li.length);
+  if (!head.includes(`${n} video${n > 1 ? "'s" : ""} verdwenen`) || items !== n) fail(`student detail: ${h} shows "${head.slice(-80)}" with ${items} videos, expected ${n}`);
+}
 await page.evaluate(() => { location.hash = "leerlingen/test_04"; });
 await page.waitForSelector(".cal");
 {
@@ -930,6 +955,9 @@ if (!lines[0].includes("dagen_niet_te_controleren")) fail("export: no dagen_niet
     if (got !== `${pick.st.unknownDays}/${pick.st.missedDays}`) fail(`export: ${pick.name} (no handle) unknown/missed days ${got}, expected ${pick.st.unknownDays}/${pick.st.missedDays}`);
     if (!line[head.indexOf("let_op")].includes("geen Instagram-handle")) fail("export: let_op has no 'geen Instagram-handle'");
   }
+  // The export keeps every video that disappeared (Finn lost two); only Overzicht limits it to the last days.
+  const finnExport = cells(lines.find((l) => l.startsWith("Finn;")));
+  if (!finnExport[head.indexOf("let_op")].includes("2 video's verdwenen")) fail(`export: Finn's let_op (${finnExport[head.indexOf("let_op")]})`);
 }
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");

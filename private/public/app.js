@@ -2,6 +2,7 @@
 import * as lib from "./lib.js";
 
 const WARN_DAYS = 2; // "no post for 2+ days" (free days don't count)
+const MISSING_RECENT_DAYS = 3; // Overzicht warns about "video verdwenen" only for videos that disappeared in the last 3 days
 const WEEKDAYS_NL = { monday: "maandag", tuesday: "dinsdag", wednesday: "woensdag", thursday: "donderdag",
   friday: "vrijdag", saturday: "zaterdag", sunday: "zondag" };
 const nf = new Intl.NumberFormat("nl-NL");
@@ -239,15 +240,24 @@ function warnings(s, cfg, now, igFetched = true) {
         : "Nog geen enkele campagnepost gezien." });
   }
   if (s.stats.missing) {
+    // The student page lists every video that disappeared; Overzicht only the ones of the last few days (see overviewWarnings),
+    // otherwise the same warning stays on a student for the rest of the campaign.
     const gone = s.posts.filter((p) => String(p.missing_since || "").trim())
       .sort((a, b) => String(a.missing_since).localeCompare(String(b.missing_since)));
-    out.push({ cls: "warn", kind: "missing", text: `${s.stats.missing} video${s.stats.missing > 1 ? "'s" : ""} verdwenen`,
+    const recentFrom = now - MISSING_RECENT_DAYS * DAY_MS;
+    const recent = gone.filter((p) => (lib.parseTs(p.missing_since) ?? 0) >= recentFrom);
+    const warning = (list, extra = "") => ({ cls: "warn", kind: "missing", text: `${list.length} video${list.length > 1 ? "'s" : ""} verdwenen`,
       title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?",
-      detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.<ul>${gone.map((p) => {
+      detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.${extra}<ul>${list.map((p) => {
         const c = lib.parseTs(p.created_at), m = lib.parseTs(p.missing_since);
         return `<li>Video van ${c ? stampFmt.format(c) : "?"}${s.multi ? ` (@${esc(p.handle)})` : ""}, ${fmt(lib.toNum(p.views))} weergaven: verdwenen sinds ${m ? stampFmt.format(m) : esc(p.missing_since)}.
           <a href="${tiktok(p.handle, p.video_id)}" target="_blank" rel="noopener">open ↗</a></li>`;
       }).join("")}</ul>` });
+    const all = warning(gone);
+    // `recent`: what Overzicht shows (null when nothing disappeared in the last days).
+    all.recent = recent.length ? { ...warning(recent, ` Alleen de laatste ${MISSING_RECENT_DAYS} dagen; ${gone.length > recent.length ? `in totaal ${gone.length} video's verdwenen: alle staan op <a href="#leerlingen/${encodeURIComponent(s.handle)}">de leerlingpagina</a>.` : "alle staan ook op de leerlingpagina."}`),
+      title: `Verdwenen in de laatste ${MISSING_RECENT_DAYS} dagen (verwijderd of verborgen?); alle staan op de leerlingpagina` } : null;
+    out.push(all);
   }
   for (const t of s.stats.tasks.filter((x) => x.status === "missed")) {
     out.push({ cls: "warn", kind: "task", text: `opdracht ${shortDay(t.date)}: ${t.count}/${t.min}`,
@@ -259,11 +269,13 @@ function warnings(s, cfg, now, igFetched = true) {
 // Alphabetical by name (Dutch rules); students without a name ("onbekend") go last.
 const byName = (a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.name || "", "nl") || a.handle.localeCompare(b.handle);
 const nameCell = (s) => (s.name ? esc(s.name) : `<mark class="unknown">onbekend</mark>`);
+// The warnings Overzicht shows: like s.warnings, but "video verdwenen" only for videos of the last few days.
+const overviewWarnings = (s) => s.warnings.flatMap((w) => (w.kind !== "missing" ? [w] : w.recent ? [w.recent] : []));
 const badges = (list) => list.map((w) => `<span class="badge ${w.cls}"${w.title ? ` title="${esc(w.title)}"` : ""}>${esc(w.text)}</span>`).join("");
 // Clickable badges (Overzicht): a click shows the details under the row.
-const warnButtons = (s) => s.warnings.map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
+const warnButtons = (s) => overviewWarnings(s).map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
   aria-expanded="${state.warnOpen === s.handle}" title="${esc(w.title || "Klik voor details")}">${esc(w.text)}</button>`).join("");
-const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.detail)
+const warnDetails = (s, list = s.warnings) => `<ul class="warn-list">${list.filter((w) => w.detail)
   .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
@@ -274,13 +286,13 @@ const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${enco
 const SORTS = {
   rank: (s) => s.rank, name: (s) => (s.name || "").toLowerCase() || null, handle: (s) => s.handle,
   views: (s) => s.views, gain: (s) => s.gain, followers: (s) => s.followers, posts: (s) => s.stats.posts,
-  likes: (s) => s.stats.likes, last: (s) => s.stats.last, warnings: (s) => s.warnings.length,
+  likes: (s) => s.stats.likes, last: (s) => s.stats.last, warnings: (s) => overviewWarnings(s).length,
 };
 const DEFAULT_DIR = { rank: 1, name: 1, handle: 1 }; // others start high -> low
 
 function renderOverview(m) {
   const all = m.students;
-  const withWarn = all.filter((s) => s.warnings.length).length;
+  const withWarn = all.filter((s) => overviewWarnings(s).length).length;
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   $("ov-tiles").innerHTML =
     tile("Leerlingen gevolgd", fmt(all.length), `${m.cfg.campaign.start} t/m ${m.cfg.campaign.end}`)
@@ -291,7 +303,7 @@ function renderOverview(m) {
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
 
   const q = state.search.trim().toLowerCase().replace(/^@/, "");
-  let rows = all.filter((s) => (!state.onlyWarn || s.warnings.length)
+  let rows = all.filter((s) => (!state.onlyWarn || overviewWarnings(s).length)
     && (!q || s.handles.some((h) => h.includes(q)) || (s.ig && s.ig.handle.toLowerCase().includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
   const { key, dir } = state.sort;
   const val = SORTS[key];
@@ -332,7 +344,7 @@ function renderOverview(m) {
       <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.stats.likes)}</td>
       <td class="opt">${a.stats.lastDay ? dayLabel(a.stats.lastDay) : "–"}</td>
       <td class="wide-only">${accountBadges(a)}</td>
-    </tr>`).join("") : ""}${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
+    </tr>`).join("") : ""}${state.warnOpen === s.handle && overviewWarnings(s).length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s, overviewWarnings(s))}</td></tr>` : ""}`).join("")
     || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
 }
 
