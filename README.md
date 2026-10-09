@@ -376,7 +376,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 - Leerling toevoegen gebruikt dezelfde handle-regels als de collector (`tests/handle_cases.json` test beide). Dubbele handles worden geweigerd.
 - *Nu verversen* start de workflow **Nu verversen** via de GitHub-API, maar alleen als de laatste profielrun minstens 30 minuten geleden is en er geen verversing loopt. De collector controleert dat daarna nog een keer.
 - De **reservetimer** (`scheduled` in `private/src/worker.js`) leest alleen `run_log` en start de collector als een tijdvak openstaat en nog niet gedraaid heeft; zie *Schema*.
-- `private/build.sh` zet de instellingen uit `config.yaml` klaar en kopieert de presentatiemodus van `site/`. Tests: `node --test "private/test/*.test.mjs"` en `node tools/private_check.mjs` (met nepnamen).
+- `private/build.sh` zet de instellingen uit `config.yaml` klaar en kopieert de presentatiemodus van `site/`. Tests: `node --test "private/test/*.test.mjs"` en `node tools/private_check.mjs` (met nepnamen). De browsercheck draait de telefoonweergave (390 px) ook in een brede lettertype (DejaVu Sans en een monospace-font), omdat GitHub's runners een breder reservelettertype gebruiken dan een gewone computer; met `CHECK_FONT="DejaVu Sans" node tools/private_check.mjs` draait de hele check in dat lettertype. Tekst die iemand plakt (links, handles) breekt overal af, zodat een lange link de pagina nooit zijwaarts laat scrollen; tabellen scrollen binnen hun eigen kader.
 
 ## Eenmalige installatie
 

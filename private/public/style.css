@@ -188,6 +188,10 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 
 .runs { list-style: none; margin: 0; padding: 0; font-size: 0.88rem; }
 .runs li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; border-bottom: 1px solid var(--grid); }
+/* Text that people type or paste (handles, links, error messages) is unbreakable: it must wrap wherever it has to, in
+   any font, or one long link makes the whole page scroll sideways. Tables scroll inside their own box instead (.table-wrap). */
+main :where(p, li, .status) { overflow-wrap: anywhere; }
+:where(.chips, li, p) .badge { max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 .issues { margin: 0; padding-left: 20px; }
 .issues li { margin: 3px 0; }
 .add-form { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: end; }
