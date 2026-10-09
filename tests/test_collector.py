@@ -571,5 +571,112 @@ class ForceRefreshTests(unittest.TestCase):
         self.assertEqual((row["run_type"], row["status"]), ("force_refresh", "skipped"))
 
 
+class FakeBilledBrightData(FakeBrightData):
+    """Also reports how many rows Bright Data says it billed this month (None = unreadable)."""
+
+    def __init__(self, billed):
+        super().__init__({})
+        self.billed = billed
+
+    def billed_rows_this_month(self):
+        return self.billed
+
+
+class BillingTests(unittest.TestCase):
+    """The cap is enforced on what Bright Data bills, not only on what run_log knows about."""
+    NOW = dt.datetime(2026, 10, 9, 14, 0, tzinfo=UTC)
+
+    def collector(self, logged, billed, dry=False):
+        rows = [{"timestamp": "2026-10-05T10:00:00Z", "run_type": "profiles", "window": "w1", "dry_run": False,
+                 "actual_records": logged, "status": "ok"},
+                {"timestamp": "2026-10-05T11:00:00Z", "run_type": "profiles", "window": "w2", "dry_run": True,
+                 "actual_records": 999, "status": "dry-run"},                      # dry runs never count
+                {"timestamp": "2026-09-30T11:00:00Z", "run_type": "profiles", "window": "w0", "dry_run": False,
+                 "actual_records": 999, "status": "ok"}]                           # another month
+        self.admin = FakeSheet({"run_log": rows})
+        return Collector(CFG, self.admin, FakeSheet({}), FakeBilledBrightData(billed), dry_run=dry, now=self.NOW)
+
+    def test_an_unlogged_job_is_counted_and_booked_once(self):
+        col = self.collector(logged=100, billed=130)
+        run = RunResultFor()
+        self.assertEqual(col.month_used(run), 130)
+        row = self.admin.tabs["run_log"][-1]
+        self.assertEqual((row["run_type"], row["actual_records"], row["dry_run"]), ("billing_adjustment", 30, False))
+        self.assertIn("billed 130 rows", run.notes[0])
+        # Everything that adds up run_log (the Worker's checks too) now sees 130, and a second look books nothing.
+        self.assertEqual(model.month_usage(self.admin.tabs["run_log"], self.NOW), 130)
+        self.assertEqual(col.month_used(), 130)
+        self.assertEqual(len(self.admin.tabs["run_log"]), 4)
+
+    def test_never_lowers_the_count(self):
+        col = self.collector(logged=100, billed=90)   # run_log counts rows Bright Data did not bill: keep the higher
+        self.assertEqual(col.month_used(), 100)
+        self.assertEqual(len(self.admin.tabs["run_log"]), 3)
+
+    def test_unreadable_usage_falls_back_to_run_log_and_says_so(self):
+        col = self.collector(logged=100, billed=None)
+        run = RunResultFor()
+        self.assertEqual(col.month_used(run), 100)
+        self.assertIn("billing check unavailable", run.notes[0])
+        self.assertEqual(len(self.admin.tabs["run_log"]), 3)
+
+    def test_dry_run_and_status_count_it_but_book_nothing(self):
+        col = self.collector(logged=100, billed=130, dry=True)
+        self.assertEqual(col.month_used(), 130)
+        self.assertEqual(len(self.admin.tabs["run_log"]), 3)
+        col = self.collector(logged=100, billed=130)
+        self.assertEqual(col.month_used(write=False), 130)
+        self.assertEqual(len(self.admin.tabs["run_log"]), 3)
+
+    def test_cap_refuses_on_the_billed_figure(self):
+        col = self.collector(logged=100, billed=CFG.monthly_cap - 10)
+        run = RunResultFor(expected=20)
+        self.assertFalse(col.budget_ok(run))
+        self.assertEqual(run.status, "refused")
+        # The same run fits when Bright Data really billed what run_log says.
+        col = self.collector(logged=100, billed=100)
+        run = RunResultFor(expected=20)
+        self.assertTrue(col.budget_ok(run))
+
+    def test_usage_endpoint_parsing(self):
+        from collector.brightdata import BrightData
+
+        class Resp:
+            def __init__(self, status, body):
+                self.status_code, self._body = status, body
+
+            def json(self):
+                if isinstance(self._body, Exception):
+                    raise self._body
+                return self._body
+
+        class Session:
+            headers = {}
+
+            def __init__(self, resp):
+                self.resp = resp
+
+            def get(self, url, timeout):
+                if isinstance(self.resp, Exception):
+                    raise self.resp
+                return self.resp
+
+        usage = {"cust": {"from": "x", "sums": {
+            "ds_a": {"back_m0": {"rows_initial_billable": 5600, "sets_initial_billable": 100}, "back_m1": {"rows_initial_billable": 7}},
+            "ds_b": {"back_m0": {"rows_initial_billable": 125}},
+            "ds_c": {"back_d0": {"rows_initial_billable": 3}}}}}                       # no month figure: counts 0
+        self.assertEqual(BrightData(session=Session(Resp(200, usage))).billed_rows_this_month(), 5725)
+        for bad in [Resp(403, {}), Resp(200, ValueError("not json")), Resp(200, ["unexpected"]),
+                    __import__("requests").ConnectionError("down")]:
+            self.assertIsNone(BrightData(session=Session(bad)).billed_rows_this_month())
+
+
+def RunResultFor(expected=0):
+    from collector.runner import RunResult
+    res = RunResult("profiles", "w", False)
+    res.expected = expected
+    return res
+
+
 if __name__ == "__main__":
     unittest.main()
