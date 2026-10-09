@@ -158,6 +158,14 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 }
 .badge.private { color: var(--bad); }
 .badge.pinned { color: var(--text-2); }
+.badge.platform { color: var(--text-2); }
+.sort .sm { display: none; }
+.badge.late { color: var(--text-2); font-weight: 600; margin-left: 6px; white-space: nowrap; }
+
+/* Stand: one board per platform, Instagram first */
+.board-title { font-size: 1.3rem; margin: 30px 0 8px; }
+.stand-board:first-of-type .board-title { margin-top: 4px; }
+.board-title .meta { font-size: 0.85rem; font-weight: 400; }
 
 /* Controls */
 .controls { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; margin-bottom: 12px; }
@@ -167,6 +175,12 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
   padding: 7px 14px; border-radius: 7px; cursor: pointer; min-height: 40px;
 }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(0 0 0 / 0.12); }
+.seg a.seg-link {
+  display: inline-flex; align-items: center; color: var(--text-2); font-weight: 600; text-decoration: none;
+  padding: 7px 14px; border-radius: 7px; min-height: 40px;
+}
+.seg a.seg-link:hover { color: var(--text); }
+.seg.account-platform { margin-bottom: 14px; }
 .check { display: inline-flex; gap: 8px; align-items: center; color: var(--text-2); cursor: pointer; }
 .check input { width: 18px; height: 18px; }
 
@@ -213,6 +227,8 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 }
 @media (max-width: 560px) {
   .opt { display: none; }
+  .sort .lg { display: none; }
+  .sort .sm { display: inline; }
   .board { font-size: 1.05rem; }
   .board td, .board th { padding: 8px 6px; }
   .board td.rank { width: 2.2em; }
@@ -295,6 +311,8 @@ main { padding-top: 20px; padding-bottom: 24px; min-height: 60vh; }
 .p-dot { flex: none; width: calc(var(--u) * 2.2); height: calc(var(--u) * 2.2); border-radius: 50%; }
 .p-at { margin-left: 0.3em; font-size: 0.62em; font-weight: 600; color: var(--text-2); }
 .p-pod-handle .p-at { display: block; margin: 0; }
+.p-late { margin-left: 0.4em; font-size: 0.55em; font-weight: 600; color: var(--text-2); white-space: nowrap; }
+.p-pod-handle .p-late { display: block; margin: 0; }
 .p-legend-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .p-legend-rank { min-width: 1.4em; color: var(--text-2); text-align: right; }
 

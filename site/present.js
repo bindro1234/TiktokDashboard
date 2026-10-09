@@ -6,6 +6,7 @@
 // P, "." or B to pause - "." and B are what clickers send for their black-screen button).
 // Finale: a countdown and LIVE labels until the deadline, then only the Eindstand (frozen).
 // Uses the data, standings and chart helpers from app.js (loaded before this file).
+// Two platforms, Instagram first: its podium, stand pages, graph and risers, then the same for TikTok.
 
 const Present = (() => {
   const P = { slideSeconds: 15, pageSize: 10, graphAccounts: 8, risers: 10, ...(CFG.present || {}) };
@@ -15,9 +16,33 @@ const Present = (() => {
 
   const MEDALS = ["🥇", "🥈", "🥉"];
   const SLIDE_NAMES = { podium: "top 3", ranking: "stand", graph: "grafiek", risers: "stijgers laatste 24 uur" };
+
+  // What differs per platform. TikTok ranks on views (+ 24 uur next to it); Instagram on followers gained since the
+  // account's baseline, with the total followers next to it. `rows` are the accounts that have a place.
+  const SPEC = {
+    tiktok: {
+      rows: (d) => d.standings,
+      value: (r) => r.views, showValue: (r) => fmt(r.views), unit: "weergaven", valueHead: "Weergaven",
+      next: (r) => (r.gain == null ? "" : signed(r.gain)), nextHead: "+ 24 uur",
+      medal: (r) => r.rank <= 3 && r.views > 0,
+      podiumNote: (r, final) => (r.gain == null || final ? "&nbsp;" : `${signed(r.gain)} in 24 uur`),
+      chartKey: "total_views", chartTitle: "Weergaven over tijd",
+      risersSub: "weergaven erbij in de laatste 24 uur",
+    },
+    instagram: {
+      rows: (d) => d.standings.filter((r) => r.rank != null),
+      value: (r) => r.gained, showValue: (r) => signed(r.gained), unit: "volgers erbij", valueHead: "Volgers erbij",
+      next: (r) => fmt(r.followers), nextHead: "Volgers",
+      medal: (r) => r.rank <= 3 && r.gained > 0,
+      podiumNote: (r) => `${fmt(r.followers)} volgers`,
+      chartKey: "gain", chartTitle: "Volgers erbij over tijd",
+      risersSub: "volgers erbij in de laatste 24 uur",
+    },
+  };
   const PAUSE_KEYS = new Set(["p", "P", ".", "b", "B"]);
   const slotOf = new Map(); // graph colours stay with the account while it stays in the top
-  let data = null;
+  let all = null;   // { instagram, tiktok }: the datasets of both platforms
+  let data = null;  // the dataset of the slide being drawn
   let slides = [];
   let index = 0;
   let timer = null;
@@ -25,18 +50,29 @@ const Present = (() => {
   let phase = finalePhase();
   let root, stage;
 
-  // After the deadline only the Eindstand: podium and the full final ranking.
+  // Platforms with something to rank, Instagram first.
+  const platformsShown = () => ["instagram", "tiktok"].filter((p) => all[p] && SPEC[p].rows(all[p]).length);
+  const isFinal = () => Boolean(all && all.tiktok && all.tiktok.final);
+
+  // After the deadline only the Eindstand: podium and the full final ranking, per platform.
   function buildSlides() {
-    const list = [{ kind: "podium" }];
-    for (let from = 3; from < data.standings.length; from += P.pageSize) list.push({ kind: "ranking", from });
-    if (!data.final) list.push({ kind: "graph" }, { kind: "risers" });
+    const list = [];
+    for (const platform of platformsShown()) {
+      list.push({ kind: "podium", platform });
+      for (let from = 3; from < SPEC[platform].rows(all[platform]).length; from += P.pageSize) list.push({ kind: "ranking", platform, from });
+      if (!isFinal()) list.push({ kind: "graph", platform }, { kind: "risers", platform });
+    }
     return list;
   }
 
   const live = () => (phase === "live" ? ` <span class="live p-live">LIVE</span>` : "");
-  const title = (text, sub = "") =>
-    `<h2 class="p-title">${data && data.final ? "🏁 Eindstand" + (text === "Top 3" ? "" : ` · ${text.toLowerCase()}`) : text}${live()}${sub ? ` <span class="p-sub">${sub}</span>` : ""}</h2>`;
-  const badge = (r) => (r.isPrivate ? privateBadge() : "");
+  // "Instagram · Top 3", or "🏁 Eindstand Instagram · stand" after the deadline.
+  const title = (text, sub = "") => {
+    const platform = PLATFORMS[data.platform].label;
+    const head = isFinal() ? `🏁 Eindstand ${platform}` + (text === "Top 3" ? "" : ` · ${text.toLowerCase()}`) : `${platform} · ${text}`;
+    return `<h2 class="p-title">${head}${live()}${sub ? ` <span class="p-sub">${sub}</span>` : ""}</h2>`;
+  };
+  const badge = (r) => (r.isPrivate ? privateBadge() : "") + (r.late ? ` <span class="p-late" title="Later toegevoegd: telt vanaf zijn eerste meting">vanaf ${shortDayFmt.format(dayMs(localDay(r.baselineAt)))}</span>` : "");
   // The private dashboard passes first names as labels; the public site only has handles.
   const who = (handle) => {
     const label = data.labels && data.labels[handle];
@@ -44,16 +80,17 @@ const Present = (() => {
   };
 
   function podium() {
-    const top = data.standings.slice(0, 3);
+    const spec = SPEC[data.platform];
+    const top = spec.rows(data).slice(0, 3);
     const place = (i) => {
       const r = top[i];
       if (!r) return `<div class="p-pod p-pod-${i + 1} p-pod-empty"><div class="p-pod-block"></div></div>`;
       return `<div class="p-pod p-pod-${i + 1}">
-        <div class="p-pod-medal">${MEDALS[i]}</div>
+        <div class="p-pod-medal">${MEDALS[Math.min(r.rank, 3) - 1]}</div>
         <div class="p-pod-handle">${who(r.handle)}${badge(r)}</div>
-        <div class="p-pod-views">${fmt(r.views)}</div>
-        <div class="p-pod-label">weergaven</div>
-        <div class="p-pod-gain">${r.gain == null || data.final ? "&nbsp;" : `${signed(r.gain)} in 24 uur`}</div>
+        <div class="p-pod-views">${spec.showValue(r)}</div>
+        <div class="p-pod-label">${spec.unit}</div>
+        <div class="p-pod-gain">${spec.podiumNote(r, isFinal())}</div>
         <div class="p-pod-block">${r.rank}</div>
       </div>`;
     };
@@ -66,25 +103,27 @@ const Present = (() => {
   const chars = (list) => Math.max(0, ...list.map((s) => String(s).length));
 
   function ranking(from) {
-    const rows = data.standings.slice(from, from + P.pageSize);
+    const spec = SPEC[data.platform];
+    const list = spec.rows(data);
+    const rows = list.slice(from, from + P.pageSize);
     const to = from + rows.length;
-    const vw = chars(rows.map((r) => fmt(r.views))), gw = chars(rows.map((r) => (r.gain == null ? "" : signed(r.gain))));
-    return title("Stand", `plaats ${from + 1}–${to} van ${data.standings.length}`) + `
+    const vw = chars(rows.map((r) => spec.showValue(r))), gw = chars(rows.map((r) => spec.next(r)));
+    return title("Stand", `plaats ${from + 1}–${to} van ${list.length}`) + `
       <div class="p-table" style="--rows:${P.pageSize}; --vw:${vw}; --gw:${gw}">
-        <div class="p-row p-head"><span>#</span><span>±</span><span>Account</span><span>Weergaven</span><span>+ 24 uur</span></div>
+        <div class="p-row p-head"><span>#</span><span>±</span><span>Account</span><span>${spec.valueHead}</span><span>${spec.nextHead}</span></div>
         ${rows.map((r) => `
           <div class="p-row">
             <span class="p-rank">${r.rank}</span>
             <span class="p-chg">${changeCell(r)}</span>
             <span class="p-handle">${who(r.handle)}${badge(r)}</span>
-            <span class="p-views">${fmt(r.views)}</span>
-            <span class="p-gain">${r.gain == null ? "" : signed(r.gain)}</span>
+            <span class="p-views">${spec.showValue(r)}</span>
+            <span class="p-gain">${spec.next(r)}</span>
           </div>`).join("")}
       </div>`;
   }
 
   function graphTop() {
-    const top = data.standings.slice(0, P.graphAccounts).map((r) => r.handle);
+    const top = SPEC[data.platform].rows(data).slice(0, P.graphAccounts).map((r) => r.handle);
     for (const h of [...slotOf.keys()]) if (!top.includes(h)) slotOf.delete(h);
     for (const h of top) {
       if (slotOf.has(h)) continue;
@@ -99,9 +138,10 @@ const Present = (() => {
 
   function graph() {
     const top = graphTop();
-    return title("Weergaven over tijd", `top ${top.length}`) + `
+    const spec = SPEC[data.platform];
+    return title(spec.chartTitle, `top ${top.length}`) + `
       <div class="p-graph">
-        <div class="p-chart"><canvas id="p-chart" aria-label="Weergaven over tijd, top ${top.length}"></canvas></div>
+        <div class="p-chart"><canvas id="p-chart" aria-label="${spec.chartTitle}, top ${top.length}"></canvas></div>
         <ol class="p-legend">${top.map((h, i) => `
           <li><span class="p-dot" style="background:${data.outliers.has(h) ? cssVar("--muted") : color(h)}"></span><span class="p-legend-rank">${i + 1}</span><span class="p-legend-name">${who(h)}${data.outliers.has(h) ? ` <span class="p-out">▲ buiten schaal</span>` : ""}</span></li>`).join("")}
         </ol>
@@ -113,17 +153,19 @@ const Present = (() => {
     const opts = timeAxis(baseOptions());
     opts.plugins.tooltip.enabled = false;
     opts.layout = { padding: { right: 8 } };
-    const datasets = applyOutliers(top.map((h) => ({ ...lineDataset(who2(h), points(h, "total_views"), color(h), false), borderWidth: 3, handle: h })));
+    const key = SPEC[data.platform].chartKey;
+    const datasets = applyOutliers(top.map((h) => ({ ...lineDataset(who2(h), points(h, key), color(h), false), borderWidth: 3, handle: h })));
     outlierPadding(opts, datasets);
     drawChart("p-chart", { type: "line", data: { datasets }, options: opts, plugins: [outlierMarks] });
   }
 
   function risers() {
-    const rows = data.standings
+    const spec = SPEC[data.platform];
+    const rows = spec.rows(data)
       .filter((r) => r.gain != null)
       .sort((a, b) => b.gain - a.gain || a.handle.localeCompare(b.handle))
       .slice(0, P.risers);
-    const head = title("Stijgers", "weergaven erbij in de laatste 24 uur");
+    const head = title("Stijgers", spec.risersSub);
     if (!rows.length) return head + `<p class="p-message">Nog geen vergelijking met 24 uur geleden. Morgen staan hier de grootste stijgers.</p>`;
     // Bars scale without "buiten schaal" accounts; theirs runs off the end, grey with a ▲.
     const scaled = rows.filter((r) => !data.outliers.has(r.handle));
@@ -144,6 +186,9 @@ const Present = (() => {
     if (!slides.length) return;
     index = ((i % slides.length) + slides.length) % slides.length;
     const slide = slides[index];
+    // The helpers from app.js (who2, points, applyOutliers) work on the platform of this slide.
+    data = all[slide.platform];
+    state.data = data;
     if (state.charts["p-chart"]) {
       state.charts["p-chart"].destroy();
       delete state.charts["p-chart"];
@@ -185,7 +230,7 @@ const Present = (() => {
     btn.title = paused ? "Verder afspelen (P)" : "Pauzeren (P)";
     document.getElementById("p-paused").hidden = !paused;
     root.classList.toggle("p-is-paused", paused);
-    if (data) restartTimer();
+    if (all) restartTimer();
   }
 
   // Finale countdown (every second while live) and the switch to the Eindstand at the deadline.
@@ -199,30 +244,32 @@ const Present = (() => {
     if (next !== phase) {
       phase = next;
       if (next === "after") load(); // rebuilt frozen at the last run before the deadline: Eindstand slides
-      else if (data) show(index);  // LIVE labels on / off
+      else if (all) show(index);  // LIVE labels on / off
     }
   }
 
+  // d = { instagram, tiktok } (state.all).
   function update(d) {
-    const first = !data;
+    const first = !all;
     phase = finalePhase();
     tickFinale();
-    const wasFinal = data && data.final;
-    data = d;
+    const wasFinal = isFinal();
+    all = d;
     slides = buildSlides();
-    document.getElementById("p-updated").textContent = !d.latest ? "Nog geen gegevens"
-      : d.final ? `Eindstand · laatste meting ${stampFmt.format(d.latest)}` : `Bijgewerkt: ${stampFmt.format(d.latest)}`;
+    const latest = Math.max(d.tiktok.latest, d.instagram ? d.instagram.latest : 0);
+    document.getElementById("p-updated").textContent = !latest ? "Nog geen gegevens"
+      : isFinal() ? `Eindstand · laatste meting ${stampFmt.format(latest)}` : `Bijgewerkt: ${stampFmt.format(latest)}`;
     // New data is picked up by the next slide; the first load (and the switch to the Eindstand) starts over.
-    if (first || (d.final && !wasFinal)) show(0);
+    if (first || (isFinal() && !wasFinal)) show(0);
     else if (index >= slides.length) show(0);
   }
 
   function error(message) {
-    if (!data) {
+    if (!all) {
       stage.innerHTML = `<p class="p-message">Kon de gegevens niet laden: ${esc(message)}</p>`;
     } else {
       document.getElementById("p-updated").textContent =
-        `Bijgewerkt: ${stampFmt.format(data.latest)} · verversen mislukt, probeert het zo opnieuw`;
+        `Bijgewerkt: ${stampFmt.format(Math.max(all.tiktok.latest, all.instagram ? all.instagram.latest : 0))} · verversen mislukt, probeert het zo opnieuw`;
     }
   }
 
@@ -244,7 +291,7 @@ const Present = (() => {
     // Manual skipping: click a dot, or use the keyboard. Every skip restarts that slide's timer.
     document.getElementById("p-dots").addEventListener("click", (ev) => {
       const dot = ev.target.closest("button[data-slide]");
-      if (dot && data) show(Number(dot.dataset.slide));
+      if (dot && all) show(Number(dot.dataset.slide));
     });
     const pauseBtn = document.getElementById("p-pause");
     pauseBtn.addEventListener("click", () => {
@@ -252,7 +299,7 @@ const Present = (() => {
       setPaused(!paused);
     });
     addEventListener("keydown", (ev) => {
-      if (!data || ev.ctrlKey || ev.altKey || ev.metaKey) return;
+      if (!all || ev.ctrlKey || ev.altKey || ev.metaKey) return;
       if (PAUSE_KEYS.has(ev.key)) {
         ev.preventDefault();
         setPaused(!paused);
@@ -283,7 +330,7 @@ const Present = (() => {
       clearTimeout(resize);
       resize = setTimeout(() => {
         Chart.defaults.font.size = Math.max(14, Math.round(Math.min(innerHeight, innerWidth * 0.5625) / 48));
-        if (data) show(index);
+        if (all) show(index);
       }, 200);
     });
   }

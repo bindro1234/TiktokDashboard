@@ -13,8 +13,13 @@ window.TT_CONFIG.source = async function () {
   // Students with two accounts: the private sheet knows right away (the public handles tab after the next run).
   const groupOf = new Map(d.accounts.filter((a) => a.tracked).map((a) => [a.handle, a.group]));
   const handles = d.handles.map((h) => ({ ...h, group: groupOf.get(String(h.handle)) || h.group || h.handle }));
+  // Instagram: the same, with first names as labels on the Instagram handles (one account per student).
+  const igLabels = {};
+  for (const a of d.accounts) if (a.instagramTracked && a.name) igLabels[a.instagram] = a.name.split(" ")[0];
   // The finale state (start/end in ms, or null) comes from the private sheet via the Worker.
-  return { handles, history: d.history, posts: d.posts, labels, finale: d.finale || null, outliers: d.outliers || [] };
+  return { handles, history: d.history, posts: d.posts, labels, finale: d.finale || null, outliers: d.outliers || [],
+    igHandles: d.igHandles || [], igHistory: d.igHistory || [], igPosts: d.igPosts || [], igBaseline: d.igBaseline || [],
+    igLabels, igOutliers: d.igOutliers || [], igOk: true };
 };
 // Per-video history (account pages, Video's) also through the Worker, like the rest of the data.
 window.TT_CONFIG.postHistorySource = async function () {

@@ -13,6 +13,23 @@ const METRICS = {
   posts: { label: "Posts", key: "campaign_posts" },
   likes: { label: "Likes", key: "campaign_likes" },
 };
+// Instagram has no views or likes in the data; its ranking is followers gained since the account's
+// baseline (its first successful measurement, tab ig_baseline). "gain" is that, per run, in the series.
+const IG_METRICS = {
+  gain: { label: "Volgers erbij", key: "gain" },
+  followers: { label: "Volgers", key: "followers" },
+  posts: { label: "Posts", key: "campaign_posts" },
+};
+const IG_GROWTH_METRICS = { followers: IG_METRICS.followers, posts: IG_METRICS.posts };
+// Instagram first: it is where the campaign runs now. The platform switch on Grafiek, Groei and the account pages
+// shows these in this order.
+const PLATFORMS = {
+  instagram: { label: "Instagram", metrics: IG_METRICS, growthMetrics: IG_GROWTH_METRICS, metric: "gain", growthMetric: "followers" },
+  tiktok: { label: "TikTok", metrics: METRICS, growthMetrics: METRICS, metric: "views", growthMetric: "views" },
+};
+const PLATFORM_LABELS = Object.fromEntries(Object.entries(PLATFORMS).map(([k, p]) => [k, p.label]));
+// An account measured this long after the first one got its baseline later: marked in the table.
+const LATE_BASELINE_MS = 90 * 60 * 1000;
 const PERIODS = { day: "Per dag", week: "Per week" };
 const RANGES = { all: "Alles", "7d": "7 dagen", "48h": "48 uur" };
 const RANGE_MS = { all: null, "7d": 7 * 864e5, "48h": 2 * 864e5 };
@@ -36,16 +53,22 @@ const CLOCK_OFFSET = (() => {
 const now = () => Date.now() + CLOCK_OFFSET;
 
 const state = {
-  data: null,
+  data: null,            // the dataset of the platform being shown (see useData); all of them are in `all`
+  all: { instagram: null, tiktok: null },
+  platform: "instagram", // Grafiek, Groei and the account pages show one platform at a time
   view: "stand",
   account: null,
-  metric: "views",
-  growthMetric: "views",
+  accountPlatform: "tiktok", // platform of the account page being shown (#account/<handle> = TikTok, #account/ig/<handle>)
+  metric: "gain",
+  growthMetric: "followers",
   period: "day",
-  selected: [],          // handles, in the order they were picked
+  selected: [],          // handles of the current platform, in the order they were picked
   slotOf: new Map(),     // handle -> colour slot 1..8; colour follows the account, not its rank
+  picks: {},             // selected/slotOf of the platforms that are not the current one (see useData)
+  dataPlatform: null,    // platform whose selection is in selected/slotOf
   showOthers: false,
-  sort: { key: "views", dir: -1 }, // leaderboard sort; -1 = high to low
+  sort: { key: "views", dir: -1 }, // TikTok leaderboard sort; -1 = high to low
+  sortIg: { key: "gained", dir: -1 }, // Instagram leaderboard sort
   open: new Set(),       // Stand: students with two accounts whose per-account rows are shown
   accountView: null,     // account page of a student with two accounts: one of them ("" = both)
   tagSort: "posts",
@@ -141,19 +164,25 @@ async function fetchCsv(tab, signal) {
 // "Buiten schaal" (public tab outliers, handles only): accounts left out of the chart scales.
 // Fetched next to the main data but never holding it up: a missing (nobody marked yet) or slow
 // tab just means no outliers until it arrives; then the charts are redrawn.
-let OUTLIERS = new Set();
+// One set per platform: tab outliers (TikTok) and ig_outliers (Instagram); a handle is only "buiten schaal" on the
+// platform where it was switched on (the same handle can exist on both).
+let OUTLIERS = { tiktok: new Set(), instagram: new Set() };
+const OUTLIER_TABS = { tiktok: "outliers", instagram: "ig_outliers" };
 function refreshOutliers() {
-  if (!(CFG.csvUrls && CFG.csvUrls.outliers) && !(CFG.gids && CFG.gids.outliers != null)) return;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 10000);
-  fetchCsv("outliers", ctrl.signal).then((rows) => {
-    const next = outliersFromRows(rows);
-    if ([...next].join() === [...OUTLIERS].join()) return;
-    OUTLIERS = next;
-    if (!state.data) return;
-    state.data.outliers = outlierKeys(state.data, OUTLIERS);
-    if (IS_PRESENT) Present.update(state.data); else render();
-  }).catch(() => {}).finally(() => clearTimeout(timer));
+  for (const [platform, tab] of Object.entries(OUTLIER_TABS)) {
+    if (!(CFG.csvUrls && CFG.csvUrls[tab]) && !(CFG.gids && CFG.gids[tab] != null)) continue;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 10000);
+    fetchCsv(tab, ctrl.signal).then((rows) => {
+      const next = outliersFromRows(rows);
+      if ([...next].join() === [...OUTLIERS[platform]].join()) return;
+      OUTLIERS[platform] = next;
+      const d = state.all[platform];
+      if (!d) return;
+      d.outliers = outlierKeys(d, next);
+      if (IS_PRESENT) Present.update(state.all); else render();
+    }).catch(() => {}).finally(() => clearTimeout(timer));
+  }
 }
 function outliersFromRows(rows) {
   return new Set((rows || []).filter((r) => isTrue(r.buiten_schaal))
@@ -225,11 +254,89 @@ function build(handleRows, historyRows, postRows, labels = {}, outliers = new Se
   const people = new Map(accounts.map((p) => [p.handle, p]));
   const keyOf = new Map(accounts.flatMap((p) => p.handles.map((h) => [h, p.handle])));
   const merged = new Map(accounts.map((p) => [p.handle, p.multi ? mergeSeries(p.handles.map((h) => series.get(h))) : series.get(p.handle)]));
-  const data = { accounts, accountList, people, keyOf, series: merged, accountSeries: series, posts, latest, labels, final,
+  const data = { platform: "tiktok", accounts, accountList, people, keyOf, series: merged, accountSeries: series, posts, latest, labels, final,
     standings: standings(accounts, merged, latest), tags: hashtagStats(posts) };
   data.outliers = outlierKeys(data, outliers);
   data.accountRows = new Map(accountList.map((a) => [a.handle, standings([a], series, latest)[0]]));
   return data;
+}
+
+// An empty cell is "unknown", not 0 (toNum turns "" into 0).
+const numOrNull = (v) => (String(v ?? "").trim() === "" ? null : toNum(v));
+
+// The Instagram dataset, shaped like the TikTok one (accounts, series, posts, standings, outliers) so the charts and
+// account helpers work on either. Instagram accounts are not grouped (one per student, and the public data has no
+// link between a student's two platforms). Series points: followers, following, posts_count, campaign_posts and
+// `gain` = followers minus the account's baseline (ig_baseline: its first successful measurement, add-only, so it never shifts).
+function buildInstagram(src, labels = {}, outliers = new Set()) {
+  const final = finalePhase() === "after";
+  const cutoff = final ? FINALE.end : Infinity;
+  const accountList = (src.igHandles || []).filter((r) => r.handle).map((r) => {
+    const handle = String(r.handle).trim();
+    return { handle, group: handle, label: labels[handle] || null, isPrivate: isTrue(r.is_private), status: r.last_status || "",
+      followersNow: numOrNull(r.followers) };
+  });
+  const known = new Set(accountList.map((a) => a.handle));
+  const baselines = new Map();
+  for (const r of src.igBaseline || []) {
+    const h = String(r.handle || "").trim(), t = Date.parse(r.baseline_at), followers = numOrNull(r.baseline_followers);
+    if (known.has(h) && Number.isFinite(t) && t <= cutoff && followers != null && !baselines.has(h)) baselines.set(h, { t, followers });
+  }
+  const firstBaseline = baselines.size ? Math.min(...[...baselines.values()].map((b) => b.t)) : null;
+  const series = new Map(accountList.map((a) => [a.handle, []]));
+  let latest = 0;
+  for (const r of src.igHistory || []) {
+    const h = String(r.handle || "").trim(), s = series.get(h), t = Date.parse(r.timestamp);
+    if (!s || !Number.isFinite(t) || t > cutoff) continue;
+    const followers = numOrNull(r.followers), b = baselines.get(h);
+    s.push({ t, followers, following: numOrNull(r.following), posts_count: numOrNull(r.posts_count),
+      campaign_posts: numOrNull(r.campaign_posts) ?? 0, gain: followers != null && b ? followers - b.followers : null });
+    latest = Math.max(latest, t);
+  }
+  for (const s of series.values()) s.sort((a, b) => a.t - b.t);
+  const posts = new Map(accountList.map((a) => [a.handle, []]));
+  for (const r of src.igPosts || []) {
+    const h = String(r.handle || "").trim();
+    if (!known.has(h) || !String(r.post_id ?? "").trim()) continue;
+    posts.get(h).push({ id: String(r.post_id), created: Date.parse(r.created_at), type: r.post_type || "", url: String(r.url || "").trim(),
+      tags: String(r.hashtags || "").toLowerCase().split(/\s+/).filter(Boolean) });
+  }
+  const accounts = accountList.map((a) => ({ handle: a.handle, handles: [a.handle], multi: false, label: a.label, isPrivate: a.isPrivate, status: a.status }));
+  const people = new Map(accounts.map((p) => [p.handle, p]));
+  const keyOf = new Map(accounts.map((p) => [p.handle, p.handle]));
+  const data = { platform: "instagram", accounts, accountList, people, keyOf, series, accountSeries: series, posts, latest, labels, final,
+    baselines, firstBaseline, tags: hashtagStats(posts) };
+  data.standings = standingsInstagram(accounts, series, latest, baselines, firstBaseline);
+  data.outliers = outlierKeys(data, outliers);
+  data.accountRows = new Map(data.standings.map((r) => [r.handle, r]));
+  return data;
+}
+
+// Instagram: ranked on followers gained since the account's baseline, with the total followers next to it. Equal gains
+// share a place (listed by followers). An account without a baseline yet (private, not found, not measured) has no
+// place and comes last. `gain` is the change in followers over the last ~24 hours (arrows, risers); `late` marks an
+// account whose baseline is from a later run than the first accounts' (added later: its gain counts from then).
+function standingsInstagram(accounts, series, latest, baselines, firstBaseline) {
+  const rows = accounts.map((a) => {
+    const measured = series.get(a.handle).filter((p) => p.followers != null);
+    const cur = measured.at(-1) || null;
+    const base = latest && cur ? baseline(measured, latest) : null;
+    const b = baselines.get(a.handle) || null;
+    return { ...a, cur, base, baseline: b, baselineAt: b ? b.t : null,
+      followers: cur ? cur.followers : a.followersNow ?? null, posts: cur ? cur.campaign_posts : null,
+      gained: cur && b ? cur.followers - b.followers : null,
+      gain: cur && base ? cur.followers - base.followers : null,
+      late: Boolean(b && firstBaseline != null && b.t - firstBaseline > LATE_BASELINE_MS) };
+  });
+  const ranked = rows.filter((r) => r.gained != null);
+  const now = rankBy(ranked, (r) => r.gained, (a, b) => (b.followers ?? 0) - (a.followers ?? 0));
+  const before = rankBy(ranked.filter((r) => r.base && r.baseline), (r) => r.base.followers - r.baseline.followers);
+  for (const r of rows) {
+    r.rank = now.get(r.handle) ?? null;
+    r.rankChange = r.rank != null && before.has(r.handle) ? before.get(r.handle) - r.rank : null;
+  }
+  return rows.sort((a, b) => (a.rank == null) - (b.rank == null) || a.rank - b.rank
+    || (b.followers ?? 0) - (a.followers ?? 0) || a.handle.localeCompare(b.handle));
 }
 
 // "Buiten schaal" is set per account; a student is out of the scale when one of their accounts is.
@@ -291,6 +398,14 @@ function baseline(s, latest) {
   return null;
 }
 
+// Rank by a number, high to low; equal numbers share a place. Returns Map(handle -> place).
+function rankBy(list, value, tieBreak = () => 0) {
+  const sorted = [...list].sort((a, b) => value(b) - value(a) || tieBreak(a, b) || a.handle.localeCompare(b.handle));
+  const ranks = new Map();
+  sorted.forEach((r, i) => ranks.set(r.handle, i > 0 && value(sorted[i - 1]) === value(r) ? ranks.get(sorted[i - 1].handle) : i + 1));
+  return ranks;
+}
+
 // Rank by total views; "+ 24 uur" and the rank change compare with the run of ~24 hours earlier
 // (rolling, so it doesn't reset at midnight; TikTok runs every 12 hours).
 function standings(accounts, series, latest) {
@@ -300,12 +415,6 @@ function standings(accounts, series, latest) {
     const base = latest ? baseline(s, latest) : null;
     return { ...a, cur, base, views: cur ? cur.total_views : 0 };
   });
-  const rankBy = (list, value) => {
-    const sorted = [...list].sort((a, b) => value(b) - value(a) || a.handle.localeCompare(b.handle));
-    const ranks = new Map();
-    sorted.forEach((r, i) => ranks.set(r.handle, i > 0 && value(sorted[i - 1]) === value(r) ? ranks.get(sorted[i - 1].handle) : i + 1));
-    return ranks;
-  };
   const now = rankBy(rows, (r) => r.views);
   const before = rankBy(rows.filter((r) => r.base), (r) => r.base.total_views);
   for (const r of rows) {
@@ -316,25 +425,76 @@ function standings(accounts, series, latest) {
   return rows.sort((a, b) => a.rank - b.rank || a.handle.localeCompare(b.handle));
 }
 
+// A tab that may be missing or not published (yet): no rows and ok=false, so the other platform still loads.
+async function fetchOptional(tab) {
+  if (!(CFG.csvUrls && CFG.csvUrls[tab]) && !(CFG.gids && CFG.gids[tab] != null)) return { rows: [], ok: false };
+  try {
+    return { rows: await fetchCsv(tab), ok: true };
+  } catch {
+    return { rows: [], ok: false };
+  }
+}
+
+// The four public Instagram tabs. ok = all of them could be read (an empty tab is fine: no run yet).
+async function fetchInstagram() {
+  const got = await Promise.all(["ig_handles", "ig_history", "ig_posts", "ig_baseline"].map(fetchOptional));
+  const [igHandles, igHistory, igPosts, igBaseline] = got.map((g) => g.rows);
+  return { igHandles, igHistory, igPosts, igBaseline, igOk: got.every((g) => g.ok) };
+}
+
+// Makes `platform` the one the shared helpers (who2, points, gains, the chips) work on. The picked accounts
+// (Grafiek/Groei) are kept per platform, so switching platform brings back that platform's own picks.
+function useData(platform) {
+  if (state.dataPlatform !== platform) {
+    if (state.dataPlatform) state.picks[state.dataPlatform] = { selected: state.selected, slotOf: state.slotOf };
+    const next = state.picks[platform] || { selected: [], slotOf: new Map() };
+    state.selected = next.selected;
+    state.slotOf = next.slotOf;
+    state.dataPlatform = platform;
+  }
+  state.data = state.all[platform];
+  return state.data;
+}
+// Runs fn with the helpers pointing at `platform`'s data, then puts them back (for the Stand, which shows both).
+function on(platform, fn) {
+  const prev = state.data;
+  state.data = state.all[platform];
+  try {
+    return fn();
+  } finally {
+    state.data = prev;
+  }
+}
+
 async function load() {
   try {
     // The private dashboard supplies its own source (with names as labels); the public site reads the CSVs.
     const src = CFG.source
       ? await CFG.source()
-      : await (refreshOutliers(), Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale()]))
-        .then(([handles, history, posts, finaleRows]) => ({ handles, history, posts, finaleRows }));
+      : await (refreshOutliers(), Promise.all([fetchCsv("handles"), fetchCsv("history"), fetchCsv("posts"), fetchFinale(), fetchInstagram()]))
+        .then(([handles, history, posts, finaleRows, ig]) => ({ handles, history, posts, finaleRows, ...ig }));
     FINALE = "finale" in src ? (src.finale ? { start: src.finale.start, end: src.finale.end } : null)
       : finaleFromRows(src.finaleRows);
-    if (src.outliers) OUTLIERS = new Set(src.outliers);
-    state.data = build(src.handles, src.history, src.posts, src.labels, OUTLIERS);
+    if (src.outliers) OUTLIERS.tiktok = new Set(src.outliers);
+    if (src.igOutliers) OUTLIERS.instagram = new Set(src.igOutliers);
+    state.all.tiktok = build(src.handles, src.history, src.posts, src.labels, OUTLIERS.tiktok);
+    state.all.instagram = buildInstagram(src, src.igLabels || {}, OUTLIERS.instagram);
+    state.all.instagram.ok = src.igOk !== false;
+    state.data = state.all[state.dataPlatform || state.platform];
     if (IS_PRESENT) {
-      Present.update(state.data);
+      Present.update(state.all);
       return;
     }
     document.getElementById("error").hidden = true;
-    if (!state.selected.length) state.data.standings.slice(0, 5).forEach((r) => select(r.handle));
-    const upd = state.data.latest ? `Bijgewerkt: ${stampFmt.format(state.data.latest)}` : "Nog geen gegevens";
-    document.getElementById("updated").textContent = `${upd} · ${state.data.accountList.length} accounts`;
+    for (const p of Object.keys(PLATFORMS)) {
+      useData(p);
+      if (!state.selected.length) state.data.standings.filter((r) => p === "tiktok" || r.rank != null).slice(0, 5).forEach((r) => select(r.handle));
+    }
+    useData(state.platform);
+    const latest = Math.max(state.all.tiktok.latest, state.all.instagram.latest);
+    const upd = latest ? `Bijgewerkt: ${stampFmt.format(latest)}` : "Nog geen gegevens";
+    const n = (d) => d.accountList.length;
+    document.getElementById("updated").textContent = `${upd} · ${n(state.all.instagram)} Instagram- en ${n(state.all.tiktok)} TikTok-accounts`;
     render();
   } catch (err) {
     if (IS_PRESENT) {
@@ -361,7 +521,7 @@ function loadPostHistory() {
   state.postHistoryLoading = (async () => {
     const t0 = performance.now();
     const rows = CFG.postHistorySource ? await CFG.postHistorySource() : await fetchCsv("post_history");
-    const cutoff = state.data && state.data.final ? FINALE.end : Infinity;
+    const cutoff = state.all.tiktok && state.all.tiktok.final ? FINALE.end : Infinity;
     const byVideo = new Map();
     for (const r of rows) {
       const t = Date.parse(r.timestamp);
@@ -412,7 +572,7 @@ function renderVideos() {
   }
   if (!state.postHistory) {
     body.innerHTML = `<tr><td colspan="6">Geschiedenis per video laden…</td></tr>`;
-    loadPostHistory().then(() => state.view === "videos" && renderVideos()).catch((err) => {
+    loadPostHistory().then(() => state.view === "videos" && on("tiktok", renderVideos)).catch((err) => {
       body.innerHTML = `<tr><td colspan="6">Kon de geschiedenis per video niet laden: ${esc(err.message)}</td></tr>`;
     });
     return;
@@ -424,7 +584,7 @@ function renderVideos() {
   const max = Math.max(1, ...(scaled.length ? scaled : rows).map((x) => x.gain));
   meta.textContent = `Weergaven erbij in de laatste ${VIDEO_RANGES[hours]} tot ${state.data.latest ? stampFmt.format(state.data.latest) : "nu"}`;
   body.innerHTML = rows.map((x, i) => `
-    <tr tabindex="0" data-handle="${esc(x.handle)}">
+    <tr tabindex="0" data-handle="${esc(x.handle)}" data-platform="tiktok">
       <td class="rank num">${i + 1}</td>
       <td class="handle">@${esc(x.handle)}${x.post.type && x.post.type !== "video" ? ` <span class="badge pinned">${esc(x.post.type)}</span>` : ""}</td>
       <td class="num views bar-cell"><span class="cell-bar${x.gain > max ? " out" : ""}" style="--w:${Math.min(1, x.gain / max) * 100}%"></span>${x.gain > max ? `<span class="out-mark" title="Buiten schaal">▲</span> ` : ""}${signed(x.gain)}</td>
@@ -441,7 +601,8 @@ function renderVideoChart(handle, posts) {
   if (!box) return;
   if (!hasPostHistory()) { box.hidden = true; return; }
   if (!state.postHistory) {
-    loadPostHistory().then(() => state.view === "account" && state.account === handle && renderVideoChart(handle, posts))
+    loadPostHistory().then(() => state.view === "account" && state.accountPlatform === "tiktok" && state.account === handle
+      && on("tiktok", () => renderVideoChart(handle, posts)))
       .catch(() => { box.hidden = true; });
     return;
   }
@@ -564,7 +725,7 @@ function baseOptions(yTitle) {
       x: { grid: { color: grid }, border: { color: grid }, ticks: { color: text, maxRotation: 0, autoSkipPadding: 16 } },
       y: {
         beginAtZero: true, grid: { color: grid }, border: { display: false },
-        ticks: { color: text, callback: (v) => compact.format(v) },
+        ticks: { color: text, precision: 0, callback: (v) => compact.format(v) },
         title: { display: !!yTitle, text: yTitle, color: text },
       },
     },
@@ -697,7 +858,7 @@ function lineDataset(label, points, color, endLabel) {
 }
 
 function renderMainChart() {
-  const m = METRICS[state.metric];
+  const m = PLATFORMS[state.platform].metrics[state.metric];
   const span = RANGE_MS[state.range];
   const min = span && state.data.latest ? state.data.latest - span : null;
   const datasets = [];
@@ -745,7 +906,7 @@ function gains(handle, key, period, src = state.data.series) {
 }
 
 function renderGrowth() {
-  const m = METRICS[state.growthMetric];
+  const m = PLATFORMS[state.platform].growthMetrics[state.growthMetric];
   const perHandle = new Map(state.data.accounts.map((a) => [a.handle, gains(a.handle, m.key, state.period)]));
   const keys = [...new Set([...perHandle.values()].flatMap((g) => [...g.keys()]))].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const labels = keys.map((k) => (state.period === "day" ? shortDayFmt.format(dayMs(k)) : weekLabel(k)));
@@ -768,14 +929,14 @@ function renderGrowth() {
   // Ranked table for the latest period.
   const lastKey = keys.at(-1);
   const periodName = state.period === "day" ? (lastKey ? shortDayFmt.format(dayMs(lastKey)) : "") : (lastKey ? weekLabel(lastKey) : "");
-  document.getElementById("growth-title").textContent = `Grootste stijgers · ${periodName}`;
+  document.getElementById("growth-title").textContent = `Grootste stijgers op ${PLATFORMS[state.platform].label} · ${periodName}`;
   document.getElementById("growth-col").textContent = `${m.label} erbij`;
   const rows = state.data.standings
     .map((r) => ({ r, gain: perHandle.get(r.handle).get(lastKey) ?? 0, total: r.cur ? r.cur[m.key] : null }))
     .sort((a, b) => b.gain - a.gain || a.r.handle.localeCompare(b.r.handle));
   const body = document.getElementById("growth-body");
   body.innerHTML = rows.map((x, i) => `
-    <tr tabindex="0" data-handle="${esc(x.r.handle)}">
+    <tr tabindex="0" data-handle="${esc(x.r.handle)}" data-platform="${state.platform}">
       <td class="rank num">${i + 1}</td>
       <td class="handle">${esc(who2(x.r.handle))}${x.r.isPrivate ? privateBadge() : ""}</td>
       <td class="num views">${signed(x.gain)}</td>
@@ -812,19 +973,21 @@ function sortedStandings() {
   });
 }
 
-function renderSortHeaders() {
-  // On a phone the extra columns are hidden; the column being sorted on stays visible.
-  document.getElementById("board").dataset.sorted = state.sort.key;
-  document.getElementById("sort-select").value = state.sort.key;
-  for (const th of document.querySelectorAll("#view-stand th[data-sort]")) {
-    const on = th.dataset.sort === state.sort.key;
-    if (on) th.setAttribute("aria-sort", state.sort.dir < 0 ? "descending" : "ascending");
+// Marks the sorted column of a leaderboard table (and the phone dropdown). On a phone the extra columns are hidden;
+// the column being sorted on stays visible.
+function renderSortHeadersOf(tableId, selectId, sort) {
+  document.getElementById(tableId).dataset.sorted = sort.key;
+  document.getElementById(selectId).value = sort.key;
+  for (const th of document.querySelectorAll(`#${tableId} th[data-sort]`)) {
+    const on = th.dataset.sort === sort.key;
+    if (on) th.setAttribute("aria-sort", sort.dir < 0 ? "descending" : "ascending");
     else th.removeAttribute("aria-sort");
     const btn = th.querySelector("button");
-    btn.dataset.arrow = on ? (state.sort.dir < 0 ? "▼" : "▲") : "";
+    btn.dataset.arrow = on ? (sort.dir < 0 ? "▼" : "▲") : "";
     btn.title = on ? "Klik om de volgorde om te draaien" : "Klik om hierop te sorteren";
   }
 }
+const renderSortHeaders = () => renderSortHeadersOf("board", "sort-select", state.sort);
 
 function renderBoard() {
   renderSortHeaders();
@@ -837,15 +1000,64 @@ function renderBoard() {
       <td class="num opt2 c-posts">${fmt(r.cur ? r.cur.campaign_posts : null)}</td>
       <td class="num opt2 c-likes">${fmt(r.cur ? r.cur.campaign_likes : null)}</td>`;
   body.innerHTML = sortedStandings().map((r) => `
-    <tr tabindex="0" data-handle="${esc(r.handle)}" class="${r.rank <= 3 && r.views > 0 ? "top3" : ""}">
+    <tr tabindex="0" data-handle="${esc(r.handle)}" data-platform="tiktok" class="${r.rank <= 3 && r.views > 0 ? "top3" : ""}">
       <td class="rank num">${r.rank <= 3 && r.views > 0 ? medal[r.rank] : r.rank}</td>
       <td class="chg">${changeCell(r)}</td>
       <td class="handle">${esc(who2(r.handle))}${r.isPrivate ? privateBadge() : ""}${accToggle(r)}</td>${numbers(r)}
     </tr>${r.multi && state.open.has(r.handle) ? r.handles.map((h) => `
-    <tr tabindex="0" data-handle="${esc(h)}" class="sub-row">
+    <tr tabindex="0" data-handle="${esc(h)}" data-platform="tiktok" class="sub-row">
       <td></td><td></td>
       <td class="handle"><span class="sub-mark">↳</span> @${esc(h)}</td>${numbers(state.data.accountRows.get(h))}
     </tr>`).join("") : ""}`).join("") || `<tr><td colspan="8">Nog geen accounts.</td></tr>`;
+}
+
+// Sortable columns of the Instagram leaderboard; the # column keeps the real place. Accounts without a baseline
+// (no place) always come last.
+const SORT_VALUE_IG = {
+  gained: (r) => r.gained,
+  followers: (r) => r.followers,
+  posts: (r) => r.posts,
+};
+
+function sortedStandingsIg() {
+  const { key, dir } = state.sortIg;
+  const value = SORT_VALUE_IG[key];
+  const place = (r) => (r.rank == null ? Infinity : r.rank);
+  return [...state.data.standings].sort((a, b) => {
+    const va = value(a), vb = value(b);
+    if (va == null || vb == null) return (va == null) - (vb == null) || place(a) - place(b) || a.handle.localeCompare(b.handle);
+    return (va - vb) * dir || place(a) - place(b) || a.handle.localeCompare(b.handle);
+  });
+}
+
+// "vanaf 12 okt": the account was added later; its gain counts from its own first measurement.
+const lateBadge = (r) => (r.late
+  ? ` <span class="badge late" title="Later toegevoegd: de volgers erbij tellen vanaf de eerste meting van dit account (${esc(stampFmt.format(r.baselineAt))}), niet vanaf de start.">vanaf ${esc(shortDayFmt.format(dayMs(localDay(r.baselineAt))))}</span>` : "");
+
+function renderBoardIg() {
+  renderSortHeadersOf("board-ig", "sort-select-ig", state.sortIg);
+  const d = state.data;
+  const body = document.getElementById("board-ig-body");
+  const note = document.getElementById("ig-note");
+  const meta = document.getElementById("ig-meta");
+  const medal = { 1: "🥇", 2: "🥈", 3: "🥉" };
+  const placed = d.standings.filter((r) => r.rank != null).length;
+  meta.textContent = d.accountList.length ? `${d.accountList.length} accounts` : "";
+  note.hidden = d.ok && d.accountList.length > 0;
+  note.textContent = !d.ok ? "De Instagram-gegevens konden niet worden geladen (is het tabblad al gepubliceerd?). TikTok werkt gewoon."
+    : "Nog geen Instagram-accounts in de sheet: de eerste Instagram-run moet nog komen.";
+  body.innerHTML = sortedStandingsIg().map((r) => `
+    <tr tabindex="0" data-handle="${esc(r.handle)}" data-platform="instagram" class="${r.rank != null && r.rank <= 3 && r.gained > 0 ? "top3" : ""}">
+      <td class="rank num">${r.rank == null ? "–" : r.rank <= 3 && r.gained > 0 ? medal[r.rank] : r.rank}</td>
+      <td class="chg opt">${r.rank == null ? "" : changeCell(r)}</td>
+      <td class="handle">${esc(who2(r.handle))}${r.isPrivate ? privateBadge() : ""}</td>
+      <td class="num views c-gained">${r.gained == null ? "–" : signed(r.gained)}${lateBadge(r)}</td>
+      <td class="num c-followers">${fmt(r.followers)}</td>
+      <td class="num opt2 c-posts">${fmt(r.posts)}</td>
+    </tr>`).join("") || `<tr><td colspan="6">Nog geen accounts.</td></tr>`;
+  if (placed < d.standings.length && placed) {
+    meta.textContent += ` · ${d.standings.length - placed} nog zonder meting (privé of nog niet opgehaald)`;
+  }
 }
 
 // "▸ 2 accounts": one student with two accounts; opens a row per account (Stand).
@@ -888,6 +1100,88 @@ function renderHashtags() {
   more.textContent = state.tagsAll ? `Toon alleen de top ${TAGS_SHOWN}` : `Toon alle ${rows.length} hashtags`;
 }
 
+// The same handle on the other platform (handles are the only link the public data has between the two): a switch.
+function platformSwitch(handle, platform) {
+  const other = platform === "instagram" ? "tiktok" : "instagram";
+  if (!state.all[other] || !state.all[other].keyOf.has(handle)) return "";
+  return `<div class="seg account-platform" role="group" aria-label="Platform">${["instagram", "tiktok"].map((p) =>
+    p === platform ? `<button type="button" aria-pressed="true" disabled>${PLATFORMS[p].label}</button>`
+      : `<a class="seg-link" href="#${accountHash(p, handle)}">${PLATFORMS[p].label}</a>`).join("")}</div>`;
+}
+const platformBadge = (platform) => `<span class="badge platform">${PLATFORMS[platform].label}</span>`;
+
+function renderAccountPage(handle) {
+  if (state.accountPlatform === "instagram") renderAccountIg(handle);
+  else renderAccount(handle);
+}
+
+const instagramUrl = (handle, post = null) =>
+  post && /^https:\/\/(www\.)?instagram\.com\//i.test(post.url) ? post.url : `https://www.instagram.com/${encodeURIComponent(handle)}/`;
+const postTypeNl = { photo: "foto", carousel: "carrousel", reel: "reel" };
+
+function renderAccountIg(handle) {
+  const el = document.getElementById("view-account");
+  const r = state.data.standings.find((x) => x.handle === handle);
+  if (!r) {
+    el.innerHTML = `<a class="back" href="#stand">← Terug naar de stand</a><p>Instagram-account @${esc(handle)} niet gevonden.</p>`;
+    return;
+  }
+  const posts = (state.data.posts.get(handle) || []).sort((a, b) => b.created - a.created);
+  const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
+  const since = r.baselineAt ? `sinds ${stampFmt.format(r.baselineAt)}${r.late ? " (later toegevoegd)" : ""}` : "nog geen eerste meting";
+  el.innerHTML = `
+    <a class="back" href="#stand">← Terug naar de stand</a>
+    <div class="detail-head">
+      <h2>${esc(who2(handle))}</h2>${platformBadge("instagram")}${r.isPrivate ? privateBadge() : ""}
+      <a href="${instagramUrl(handle)}" target="_blank" rel="noopener">Bekijk op Instagram ↗</a>
+    </div>
+    ${platformSwitch(handle, "instagram")}
+    ${r.isPrivate ? `<p class="notice">Dit account staat op privé. Zet het op openbaar, anders zijn de posts niet te zien.</p>` : ""}
+    <div class="tiles">
+      ${tile("Positie", r.rank == null ? "–" : r.rank, r.rank == null ? "" : changeCell(r))}
+      ${tile("Volgers erbij", r.gained == null ? "–" : signed(r.gained), since)}
+      ${tile("Volgers", fmt(r.followers))}
+      ${tile("Posts", fmt(r.posts), "sinds de start op Instagram")}
+    </div>
+    <div class="grid2">
+      <div><h3>Volgers erbij over tijd</h3><div class="chart-card short"><canvas id="chart-acc-gain"></canvas></div></div>
+      <div><h3>Volgers over tijd</h3><div class="chart-card short"><canvas id="chart-acc-followers"></canvas></div></div>
+    </div>
+    ${accountTags(posts)}
+    <h3 style="margin:18px 0 8px">Volgers erbij per dag</h3>
+    <div class="chart-card short"><canvas id="chart-acc-daily"></canvas></div>
+    <h2>Posts in de campagne (${posts.length})</h2>
+    <div class="board-wrap">
+      <table class="board small">
+        <thead><tr><th>Geplaatst</th><th>Soort</th><th class="opt">Hashtags</th><th></th></tr></thead>
+        <tbody>${posts.map((p) => `
+          <tr>
+            <td>${Number.isFinite(p.created) ? postDateFmt.format(p.created) : "–"}</td>
+            <td>${esc(postTypeNl[p.type] || p.type || "–")}</td>
+            <td class="opt">${p.tags.map((t) => "#" + esc(t)).join(" ") || "–"}</td>
+            <td><a href="${esc(instagramUrl(handle, p))}" target="_blank" rel="noopener">open ↗</a></td>
+          </tr>`).join("") || `<tr><td colspan="4">Nog geen posts gezien.</td></tr>`}
+        </tbody>
+      </table>
+    </div>`;
+  const accent = cssVar("--s1");
+  const single = (chartId, key, label) =>
+    drawChart(chartId, { type: "line", data: { datasets: [lineDataset(label, points(handle, key, null, state.data.series), accent, false)] }, options: timeAxis(baseOptions()) });
+  single("chart-acc-gain", "gain", "Volgers erbij");
+  single("chart-acc-followers", "followers", "Volgers");
+  const g = gains(handle, "followers", "day", state.data.series);
+  const keys = [...g.keys()];
+  drawChart("chart-acc-daily", {
+    type: "bar",
+    data: {
+      labels: keys.map((k) => shortDayFmt.format(dayMs(k))),
+      datasets: [{ label: "Volgers erbij", data: keys.map((k) => g.get(k)), backgroundColor: accent,
+                   borderRadius: 4, borderSkipped: "start", maxBarThickness: 28 }],
+    },
+    options: baseOptions(),
+  });
+}
+
 function renderAccount(handle) {
   const el = document.getElementById("view-account");
   const key = state.data.keyOf.get(handle);
@@ -910,9 +1204,10 @@ function renderAccount(handle) {
   el.innerHTML = `
     <a class="back" href="#stand">← Terug naar de stand</a>
     <div class="detail-head">
-      <h2>${esc(who2(key))}</h2>${r.isPrivate ? privateBadge() : ""}
+      <h2>${esc(who2(key))}</h2>${platformBadge("tiktok")}${r.isPrivate ? privateBadge() : ""}
       ${r.handles.map((h) => `<a href="https://www.tiktok.com/@${encodeURIComponent(h)}" target="_blank" rel="noopener">${r.multi ? `@${esc(h)} op ` : "Bekijk op "}TikTok ↗</a>`).join("")}
     </div>
+    ${platformSwitch(handle, "tiktok")}
     ${r.multi ? `<div class="controls"><label class="check">Cijfers van <select id="acc-view">
       <option value="">beide accounts samen</option>${r.handles.map((h) => `<option value="${esc(h)}"${h === one ? " selected" : ""}>alleen @${esc(h)}</option>`).join("")}
     </select></label><span class="hint">Twee accounts van dezelfde deelnemer; in de stand tellen ze samen.</span></div>` : ""}
@@ -1006,37 +1301,60 @@ function renderFinale() {
   banner.hidden = !(phase === "live" || phase === "after");
 }
 
+// The metric buttons depend on the platform; keep the chosen ones valid when the platform is switched.
+function normalizeMetrics() {
+  const p = PLATFORMS[state.platform];
+  if (!p.metrics[state.metric]) state.metric = p.metric;
+  if (!p.growthMetrics[state.growthMetric]) state.growthMetric = p.growthMetric;
+}
+
 function render() {
-  if (!state.data) return;
+  if (!state.all.tiktok) return;
   for (const a of document.querySelectorAll(".tabs a")) {
     const active = a.dataset.view === state.view || (state.view === "account" && a.dataset.view === "stand");
     if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
   }
   for (const v of document.querySelectorAll(".view")) v.hidden = v.id !== `view-${state.view}`;
-  if (state.view === "stand") renderBoard();
+  // Stand shows both platforms (Instagram first); Grafiek and Groei one at a time (the platform switch); Video's and
+  // Hashtags are TikTok only; an account page is the platform of its link.
+  if (state.view === "stand") {
+    on("tiktok", renderBoard);
+    on("instagram", renderBoardIg);
+    document.getElementById("tt-meta").textContent = `${state.all.tiktok.accountList.length} accounts`;
+  }
   if (state.view === "grafiek") {
-    renderSeg("metric", METRICS);
+    normalizeMetrics();
+    useData(state.platform);
+    renderSeg("platform", PLATFORM_LABELS);
+    renderSeg("metric", PLATFORMS[state.platform].metrics);
     renderSeg("range", RANGES);
     renderChips("chips-grafiek");
     renderMainChart();
   }
   if (state.view === "groei") {
-    renderSeg("growthMetric", METRICS);
+    normalizeMetrics();
+    useData(state.platform);
+    renderSeg("platform", PLATFORM_LABELS);
+    renderSeg("growthMetric", PLATFORMS[state.platform].growthMetrics);
     renderSeg("period", PERIODS);
     renderChips("chips-groei");
     renderGrowth();
   }
-  if (state.view === "hashtags") renderHashtags();
-  if (state.view === "videos") renderVideos();
-  if (state.view === "account") renderAccount(state.account);
+  if (state.view === "hashtags") on("tiktok", renderHashtags);
+  if (state.view === "videos") on("tiktok", renderVideos);
+  if (state.view === "account") on(state.accountPlatform, () => renderAccountPage(state.account));
   renderFinale();
 }
+
+// #account/<handle> is a TikTok account, #account/ig/<handle> an Instagram account (the same handle can exist on both).
+const accountHash = (platform, handle) => (platform === "instagram" ? "account/ig/" : "account/") + encodeURIComponent(handle);
 
 function route() {
   const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
   if (hash.startsWith("account/")) {
     state.view = "account";
-    state.account = hash.slice(8);
+    state.accountPlatform = hash.startsWith("account/ig/") ? "instagram" : "tiktok";
+    state.account = hash.slice(state.accountPlatform === "instagram" ? 11 : 8);
     state.accountView = null; // both accounts together, or the account in the link
     window.scrollTo(0, 0);
   } else {
@@ -1052,46 +1370,57 @@ function openAccount(ev) {
     if (ev.type === "click") {
       const key = toggle.dataset.open;
       if (state.open.has(key)) state.open.delete(key); else state.open.add(key);
-      renderBoard();
+      on("tiktok", renderBoard);
     }
     return;
   }
   const tr = ev.target.closest("tr[data-handle]");
-  if (tr) location.hash = "account/" + encodeURIComponent(tr.dataset.handle);
+  if (tr) location.hash = accountHash(tr.dataset.platform || "tiktok", tr.dataset.handle);
 }
 
 document.getElementById("show-others").addEventListener("change", (e) => { state.showOthers = e.target.checked; render(); });
 document.getElementById("view-account").addEventListener("change", (e) => {
   if (e.target.id !== "acc-view") return;
   state.accountView = e.target.value; // "" = both together
-  renderAccount(state.account);
+  on("tiktok", () => renderAccount(state.account));
 });
-for (const id of ["board-body", "growth-body", "videos-body"]) {
+for (const id of ["board-body", "board-ig-body", "growth-body", "videos-body"]) {
   document.getElementById(id).addEventListener("click", openAccount);
   document.getElementById(id).addEventListener("keydown", openAccount);
 }
-document.querySelector("#view-stand thead").addEventListener("click", (ev) => {
+document.querySelector("#board thead").addEventListener("click", (ev) => {
   const th = ev.target.closest("th[data-sort]");
   if (!th) return;
   const key = th.dataset.sort;
   state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : -1 };
-  renderBoard();
+  on("tiktok", renderBoard);
 });
 document.getElementById("sort-select").addEventListener("change", (ev) => {
   state.sort = { key: ev.target.value, dir: -1 };
-  renderBoard();
+  on("tiktok", renderBoard);
+});
+document.querySelector("#board-ig thead").addEventListener("click", (ev) => {
+  const th = ev.target.closest("th[data-sort]");
+  if (!th) return;
+  const key = th.dataset.sort;
+  state.sortIg = { key, dir: state.sortIg.key === key ? -state.sortIg.dir : -1 };
+  on("instagram", renderBoardIg);
+});
+document.getElementById("sort-select-ig").addEventListener("change", (ev) => {
+  state.sortIg = { key: ev.target.value, dir: -1 };
+  on("instagram", renderBoardIg);
 });
 function toggleTag(ev) {
   if (ev.type === "keydown" && ev.key !== "Enter") return;
   const tr = ev.target.closest("tr[data-tag]");
   if (!tr) return;
   state.tagOpen = state.tagOpen === tr.dataset.tag ? null : tr.dataset.tag;
-  renderHashtags();
+  on("tiktok", renderHashtags);
   document.querySelector(`#tags-body tr[data-tag="${CSS.escape(tr.dataset.tag)}"]`)?.focus();
 }
 document.getElementById("tags-body").addEventListener("click", toggleTag);
 document.getElementById("tags-body").addEventListener("keydown", toggleTag);
-document.getElementById("tags-more").addEventListener("click", () => { state.tagsAll = !state.tagsAll; renderHashtags(); });
+document.getElementById("tags-more").addEventListener("click", () => { state.tagsAll = !state.tagsAll; on("tiktok", renderHashtags); });
 window.addEventListener("hashchange", route);
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", render);
 

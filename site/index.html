@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>TikTok Campagne Stand</title>
+  <title>Social Media Campagne</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏆</text></svg>">
   <link rel="stylesheet" href="style.css">
   <script>
@@ -22,7 +22,7 @@
   <header class="top">
     <div class="top-inner">
       <div>
-        <h1>TikTok-campagne</h1>
+        <h1>Social Media Campagne</h1>
         <p class="meta" id="updated">Gegevens laden…</p>
         <p class="finale-banner" id="finale" role="status" hidden></p>
       </div>
@@ -44,36 +44,69 @@
 
     <section id="view-stand" class="view" hidden>
       <h2 class="final-title" id="final-title" hidden>🏁 Eindstand</h2>
-      <label class="sort-mobile">Sorteer op
-        <select id="sort-select">
-          <option value="views">Weergaven</option>
-          <option value="followers">Volgers</option>
-          <option value="posts">Posts</option>
-          <option value="likes">Likes</option>
-        </select>
-      </label>
-      <div class="board-wrap">
-        <table class="board" id="board">
-          <thead>
-            <tr>
-              <th class="num">#</th>
-              <th class="chg" title="Verandering in positie t.o.v. 24 uur geleden">±</th>
-              <th>Account</th>
-              <th class="num c-views" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
-              <th class="num opt" title="Weergaven erbij in de laatste 24 uur">+ 24 uur</th>
-              <th class="num opt2 c-followers" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
-              <th class="num opt2 c-posts" data-sort="posts"><button type="button" class="sort">Posts</button></th>
-              <th class="num opt2 c-likes" data-sort="likes"><button type="button" class="sort">Likes</button></th>
-            </tr>
-          </thead>
-          <tbody id="board-body"></tbody>
-        </table>
+
+      <div class="stand-board" id="stand-ig">
+        <h2 class="board-title">Instagram <span class="meta" id="ig-meta"></span></h2>
+        <p class="notice" id="ig-note" hidden></p>
+        <label class="sort-mobile">Sorteer op
+          <select id="sort-select-ig">
+            <option value="gained">Volgers erbij</option>
+            <option value="followers">Volgers</option>
+            <option value="posts">Posts</option>
+          </select>
+        </label>
+        <div class="board-wrap">
+          <table class="board" id="board-ig">
+            <thead>
+              <tr>
+                <th class="num">#</th>
+                <th class="chg opt" title="Verandering in positie t.o.v. 24 uur geleden">±</th>
+                <th>Account</th>
+                <th class="num c-gained" data-sort="gained" title="Volgers erbij sinds de eerste meting van dit account"><button type="button" class="sort"><span class="lg">Volgers erbij</span><span class="sm">Erbij</span></button></th>
+                <th class="num c-followers" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+                <th class="num opt2 c-posts" data-sort="posts"><button type="button" class="sort">Posts</button></th>
+              </tr>
+            </thead>
+            <tbody id="board-ig-body"></tbody>
+          </table>
+        </div>
+        <p class="hint">De stand van Instagram: wie sinds de eerste meting de meeste volgers erbij heeft, met het totaal ernaast. Iedere account begint op 0 bij zijn eerste meting, dus een kleine account kan winnen. <span class="badge late">vanaf …</span> = later toegevoegd, telt vanaf zijn eerste meting. Klik op een account voor details.</p>
       </div>
-      <p class="hint">Klik op een account voor details, of op een kolomkop om te sorteren (nog een keer klikken draait de volgorde om). Het nummer blijft de plaats in de stand. Alleen video's vanaf de start van de campagne tellen mee.</p>
+
+      <div class="stand-board" id="stand-tt">
+        <h2 class="board-title">TikTok <span class="meta" id="tt-meta"></span></h2>
+        <label class="sort-mobile">Sorteer op
+          <select id="sort-select">
+            <option value="views">Weergaven</option>
+            <option value="followers">Volgers</option>
+            <option value="posts">Posts</option>
+            <option value="likes">Likes</option>
+          </select>
+        </label>
+        <div class="board-wrap">
+          <table class="board" id="board">
+            <thead>
+              <tr>
+                <th class="num">#</th>
+                <th class="chg" title="Verandering in positie t.o.v. 24 uur geleden">±</th>
+                <th>Account</th>
+                <th class="num c-views" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
+                <th class="num opt" title="Weergaven erbij in de laatste 24 uur">+ 24 uur</th>
+                <th class="num opt2 c-followers" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
+                <th class="num opt2 c-posts" data-sort="posts"><button type="button" class="sort">Posts</button></th>
+                <th class="num opt2 c-likes" data-sort="likes"><button type="button" class="sort">Likes</button></th>
+              </tr>
+            </thead>
+            <tbody id="board-body"></tbody>
+          </table>
+        </div>
+        <p class="hint">De stand van TikTok, op weergaven. Klik op een account voor details, of op een kolomkop om te sorteren (nog een keer klikken draait de volgorde om). Het nummer blijft de plaats in de stand. Alleen video's vanaf de start van de campagne tellen mee.</p>
+      </div>
     </section>
 
     <section id="view-grafiek" class="view" hidden>
       <div class="controls">
+        <div class="seg" role="group" aria-label="Platform" data-bind="platform"></div>
         <div class="seg" role="group" aria-label="Meetwaarde" data-bind="metric"></div>
         <div class="seg" role="group" aria-label="Periode" data-bind="range"></div>
         <label class="check"><input type="checkbox" id="show-others"> Overige accounts in grijs</label>
@@ -86,6 +119,7 @@
 
     <section id="view-groei" class="view" hidden>
       <div class="controls">
+        <div class="seg" role="group" aria-label="Platform" data-bind="platform"></div>
         <div class="seg" role="group" aria-label="Meetwaarde" data-bind="growthMetric"></div>
         <div class="seg" role="group" aria-label="Periode" data-bind="period"></div>
       </div>
@@ -103,7 +137,7 @@
     </section>
 
     <section id="view-videos" class="view" hidden>
-      <h2 style="margin-top:0">Snelste stijgers</h2>
+      <h2 style="margin-top:0">Snelste stijgers <span class="meta">TikTok-video's</span></h2>
       <div class="controls">
         <div class="seg" role="group" aria-label="Periode" data-bind="videoRange"></div>
         <span class="meta" id="videos-meta"></span>
@@ -118,6 +152,7 @@
     </section>
 
     <section id="view-hashtags" class="view" hidden>
+      <h2 style="margin-top:0">Hashtags <span class="meta">TikTok</span></h2>
       <div class="controls">
         <div class="seg" role="group" aria-label="Sorteren op" data-bind="tagSort"></div>
         <span class="meta" id="tags-meta"></span>
@@ -159,7 +194,7 @@
     <button class="p-fs" id="p-fs" type="button" title="Volledig scherm" aria-label="Volledig scherm">⛶</button>
   </div>
 
-  <footer class="foot">Alleen TikTok-accountnamen, geen namen van leerlingen. TikTok-gegevens worden elke 12 uur bijgewerkt (tijdens een finale elke 15 minuten).</footer>
+  <footer class="foot">Alleen accountnamen van Instagram en TikTok, geen namen van leerlingen. De gegevens worden meerdere keren per dag bijgewerkt; tijdens een finale wordt Instagram elke 15 minuten bijgewerkt (TikTok bij de start en aan het eind).</footer>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
