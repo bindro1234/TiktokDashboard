@@ -13,7 +13,7 @@ const fmt = (n) => (n == null ? "–" : nf.format(n));
 const signed = (n) => (n == null ? "–" : (n > 0 ? "+" : n < 0 ? "−" : "±") + nf.format(Math.abs(n)));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const PLATFORM_NL = { tiktok: "TikTok", instagram: "Instagram" };
-const FREQ_NL = { off: "uit", daily: "1× per dag", "12h": "elke 12 uur", "6h": "elke 6 uur", "4h": "elke 4 uur", "2h": "elke 2 uur" };
+const FREQ_NL = lib.FREQUENCY_NL;
 const dayLabel = (d) => dateFmt.format(Date.parse(d + "T00:00:00Z"));
 const instagram = (h) => `https://www.instagram.com/${encodeURIComponent(h)}/`;
 // Link to an Instagram post: the post's own url when it is an instagram.com link, else the profile.
@@ -715,18 +715,11 @@ function renderAdmin(m) {
     <p class="meta">${["tiktok", "instagram"].map((pl) => `${PLATFORM_NL[pl]}: nog ${b.byPlatform[pl].runsLeft} geplande profielruns deze maand × ${b.byPlatform[pl].accounts} accounts ≈ ${fmt(b.byPlatform[pl].reserved)} records`).join("<br>")}<br>
       Verwacht totaal zonder weekrefreshes: <strong>${fmt(b.projected)}</strong> (${pct.format(b.projected / b.cap)} van de limiet). Beide platforms tellen mee voor dezelfde limiet.</p>
     <p class="meta">Weekrefresh (TikTok): max. ${cfg.refreshNumOfPosts} posts per account (reserveert tot ${fmt(cfg.refreshNumOfPosts * b.byPlatform.tiktok.accounts)} records vooraf).</p>`;
-  const s = cfg.schedule;
-  const platformLine = (pl) => {
-    const w = s.windows[pl];
-    return `<li>${PLATFORM_NL[pl]}: ${w.length ? `<strong>${w.length}× per dag</strong>, ${FREQ_NL[cfg.frequency[pl]] || cfg.frequency[pl]}: ${w.map((x) => x.start).join(", ")}
-      (elk tijdvak ${w[0].start}–${w[0].end}, enz.; 1 run per tijdvak)` : "<strong>uit</strong>: geen geplande runs"}</li>`;
-  };
-  $("bh-schedule").innerHTML = `<ul class="issues">
-    ${platformLine("tiktok")}${platformLine("instagram")}
-    <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)</li>
-    <li>Weekrefresh: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
-    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun van dat platform was</li>
-    <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
+  renderSchedule(m);
+  // "Nu verversen" skips a platform that is set to "off" (the collector does too).
+  const igAccounts = raw.budget.byPlatform.instagram.accounts;
+  const skipped = [...(!lib.platformOn(cfg, "tiktok") ? ["TikTok"] : []), ...(!lib.platformOn(cfg, "instagram") && igAccounts ? ["Instagram"] : [])];
+  $("bh-refresh-note").textContent = skipped.length ? `${skipped.join(" en ")} staat uit en wordt overgeslagen.` : "";
 
   // All account rows (active and inactive).
   const q = state.accSearch.trim().toLowerCase().replace(/^@/, "");
@@ -822,6 +815,53 @@ function renderSchoolHashtags(m) {
     + (tags.length > lib.MAX_SCHOOL_HASHTAGS ? `<span class="badge bad">maximaal ${lib.MAX_SCHOOL_HASHTAGS}</span>` : "");
   $("sh-preview").innerHTML = (tags.map((t) => `<span class="chip">#${esc(t)}</span>`).join("") + bad)
     || `<span class="meta">Geen schoolhashtags: er komen geen knoppen op het tabblad Hashtags.</span>`;
+}
+
+// ---------- Schema (Beheer): how often each platform is pulled ----------
+
+const freqLabel = (c) => FREQ_NL[c].charAt(0).toUpperCase() + FREQ_NL[c].slice(1);
+
+// The choice (a fixed step per platform), what it costs against the cap before anything is saved, and the other schedule lines.
+function renderSchedule(m) {
+  const raw = state.raw, cfg = m.cfg, s = cfg.schedule;
+  const saved = cfg.frequency;
+  const form = $("freq-form");
+  // The selects are filled once and keep what is being chosen while the data reloads; a change that was saved resets them.
+  if (form.dataset.saved !== JSON.stringify(saved)) {
+    form.dataset.saved = JSON.stringify(saved);
+    for (const pl of lib.PLATFORMS) {
+      $(`freq-${pl}`).innerHTML = lib.FREQUENCY_CHOICES.map((c) => `<option value="${c}">${esc(freqLabel(c))}</option>`).join("");
+      $(`freq-${pl}`).value = saved[pl];
+    }
+  }
+  const choice = Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, $(`freq-${pl}`).value]));
+  const counts = Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, raw.budget.byPlatform[pl].accounts]));
+  const base = { used: raw.budgetBase.used, done: new Set(raw.budgetBase.done) };
+  const pv = lib.frequencyPreview(cfg, base, counts, m.now, choice, saved, { finaleDone: raw.finaleHasRun });
+  const unchanged = lib.PLATFORMS.every((pl) => choice[pl] === saved[pl]);
+  const line = (p) => {
+    const w = lib.windowsFor(cfg, p.platform, p.step);
+    return `<li>${PLATFORM_NL[p.platform]}: ${p.step === "off" ? "<strong>uit</strong>: geen geplande runs, 0 records per dag"
+      : `<strong>${p.runsPerDay}× per dag</strong>, ${FREQ_NL[p.step]}: ${w.map((x) => x.start).join(", ")} `
+        + `(elk tijdvak ${w[0].start}–${w[0].end}, enz.; 1 run per tijdvak) × ${p.accounts} accounts = <strong>${fmt(p.perDay)} records per dag</strong>`}</li>`;
+  };
+  const offNames = pv.platforms.filter((p) => p.step === "off").map((p) => PLATFORM_NL[p.platform]);
+  $("freq-preview").innerHTML = `<ul class="issues">${pv.platforms.map(line).join("")}</ul>
+    <p class="meta">Samen ≈ <strong>${fmt(pv.perDay)}</strong> records per dag. Deze maand: ${fmt(pv.used)} gebruikt + ${fmt(pv.planned)} nog gepland = <strong>${fmt(pv.projected)}</strong>.<br>
+      Daarnaast gereserveerd: weekrefresh ${pv.refresh ? fmt(pv.refresh) : "uit"} · finale ${pv.finale ? fmt(pv.finale) : "geen"}.
+      Totaal <strong>${fmt(pv.total)}</strong> van de limiet van ${fmt(pv.cap)} (${pct.format(pv.total / pv.cap)}); ruimte over: ${fmt(pv.headroom)} records.</p>
+    ${offNames.length ? `<p class="meta">${esc(offNames.join(" en "))} staat uit: geen geplande runs, geen weekrefresh en geen finale-runs, en <em>Nu verversen</em> en <em>Controleer nu</em> slaan het over.</p>` : ""}
+    <p class="status ${unchanged ? "" : pv.fits ? "ok" : pv.allowed ? "" : "err"}">${unchanged ? "Dit is het huidige schema."
+      : pv.fits ? "Past binnen de limiet."
+      : pv.allowed ? "Past nog niet onder de limiet, maar kost minder dan het huidige schema: opslaan mag."
+      : `Past niet in het budget: ${fmt(pv.total)} is meer dan de limiet van ${fmt(pv.cap)}. Kies een lagere frequentie.`}</p>`;
+  $("freq-save").disabled = unchanged || !pv.allowed;
+  const tiktokOn = lib.platformOn(cfg, "tiktok");
+  $("bh-schedule").innerHTML = `<ul class="issues">
+    <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)${offNames.length ? `; ${esc(offNames.join(" en "))} staat uit en doet niet mee` : ""}</li>
+    <li>Weekrefresh${tiktokOn ? "" : " (uit: TikTok staat uit)"}: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
+    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun van dat platform was</li>
+    <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
 }
 
 // ---------- Leerlingen zonder Instagram (Beheer) ----------
@@ -1227,18 +1267,22 @@ function renderToday(m) {
     s.stats.last ? ` · laatste TikTok-post ${esc(dayLabel(s.stats.lastDay))}` : ""}</span></li>`).join("");
   $("td-nohandle-card").hidden = !noHandle.length || !st.inCampaign;
   // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
-  const n = lib.todayTargets(st).length;
+  // A platform set to "off" is left out (and named), like in the Worker and the collector.
+  const targets = lib.todayTargets(st, m.cfg.frequency);
+  const skipped = lib.todaySkipped(st, m.cfg.frequency).map((p) => PLATFORM_NL[p]);
+  const skipNote = skipped.length ? ` · ${skipped.join(" en ")} staat uit en wordt overgeslagen` : "";
+  const n = targets.length;
   const next = raw.lastTodayCheck ? raw.lastTodayCheck + cool * 60e3 : 0;
   const btn = $("td-check");
   const waiting = Boolean(state.todayRun);
   btn.disabled = waiting || !n || Date.now() < next || !st.inCampaign;
   btn.textContent = waiting ? "⏳ Controle loopt…" : "🔎 Controleer nu";
   // What the check would fetch: one record per account, TikTok and Instagram.
-  const split = lib.targetSplit(lib.todayTargets(st));
+  const split = lib.targetSplit(targets);
   const platforms = split.tiktok && split.instagram ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
-  $("td-cost").textContent = !st.inCampaign ? "" : !n ? "Niemand om te controleren."
-    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"}${platforms} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)`
-    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}${platforms}`;
+  $("td-cost").textContent = !st.inCampaign ? "" : !n ? `Niemand om te controleren${skipped.length ? `: wat nog te controleren valt staat op ${skipped.join(" en ")}, en dat staat uit` : ""}.`
+    : Date.now() < next ? `${n} account${n === 1 ? "" : "s"}${platforms} · kan weer om ${hourFmt.format(next)} (${cool} min tussen controles)${skipNote}`
+    : `${n} account${n === 1 ? "" : "s"}, ${n} record${n === 1 ? "" : "s"}${platforms}${skipNote}`;
 }
 
 // After "Controleer nu": wait for the collector run, then reload (it takes about 5-7 minutes).
@@ -1452,13 +1496,15 @@ $("ov-body").addEventListener("click", (ev) => {
 $("vid-out").addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
 $("td-check").addEventListener("click", async () => {
   const st = todayOf(model);
-  const targets = lib.todayTargets(st);
+  const targets = lib.todayTargets(st, model.cfg.frequency);
+  const skipped = lib.todaySkipped(st, model.cfg.frequency).map((p) => PLATFORM_NL[p]);
   const n = targets.length;
   const split = lib.targetSplit(targets);
   const both = split.tiktok > 0 && split.instagram > 0;
   const platforms = both ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
   if (!confirm(`Nu ${n} account${n === 1 ? "" : "s"}${platforms} controleren die vandaag nog niet ${st.task ? "klaar zijn" : "gepost hebben"}? `
-    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer ${both ? "5–10" : "5–7"} minuten voordat de nieuwe cijfers er staan.`)) return;
+    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer ${both ? "5–10" : "5–7"} minuten voordat de nieuwe cijfers er staan.`
+    + (skipped.length ? ` ${skipped.join(" en ")} staat uit en wordt overgeslagen.` : ""))) return;
   $("td-check").disabled = true;
   try {
     const res = await api("/api/today/check", {});
@@ -1676,6 +1722,20 @@ form.addEventListener("submit", async (ev) => {
     flash(err.message, false);
   } finally {
     btn.disabled = false;
+  }
+});
+
+$("freq-form").addEventListener("change", () => model && renderSchedule(model));
+$("freq-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("freq-save").disabled = true;
+  try {
+    const res = await api("/api/settings/frequency", { ...Object.fromEntries(lib.PLATFORMS.map((pl) => [pl, $(`freq-${pl}`).value])), was: model.cfg.frequency });
+    flash(res.message, true, "freq-msg");
+    await load();
+  } catch (err) {
+    flash(err.message, false, "freq-msg");
+    renderSchedule(model);
   }
 });
 

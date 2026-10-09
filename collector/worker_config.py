@@ -33,9 +33,13 @@ def build(cfg: config.Config) -> dict:
         "instagram": {"startDate": cfg.instagram_start.isoformat() if cfg.instagram_start else None},
         # Start value of the school hashtags on the Hashtags tab; teachers change them on Beheer (private sheet).
         "hashtags": {"school": list(cfg.school_hashtags)},
-        # How often each platform is pulled: the step and its windows (the Instagram ones are keyed ig-08u).
-        # The Worker's timer, the budget and the collector all read these same windows.
+        # How often each platform is pulled (the start values; teachers change them on Beheer, which stores them in the
+        # private settings tab) and the windows of that step (Instagram ones are keyed ig-08u).
+        # The Worker's timer, the budget and the collector all read the same setting.
         "frequency": dict(cfg.frequency),
+        # step -> window names of the pool (a step is a set of hourly windows), so the page and the Worker can work out
+        # the windows of any frequency chosen on Beheer; the start values above are what applies until one is saved.
+        "frequencySteps": {step: list(names) for step, names in cfg.frequency_steps.items()},
         "schedule": {
             # The pool of hourly windows (the crons must cover every one of them) and the ones in use.
             "profileRuns": [{"name": w.name, "start": hhmm(w.start), "end": hhmm(w.end)} for w in cfg.profile_windows],

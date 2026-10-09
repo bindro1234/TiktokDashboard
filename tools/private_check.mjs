@@ -113,6 +113,8 @@ const students_for_tags = () => [...lib.groupAccounts(lib.parseAccounts(accounts
   id: g.key, posts: g.instagram ? lib.instagramPosts(igPosts.filter((p) => p.handle === g.instagram)) : [] }));
 const posted = [];
 let schoolTags = [...CFG.hashtags.school];   // the school hashtags as saved on Beheer
+let frequency = { ...CFG.frequency };        // the pull frequency as saved on Beheer (settings tab); starts at the config.yaml value
+const effective = () => lib.withFrequency(CFG, frequency);
 let todayStarted = null;
 let finale = null;       // { start, end, phase } like the Worker returns
 let finaleHasRun = false;
@@ -125,14 +127,16 @@ const postHistory = posts.flatMap((p) => {
 function api(req, body) {
   const accounts = lib.parseAccounts(accountsSheet);
   if (req.method === "GET" && req.url === "/api/data") {
+    const cfgNow = effective();
     return [200, { me: "docent@school.nl", serverTime: NOW,
-      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
+      config: { campaign: CFG.campaign, budget: CFG.budget, schedule: cfgNow.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
         forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
-        frequency: CFG.frequency, instagram: igConfig },
+        frequency: cfgNow.frequency, frequencyDefault: CFG.frequency, frequencySteps: CFG.frequencySteps, instagram: igConfig },
       finale, finaleHasRun,
       settings: { schoolHashtags: schoolTags, schoolHashtagsDefault: [...CFG.hashtags.school] },
       accounts, handles, history, posts, igHandles, igHistory, igPosts, igBaseline, runLog, activity,
-      budget: lib.budget(CFG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
+      budget: lib.budget(cfgNow, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
+      budgetBase: { used: lib.monthUsage(runLog, NOW), done: [...lib.doneWindows(runLog)] },
       lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
       lastTodayCheck: null, tasks, outliers: [...outliers] }];
   }
@@ -170,6 +174,17 @@ function api(req, body) {
       if (body.was !== schoolTags.join(" ")) return [409, { error: "De lijst is intussen veranderd. Laad de pagina opnieuw." }];
       schoolTags = tags;
       return [200, { ok: true, tags, message: `Schoolhashtags opgeslagen: ${tags.map((t) => "#" + t).join(" ")}.` }];
+    }
+    if (req.url === "/api/settings/frequency") {
+      const current = effective().frequency;
+      if (lib.PLATFORMS.some((pl) => !lib.frequencyChoice(body[pl], CFG))) return [400, { error: "Kies voor TikTok Uit, 1× per dag of elke 12, 6, 4 of 2 uur." }];
+      if (lib.PLATFORMS.some((pl) => body.was?.[pl] !== current[pl])) return [409, { error: "De instelling is intussen veranderd. Laad de pagina opnieuw." }];
+      const accountsNow = lib.parseAccounts(accountsSheet);
+      const pv = lib.frequencyPreview(CFG, lib.budgetBase(runLog, NOW), { tiktok: tracked.length, instagram: accountsNow.filter((a) => a.instagramTracked).length },
+        NOW, body, current, { finaleDone: finaleHasRun });
+      if (!pv.allowed) return [409, { error: `Past niet in het budget: ${pv.total} is meer dan de limiet van ${pv.cap}. Kies een lagere frequentie.` }];
+      frequency = { tiktok: body.tiktok, instagram: body.instagram };
+      return [200, { ok: true, frequency, message: `Schema opgeslagen: TikTok ${lib.FREQUENCY_NL[body.tiktok]}, Instagram ${lib.FREQUENCY_NL[body.instagram]}.` }];
     }
     if (req.url === "/api/log") return [200, { ok: true }];
     if (req.url === "/api/outliers") {
@@ -652,10 +667,99 @@ if (!budgetText.includes(String(CFG.budget.monthlyCap).replace(/\B(?=(\d{3})+(?!
 const igAccounts = lib.parseAccounts(accountsSheet).filter((a) => a.instagramTracked).length;
 if (!/TikTok: nog \d+ geplande profielruns deze maand × 13 accounts/.test(budgetText)) fail(`beheer: no TikTok budget line: ${budgetText.slice(0, 200)}`);
 if (!new RegExp(`Instagram: nog \\d+ geplande profielruns deze maand × ${igAccounts} accounts`).test(budgetText)) fail(`beheer: no Instagram budget line: ${budgetText.slice(0, 300)}`);
-const scheduleText = await page.textContent("#bh-schedule");
+const scheduleText = await page.textContent("#freq-preview");
 if (!/TikTok: 2× per dag, elke 12 uur: 08:00, 20:00/.test(scheduleText)) fail(`beheer: TikTok schedule wrong: ${scheduleText.slice(0, 200)}`);
 if (!/Instagram: 6× per dag, elke 4 uur: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00/.test(scheduleText)) fail(`beheer: Instagram schedule wrong: ${scheduleText.slice(0, 300)}`);
 console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)}…"`);
+// Schema: a choice per platform in fixed steps (no slider), what it costs before anything is saved, saving, refusing what doesn't fit
+// under the cap (lowering is always allowed), and "Uit" showing up on Beheer and Vandaag.
+{
+  const nlNum = (n) => new Intl.NumberFormat("nl-NL").format(n);
+  const counts = { tiktok: tracked.length, instagram: igAccounts };
+  const pvOf = (choice) => lib.frequencyPreview(CFG, lib.budgetBase(runLog, NOW), counts, NOW, choice, { tiktok: "12h", instagram: "4h" }, { finaleDone: finaleHasRun });
+  const labels = ["Uit", "1× per dag", "Elke 12 uur", "Elke 6 uur", "Elke 4 uur", "Elke 2 uur"];
+  for (const pl of ["tiktok", "instagram"]) {
+    const opts = await page.$$eval(`#freq-${pl} option`, (o) => o.map((x) => [x.value, x.textContent]));
+    if (opts.map((o) => o[1]).join() !== labels.join() || opts.map((o) => o[0]).join() !== "off,daily,12h,6h,4h,2h") fail(`beheer: choices for ${pl} are ${opts.join(" | ")}`);
+  }
+  if (await page.$('#freq-form input[type="range"], #freq-form input[type="number"]')) fail("beheer: the frequency is a free input, not fixed steps");
+  const select = async (tiktok, instagram) => { await page.selectOption("#freq-tiktok", tiktok); await page.selectOption("#freq-instagram", instagram); };
+  const preview = async () => (await page.textContent("#freq-preview")).replace(/\s+/g, " ");
+  // What is saved (the config.yaml start value) is selected, nothing to save yet.
+  if ((await page.inputValue("#freq-tiktok")) !== "12h" || (await page.inputValue("#freq-instagram")) !== "4h" || !(await page.isDisabled("#freq-save"))) fail("beheer: the saved frequency is not what is selected");
+  let text = await preview();
+  const base = pvOf({ tiktok: "12h", instagram: "4h" });
+  if (!text.includes("Dit is het huidige schema.") || !text.includes(`× ${counts.tiktok} accounts = ${nlNum(base.platforms[0].perDay)} records per dag`)
+      || !text.includes(`× ${counts.instagram} accounts = ${nlNum(base.platforms[1].perDay)} records per dag`)) fail(`beheer: schedule preview wrong (${text.slice(0, 300)})`);
+  if (!text.includes(`= ${nlNum(base.projected)}`) || !text.includes(`weekrefresh ${nlNum(base.refresh)}`) || !text.includes(`van de limiet van ${nlNum(CFG.budget.monthlyCap)}`)) fail(`beheer: month total / reserves wrong (${text.slice(0, 500)})`);
+  // Choosing shows the cost at once (before saving) and enables Opslaan.
+  await select("2h", "2h");
+  const big = pvOf({ tiktok: "2h", instagram: "2h" });
+  text = await preview();
+  if (!text.includes("12× per dag") || !text.includes(`${nlNum(big.perDay)} records per dag`) || !text.includes(`= ${nlNum(big.projected)}`) || !text.includes("Past binnen de limiet.") || (await page.isDisabled("#freq-save"))) {
+    fail(`beheer: preview of "2h" wrong (${text.slice(0, 400)})`);
+  }
+  if (process.env.SHOTS) await page.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-2h-1280px.png` });
+  // Reload data while a choice is open: the choice stays (a reload must not throw it away).
+  await page.evaluate(() => document.querySelector("#freq-form").dispatchEvent(new Event("change", { bubbles: true })));
+  if ((await page.inputValue("#freq-tiktok")) !== "2h") fail("beheer: the open choice was reset");
+  // A full month: bigger doesn't fit (refused, Opslaan off), lowering is allowed even though the month is over the cap.
+  runLog.push({ timestamp: new Date(NOW).toISOString(), run_type: "profiles", window: "big", dry_run: false, expected_records: 1,
+    actual_records: CFG.budget.monthlyCap - 300, errors: 0, status: "ok", snapshot_ids: "sd_big", notes: "" });
+  await page.reload();
+  await page.waitForSelector("#acc-body tr");
+  await select("2h", "4h");
+  text = await preview();
+  if (!/Past niet in het budget: [\d.]+ is meer dan de limiet van 23\.000/.test(text) || !(await page.isDisabled("#freq-save"))) fail(`beheer: a choice that doesn't fit is not refused (${text.slice(-260)})`);
+  if (process.env.SHOTS) await page.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-refused-1280px.png` });
+  await select("daily", "off");
+  text = await preview();
+  if (!text.includes("kost minder dan het huidige schema") || (await page.isDisabled("#freq-save"))) fail(`beheer: lowering is not allowed over the cap (${text.slice(-260)})`);
+  runLog.pop();
+  await page.reload();
+  await page.waitForSelector("#acc-body tr");
+  if (process.env.SHOTS) {
+    const ph = await open({ width: 390, height: 844 }, "#beheer");
+    await ph.waitForSelector("#freq-form");
+    await ph.selectOption("#freq-tiktok", "off");
+    await ph.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-off-390px.png` });
+    if (!(await noHScroll(ph))) fail("390px: Beheer with the schedule form scrolls sideways");
+    await ph.close();
+  }
+  // Save TikTok "Uit": posted with what the page showed, the page follows, and Nu verversen and Controleer nu say it is skipped.
+  await select("off", "4h");
+  text = await preview();
+  if (!text.includes("TikTok: uit: geen geplande runs, 0 records per dag") || !/TikTok staat uit: geen geplande runs, geen weekrefresh en geen finale-runs/.test(text) || !text.includes("weekrefresh uit")) fail(`beheer: preview of "Uit" wrong (${text.slice(0, 400)})`);
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /Schema opgeslagen: TikTok uit, Instagram elke 4 uur/.test(document.getElementById("freq-msg").textContent));
+  const savedBody = posted.filter((x) => x.url === "/api/settings/frequency").at(-1).body;
+  if (JSON.stringify(savedBody) !== JSON.stringify({ tiktok: "off", instagram: "4h", was: { tiktok: "12h", instagram: "4h" } })) fail(`beheer: frequency posted ${JSON.stringify(savedBody)}`);
+  await page.waitForFunction(() => /huidige schema/.test(document.getElementById("freq-preview").textContent));
+  if (!(await page.textContent("#bh-refresh-note")).includes("TikTok staat uit en wordt overgeslagen.")) fail("beheer: no note on Nu verversen that TikTok is skipped");
+  if (!(await page.textContent("#bh-schedule")).includes("uit: TikTok staat uit")) fail("beheer: weekrefresh line does not say it is off");
+  await page.evaluate(() => { location.hash = "vandaag"; });
+  await page.waitForSelector("#td-todo li");
+  const cost = await page.textContent("#td-cost");
+  if (!/TikTok staat uit en wordt overgeslagen/.test(cost) || /TikTok\)/.test(cost.replace("TikTok staat", ""))) fail(`vandaag: cost line with TikTok off (${cost})`);
+  if (!/Geplande runs: TikTok uit, Instagram elke 4 uur/.test((await page.textContent("#view-vandaag")).replace(/\s+/g, " "))) fail("vandaag: planned runs do not show TikTok as off");
+  let confirmed = "";
+  page.once("dialog", (d) => { confirmed = d.message(); d.dismiss(); });
+  await page.click("#td-check");
+  if (!/TikTok staat uit en wordt overgeslagen\./.test(confirmed) || /TikTok,/.test(confirmed.replace("TikTok staat", ""))) fail(`vandaag: the confirmation does not name the skipped platform (${confirmed})`);
+  // Back to the start value (and a refused save: someone changed it meanwhile).
+  await page.evaluate(() => { location.hash = "beheer"; });
+  await page.waitForSelector("#freq-form");
+  await select("12h", "4h");
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /Schema opgeslagen: TikTok elke 12 uur/.test(document.getElementById("freq-msg").textContent));
+  await page.waitForFunction(() => /huidige schema/.test(document.getElementById("freq-preview").textContent));
+  frequency = { tiktok: "daily", instagram: "daily" };   // another teacher saves in the meantime
+  await select("6h", "4h");
+  await page.click("#freq-save");
+  await page.waitForFunction(() => /intussen veranderd/.test(document.getElementById("freq-msg").textContent));
+  frequency = { ...CFG.frequency };
+  console.log(`beheer: schema ${labels.length} steps, preview, save, refusal, lowering, Uit on Beheer and Vandaag`);
+}
 const issuesText = await page.textContent("#acc-issues");
 if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`beheer: problems list incomplete: ${issuesText}`);
 // Schoolhashtags: the saved list, a live preview, a refused entry, a save, "Standaardlijst" and the new presets on the Hashtags tab.

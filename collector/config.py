@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import pathlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from zoneinfo import ZoneInfo
 
 import yaml
@@ -16,6 +16,9 @@ WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", 
 PLATFORMS = ("tiktok", "instagram")
 # The fixed pull frequencies (config.yaml frequency): "off" plus these, each a set of hourly windows.
 FREQUENCY_STEPS = ("daily", "12h", "6h", "4h", "2h")
+FREQUENCY_CHOICES = ("off",) + FREQUENCY_STEPS
+# Keys in the private settings tab (Beheer): the chosen step per platform. Same keys in private/public/lib.js.
+FREQUENCY_SETTING_KEYS = {"tiktok": "frequency_tiktok", "instagram": "frequency_instagram"}
 
 
 def _time(value: str) -> dt.time:
@@ -158,6 +161,11 @@ class Config:
             return tuple(Window(f"ig-{w.name}", w.start, w.end) for w in chosen)
         return tuple(chosen)
 
+    def platform_on(self, platform: str) -> bool:
+        """False when the platform is set to "off": no scheduled runs, no weekly refresh, no finale runs, and
+        "Nu verversen" and "Controleer nu" skip it."""
+        return self.frequency.get(platform, "off") != "off"
+
     @property
     def instagram_campaign(self) -> Campaign:
         """The days an Instagram post counts: instagram.start_date up to and including campaign.end_date."""
@@ -198,6 +206,32 @@ def _frequency(raw: dict | None, pool: tuple[Window, ...]) -> tuple[dict, dict]:
         if step != "off" and step not in steps:
             raise ValueError(f"frequency.{platform}: {step!r} is not off or one of {', '.join(steps)}")
     return freq, steps
+
+
+def parse_frequency_settings(rows: list[dict] | None, steps: dict | None = None) -> tuple[dict, list[str]]:
+    """The frequency per platform from the settings tab rows (key, value): ({platform: step}, problems).
+    Only valid values are returned; anything else (a typo typed into the sheet, an unknown step) is reported
+    and ignored, so the config.yaml start value stays in force instead of a run failing on it. The last row
+    of a key counts. `steps` (config.frequency_steps) limits the choices when given."""
+    found: dict[str, str] = {}
+    problems: list[str] = []
+    wanted = {key: platform for platform, key in FREQUENCY_SETTING_KEYS.items()}
+    for row in rows or []:
+        key = str(row.get("key", "")).strip()
+        if key not in wanted:
+            continue
+        value = str(row.get("value", "")).strip().lower()
+        if value in FREQUENCY_CHOICES and (value == "off" or steps is None or value in steps):
+            found[wanted[key]] = value
+        else:
+            found.pop(wanted[key], None)
+            problems.append(f"settings {key}: {value or '(empty)'!r} is not one of {', '.join(FREQUENCY_CHOICES)}, start value kept")
+    return found, problems
+
+
+def with_frequency(cfg: Config, chosen: dict) -> Config:
+    """The config with the platforms' frequency replaced by the ones chosen on Beheer."""
+    return replace(cfg, frequency={**cfg.frequency, **chosen})
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:

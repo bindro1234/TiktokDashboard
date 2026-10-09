@@ -1,5 +1,5 @@
 // Worker tests with mocked Access, Google and GitHub (synthetic data only). Run: node --test private/test
-import { test, beforeEach } from "node:test";
+import { test, beforeEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, createSign } from "node:crypto";
 import { handle, runSchedule } from "../src/worker.js";
@@ -731,4 +731,220 @@ test("school hashtags: refuses invalid entries, too many, a stale list and a mis
   assert.equal(res.status, 403);
   assert.equal(sheets.settings, undefined);                        // nothing was written, not even the tab
   assert.equal((sheets.activity_log || []).some((r) => r[2] === "schoolhashtags gewijzigd"), false);
+});
+
+// ---------- pull frequency per platform (Beheer, Schema) ----------
+
+// The tests below fix the clock (a Friday at noon, inside the campaign), so their budget numbers don't depend on the day they run.
+async function atFriday(fn) {
+  mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-10-09T12:00:00+02:00") });
+  try { return await fn(); } finally { mock.timers.reset(); }
+}
+const settingsRows = (tiktok, instagram) => [["key", "value", "updated_at", "updated_by"],
+  ...(tiktok ? [["frequency_tiktok", tiktok, "", "x"]] : []), ...(instagram ? [["frequency_instagram", instagram, "", "x"]] : [])];
+const withInstagram = () => {
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts[1].push("anna.ig");
+};
+
+test("pull frequency: /api/data starts from config.yaml and follows the settings tab (windows and budget too)", async () => atFriday(async () => {
+  withInstagram();
+  let d = await (await req("/api/data")).json();
+  assert.deepEqual(d.config.frequency, { tiktok: "12h", instagram: "4h" });
+  assert.deepEqual(d.config.frequencyDefault, d.config.frequency);
+  assert.deepEqual(Object.keys(d.config.frequencySteps), ["daily", "12h", "6h", "4h", "2h"]);
+  // The page works out the cost of a choice itself, but only gets the last rows of run_log: it needs this to start from.
+  sheets.run_log.push(["2026-10-09T06:00:00Z", "profiles", "2026-10-09/08u", false, 3, 3, 0, "ok", "sd_a", ""],
+    ["2026-09-30T06:00:00Z", "profiles", "2026-09-30/08u", false, 3, 3, 0, "ok", "sd_b", ""]);
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.budgetBase, { used: d.budget.used, done: ["2026-10-09/08u"] }, "this month's done windows only");
+  assert.ok(d.budgetBase.used >= 3);
+  assert.deepEqual(d.config.schedule.windows.tiktok.map((w) => w.name), ["08u", "20u"]);
+  const before = d.budget.byPlatform;
+  sheets.settings = settingsRows("off", "2h");
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.config.frequency, { tiktok: "off", instagram: "2h" });
+  assert.deepEqual(d.config.frequencyDefault, { tiktok: "12h", instagram: "4h" });   // the start value stays available
+  assert.deepEqual(d.config.schedule.windows.tiktok, []);
+  assert.equal(d.config.schedule.windows.instagram.length, 12);
+  assert.equal(d.config.schedule.windows.instagram[0].name, "ig-00u");
+  // The budget reservation follows the same setting: no TikTok runs left, more Instagram runs than at 4 hours.
+  assert.equal(d.budget.byPlatform.tiktok.runsLeft, 0);
+  assert.equal(d.budget.byPlatform.tiktok.reserved, 0);
+  assert.ok(d.budget.byPlatform.instagram.runsLeft > before.instagram.runsLeft * 1.8);   // 12 windows a day instead of 6
+  // A value that is not a step is ignored: the start value applies.
+  sheets.settings = settingsRows("often", "off");
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.config.frequency, { tiktok: "12h", instagram: "off" });
+}));
+
+test("pull frequency: saving writes one row per changed platform (updated in place), logs it, and the next load shows it", async () => atFriday(async () => {
+  withInstagram();
+  const post = (body) => req("/api/settings/frequency", { body });
+  let res = await post({ tiktok: "6h", instagram: "4h", was: { tiktok: "12h", instagram: "4h" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  let body = await res.json();
+  assert.deepEqual(body.frequency, { tiktok: "6h", instagram: "4h" });
+  assert.match(body.message, /Schema opgeslagen: TikTok elke 6 uur, Instagram elke 4 uur\. Verwacht [\d.]+ van 23\.000 records deze maand\./);
+  assert.deepEqual(sheets.settings[0], ["key", "value", "updated_at", "updated_by"]);
+  assert.equal(sheets.settings.length, 2, "only the platform that changed gets a row");
+  assert.deepEqual([sheets.settings[1][0], sheets.settings[1][1], sheets.settings[1][3]], ["frequency_tiktok", "6h", "docent@school.nl"]);
+  const entry = sheets.activity_log.find((r) => r[2] === "frequentie gewijzigd");
+  assert.match(entry[3], /^TikTok: elke 12 uur → elke 6 uur; Instagram: ongewijzigd \(elke 4 uur\) · verwacht [\d.]+ van 23\.000 records deze maand$/);
+  assert.equal(entry[1], "docent@school.nl");
+  // What was saved is what the page, the budget and the timer see.
+  let d = await (await req("/api/data")).json();
+  assert.deepEqual(d.config.frequency, { tiktok: "6h", instagram: "4h" });
+  assert.equal(d.config.schedule.windows.tiktok.length, 4);
+  // Another platform appends its own row; changing TikTok again updates its row in place (no doubles).
+  res = await post({ tiktok: "6h", instagram: "off", was: { tiktok: "6h", instagram: "4h" } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(sheets.settings.slice(1).map((r) => [r[0], r[1]]), [["frequency_tiktok", "6h"], ["frequency_instagram", "off"]]);
+  res = await post({ tiktok: "2h", instagram: "off", was: { tiktok: "6h", instagram: "off" } });
+  assert.equal(res.status, 200);
+  assert.deepEqual(sheets.settings.slice(1).map((r) => [r[0], r[1]]), [["frequency_tiktok", "2h"], ["frequency_instagram", "off"]]);
+  assert.equal(sheets.activity_log.filter((r) => r[2] === "frequentie gewijzigd").length, 3);
+  assert.match(sheets.activity_log.at(-1)[3], /^TikTok: elke 6 uur → elke 2 uur; Instagram: ongewijzigd \(uit\)/);
+  // The settings of other features are left alone.
+  assert.equal(sheets.settings.some((r) => r[0] === "school_hashtags"), false);
+}));
+
+test("pull frequency: refuses a wrong value, a stale page, a missing CSRF header and a choice that doesn't fit; saving the same writes nothing; lowering always works", async () => atFriday(async () => {
+  withInstagram();
+  const post = (body, opts = {}) => req("/api/settings/frequency", { body, ...opts });
+  const nothingWritten = () => assert.equal(sheets.settings, undefined, "not even the tab was created");
+  let res = await post({ tiktok: "7h", instagram: "4h" });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Kies voor TikTok Uit, 1× per dag of elke 12, 6, 4 of 2 uur/);
+  res = await post({ tiktok: "6h" });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Kies voor Instagram/);
+  res = await post({ tiktok: "6h", instagram: "4h", was: { tiktok: "daily", instagram: "4h" } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /intussen veranderd/);
+  res = await post({ tiktok: "6h", instagram: "4h" }, { headers: { "x-requested-with": "" } });
+  assert.equal(res.status, 403);
+  res = await post({ tiktok: "12h", instagram: "4h", was: { tiktok: "12h", instagram: "4h" } });
+  assert.equal(res.status, 200);
+  assert.match((await res.json()).message, /Ongewijzigd/);
+  nothingWritten();
+  assert.equal((sheets.activity_log || []).some((r) => r[2] === "frequentie gewijzigd"), false);
+
+  // Fill the month: anything that adds planned runs is refused with the numbers, and nothing is written.
+  sheets.run_log.push([sheets._recent, "profiles", "x", false, 1, CONFIG.budget.monthlyCap - 10, 0, "ok", "sd_big", ""]);
+  res = await post({ tiktok: "2h", instagram: "2h", was: { tiktok: "12h", instagram: "4h" } });
+  assert.equal(res.status, 409);
+  const error = (await res.json()).error;
+  assert.match(error, /Past niet in het budget: [\d.]+ verwacht deze maand \+ [\d.]+ weekrefresh \+ [\d.]+ finale = [\d.]+, meer dan de limiet van 23\.000\. Kies een lagere frequentie\./);
+  nothingWritten();
+  // Lowering is always allowed, even when the month is already over the cap (otherwise it could not be fixed).
+  res = await post({ tiktok: "daily", instagram: "off", was: { tiktok: "12h", instagram: "4h" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.settings.slice(1).map((r) => [r[0], r[1]]), [["frequency_tiktok", "daily"], ["frequency_instagram", "off"]]);
+}));
+
+test("pull frequency: the backup timer follows the chosen step (and nothing opens for a platform that is off)", async () => {
+  const at = (iso) => Date.parse(iso);
+  sheets._runs = [{ status: "completed" }];
+  // 18:25 is in nobody's step at the start values, but is an Instagram window at every 2 hours.
+  assert.equal((await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"))).action, "no window open");
+  sheets.settings = settingsRows(null, "2h");
+  let r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"));
+  assert.deepEqual([r.action, r.due], ["collector started", ["2026-10-01/ig-18u"]]);
+  // TikTok off: the 20u window starts only Instagram's run.
+  sheets.settings = settingsRows("off", null);
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:25:00+02:00"));
+  assert.deepEqual(r.due, ["2026-10-01/ig-20u"]);
+  // Both off: nothing is ever open, not even to look at GitHub.
+  sheets.settings = settingsRows("off", "off");
+  const githubBefore = calls.filter((c) => c.url.includes("api.github.com")).length;
+  assert.equal((await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:25:00+02:00"))).action, "no window open");
+  assert.equal(calls.filter((c) => c.url.includes("api.github.com")).length, githubBefore);
+  // The Friday weekrefresh is a TikTok pull: it opens with TikTok on and not with TikTok off.
+  sheets.settings = settingsRows(null, "daily");   // Instagram daily (16u): nothing else is open at 08:40
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-02T08:40:00+02:00"));
+  assert.ok(r.due.includes("2026-10-02/weekrefresh"), JSON.stringify(r));
+  sheets.settings = settingsRows("off", "daily");
+  assert.equal((await runSchedule(ENV, strictThisFetch, at("2026-10-02T08:40:00+02:00"))).action, "no window open");
+});
+
+test("Nu verversen: a platform that is off is skipped and the message says so; nothing to refresh is refused", async () => {
+  withInstagram();
+  sheets._runs = [{ status: "completed" }];
+  const dispatches = () => calls.filter((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.force}/dispatches`)).length;
+  sheets.settings = settingsRows("off", null);
+  let res = await req("/api/refresh", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.match((await res.json()).message, /Verversen gestart \(alleen Instagram\)\. TikTok staat uit en wordt overgeslagen\./);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "nu verversen" && r[3] === "TikTok stond uit: overgeslagen"));
+  sheets.settings = settingsRows(null, "off");
+  res = await req("/api/refresh", { body: {} });
+  assert.match((await res.json()).message, /Verversen gestart \(alleen TikTok\)\. Instagram staat uit en wordt overgeslagen\./);
+  assert.equal(dispatches(), 2);
+  // A recent TikTok run only blocks the refresh when TikTok is the platform it would do.
+  sheets.run_log.push([sheets._recent, "force_refresh", "y", false, 3, 3, 0, "ok", "sd_2", ""]);
+  sheets.settings = settingsRows("off", null);
+  assert.equal((await req("/api/refresh", { body: {} })).status, 200, "TikTok is off, so its recent run doesn't matter");
+  sheets.settings = settingsRows("off", "off");
+  res = await req("/api/refresh", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /TikTok en Instagram staan uit.*niets om te verversen/);
+  // TikTok off and no Instagram accounts at all.
+  sheets.accounts[1].pop();
+  sheets.settings = settingsRows("off", null);
+  res = await req("/api/refresh", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /TikTok staat uit.*geen Instagram-accounts/);
+  assert.equal(dispatches(), 3);
+});
+
+test("Controleer nu: a platform that is off is left out and named; when only that platform has anything to check it is refused", async () => {
+  const now = new Date().toISOString();
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts.push(["Pim", "", "ja", "pim.only"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"], ["1", "anna_1", now, 5]];   // Anna posted; Chris (TikTok) did not
+  sheets.ig_handles = [["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"], ["pim.only", false, 1, "", "ok", ""]];
+  sheets._runs = [{ status: "completed" }];
+  const dispatch = () => calls.filter((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+  // Instagram off: only Chris is checked, and the answer names the skipped platform.
+  sheets.settings = settingsRows(null, "off");
+  let res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  let body = await res.json();
+  assert.deepEqual([body.count, body.tiktok, body.instagram], [1, 1, 0]);
+  assert.match(body.message, /1 account \(1 records\)\. Instagram staat uit en wordt overgeslagen\./);
+  assert.equal(JSON.parse(dispatch().at(-1).body).inputs.handles, "chris");
+  assert.ok(sheets.activity_log.some((r) => r[2] === "vandaag gecontroleerd" && r[3] === "1 account, 1 records; Instagram stond uit"));
+  // TikTok off: only Pim's Instagram account.
+  sheets.activity_log = sheets.activity_log.filter((r) => r[2] !== "vandaag gecontroleerd");   // no cooldown for the next one
+  sheets.settings = settingsRows("off", null);
+  res = await req("/api/today/check", { body: {} });
+  body = await res.json();
+  assert.deepEqual([body.count, body.tiktok, body.instagram], [1, 0, 1]);
+  assert.match(body.message, /TikTok staat uit en wordt overgeslagen/);
+  assert.equal(JSON.parse(dispatch().at(-1).body).inputs.handles, "instagram:pim.only");
+  // Both off: there is something to check, but only on platforms that are off.
+  sheets.activity_log = sheets.activity_log.filter((r) => r[2] !== "vandaag gecontroleerd");
+  sheets.settings = settingsRows("off", "off");
+  res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /TikTok en Instagram, en dat staat uit/);
+  assert.equal(dispatch().length, 2);
+});
+
+test("finale: the budget counts only the platforms that are not off, and a finale needs at least one", async () => {
+  withInstagram();
+  sheets._runs = [{ status: "completed" }];
+  sheets.settings = settingsRows("off", "off");
+  let res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /staan uit.*geen runs/);
+  assert.equal(sheets.finale.length, 1, "no finale row was written");
+  sheets.settings = settingsRows("off", null);
+  res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  assert.equal(res.status, 200, await res.clone().text());
+  const entry = sheets.activity_log.find((r) => r[2] === "finale gestart");
+  assert.match(entry[3], /runs × 1 Instagram-accounts ≈ \d+ records$/);
+  assert.doesNotMatch(entry[3], /TikTok/);
 });

@@ -260,6 +260,19 @@ test("the Cloudflare cron in wrangler.toml hits every window at least 3 times, a
       }
     }
   }
+  // The same for every choice that can be made on Beheer, worked out the way the Worker does it from the settings tab:
+  // each step's windows (TikTok and Instagram) are hit at least 3 times by the hourly crons, in summer and winter time.
+  for (const step of lib.FREQUENCY_CHOICES) {
+    const chosen = lib.withFrequency(CFG, { tiktok: step, instagram: step });
+    for (const day of ["2026-10-01", "2026-10-25", "2026-10-26"]) {
+      for (const platform of lib.PLATFORMS) {
+        for (const w of lib.platformWindows(chosen, platform)) {
+          const hits = firings(day).filter((t) => lib.openWindows(chosen, t).includes(`${day}/${w.name}`)).length;
+          assert.ok(hits >= 3, `${step} ${day} ${w.name}: ${hits} hits`);
+        }
+      }
+    }
+  }
   // The steps in use are subsets of that pool.
   const names = new Set(pool.map((w) => w.name));
   for (const platform of lib.PLATFORMS) {
@@ -270,6 +283,120 @@ test("the Cloudflare cron in wrangler.toml hits every window at least 3 times, a
     const hits = firings(day).filter((t) => lib.openWindows(CFG, t).includes(`${day}/${r.name}`)).length;
     assert.ok(hits >= 4, `${day} ${r.name}: ${hits} hits`);
   }
+});
+
+// ---------- pull frequency per platform (settings tab, Beheer) ----------
+
+const FRIDAY_NOON = Date.parse("2026-10-09T12:00:00+02:00");
+
+test("frequency setting: only valid choices count, a typo keeps the start value; windows come from the step", () => {
+  assert.deepEqual(lib.FREQUENCY_CHOICES, ["off", "daily", "12h", "6h", "4h", "2h"]);
+  const saved = (rows) => lib.frequencySettings(lib.parseSettings(rows), CFG);
+  assert.deepEqual(saved([{ key: "frequency_tiktok", value: "6H" }, { key: "frequency_instagram", value: " off " }, { key: "school_hashtags", value: "glu" }]),
+    { tiktok: "6h", instagram: "off" });
+  assert.deepEqual(saved([{ key: "frequency_tiktok", value: "3h" }, { key: "frequency_instagram", value: "" }]), {});
+  assert.deepEqual(saved([{ key: "frequency_tiktok", value: "2h" }, { key: "frequency_tiktok", value: "daily" }]), { tiktok: "daily" });   // the last row wins
+  assert.equal(lib.frequencyChoice("weekly", CFG), null);
+  assert.equal(lib.frequencyChoice("4h", { ...CFG, frequencySteps: { "12h": ["08u", "20u"] } }), null, "a step the config doesn't define");
+  // Every step is a set of hourly windows from the pool, Instagram ones keyed ig-.
+  const names = (platform, step) => lib.windowsFor(CFG, platform, step).map((w) => w.name);
+  assert.deepEqual(names("tiktok", "12h"), ["08u", "20u"]);
+  assert.deepEqual(names("instagram", "daily"), ["ig-16u"]);
+  assert.deepEqual(lib.FREQUENCY_CHOICES.map((c) => names("tiktok", c).length), [0, 1, 2, 4, 6, 12]);
+  assert.deepEqual(names("tiktok", "off"), []);
+  // withFrequency replaces what is given and leaves the rest and the original alone.
+  const cfg = lib.withFrequency(CFG, { tiktok: "off" });
+  assert.deepEqual(cfg.frequency, { tiktok: "off", instagram: "4h" });
+  assert.deepEqual([lib.platformOn(cfg, "tiktok"), lib.platformOn(cfg, "instagram")], [false, true]);
+  assert.deepEqual(lib.platformWindows(cfg, "tiktok"), []);
+  assert.equal(lib.platformWindows(cfg, "instagram").length, 6);
+  assert.deepEqual(CFG.frequency, { tiktok: "12h", instagram: "4h" });
+  assert.deepEqual(lib.withFrequency(CFG, {}).frequency, CFG.frequency);
+});
+
+test("frequency setting: the budget reservation counts the windows of the chosen step", () => {
+  const counts = { tiktok: 60, instagram: 23 };
+  const planned = (choice) => lib.budget(lib.withFrequency(CFG, choice), [], counts, FRIDAY_NOON).byPlatform;
+  // Friday 12:00: TikTok 12h has the 20u window left today plus 2 a day for the 21 days to 30 Oct; Instagram 4h has 12u, 16u and 20u plus 6 a day.
+  assert.deepEqual([planned({}).tiktok.runsLeft, planned({}).instagram.runsLeft], [1 + 21 * 2, 3 + 21 * 6]);
+  assert.equal(planned({}).tiktok.reserved, 43 * 60);
+  assert.deepEqual([planned({ tiktok: "off" }).tiktok.runsLeft, planned({ tiktok: "off" }).tiktok.reserved], [0, 0]);
+  assert.equal(planned({ instagram: "2h" }).instagram.runsLeft, 6 + 21 * 12);   // 12u..22u today
+  assert.equal(planned({ tiktok: "daily" }).tiktok.runsLeft, 1 + 21);             // 16u is still to come today
+  assert.equal(lib.budget(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), [], counts, FRIDAY_NOON).projected, 0);
+});
+
+test("frequencyPreview: records per day, the month total with the weekrefresh and finale reserves, against the cap", () => {
+  const counts = { tiktok: 60, instagram: 23 };
+  const current = { tiktok: "12h", instagram: "4h" };
+  const preview = (choice, runLog = [], opts = {}) => lib.frequencyPreview(CFG, lib.budgetBase(runLog, FRIDAY_NOON), counts, FRIDAY_NOON, choice, current, opts);
+  const now = preview(current);
+  assert.deepEqual(now.platforms.map((p) => [p.platform, p.step, p.runsPerDay, p.accounts, p.perDay]), [["tiktok", "12h", 2, 60, 120], ["instagram", "4h", 6, 23, 138]]);
+  assert.equal(now.perDay, 258);
+  assert.deepEqual([now.used, now.planned, now.projected], [0, 5547, 5547]);
+  // The weekrefresh reserves up to refreshNumOfPosts per TikTok account (a Friday is still to come this month); a finale that
+  // hasn't happened reserves its longest possible length.
+  assert.equal(now.refresh, CFG.refreshNumOfPosts * 60);
+  assert.equal(now.finale, lib.finaleCost(CFG, counts, 0, CFG.finale.maxHours * 3600e3).total);
+  assert.deepEqual([now.total, now.cap, now.headroom, now.fits, now.allowed], [5547 + now.refresh + now.finale, 23000, 23000 - now.total, true, true]);
+  assert.equal(preview(current, [], { finaleDone: true }).finale, 0);
+  // Everything every 2 hours doesn't fit under the cap: 21.414 planned + the reserves.
+  const big = preview({ tiktok: "2h", instagram: "2h" });
+  assert.deepEqual([big.perDay, big.projected, big.fits, big.allowed], [720 + 276, 21414, false, false]);
+  // TikTok off: no TikTok runs, and no weekrefresh reserve either (the refresh is a TikTok pull).
+  const off = preview({ tiktok: "off", instagram: "4h" });
+  assert.deepEqual([off.platforms[0].perDay, off.platforms[0].planned, off.refresh], [0, 0, 0]);
+  assert.equal(off.finale, lib.finaleCost(lib.withFrequency(CFG, { tiktok: "off" }), counts, 0, CFG.finale.maxHours * 3600e3).total);
+  // Records already used count: with the month almost full even a small choice no longer fits...
+  const full = [{ timestamp: new Date(FRIDAY_NOON).toISOString(), run_type: "profiles", window: "x", actual_records: 22900, dry_run: false, status: "ok" }];
+  const small = preview({ tiktok: "daily", instagram: "daily" }, full);
+  assert.deepEqual([small.used, small.fits], [22900, false]);
+  // ...but it is still allowed because it plans fewer records than the current setting (so a setting can always be lowered).
+  assert.equal(small.allowed, true);
+  assert.equal(preview({ tiktok: "2h", instagram: "4h" }, full).allowed, false);
+  assert.equal(preview(current, full).allowed, true, "keeping what is saved is never refused");
+  // Nothing past the campaign: no reserves outside this month.
+  const november = lib.frequencyPreview(CFG, lib.budgetBase([], Date.parse("2026-11-05T12:00:00+01:00")), counts, Date.parse("2026-11-05T12:00:00+01:00"), current, current);
+  assert.deepEqual([november.projected, november.refresh, november.finale], [0, 0, 0]);
+});
+
+test("windows: a platform that is off has no windows, no weekly refresh and no finale runs", () => {
+  const ten = Date.parse("2026-10-02T08:40:00+02:00");   // Friday 08:40: weekrefresh window, TikTok 08u and Instagram ig-08u
+  assert.deepEqual(lib.openWindows(CFG, ten), ["2026-10-02/08u", "2026-10-02/ig-08u", "2026-10-02/weekrefresh"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), ten), ["2026-10-02/ig-08u"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { instagram: "off" }), ten), ["2026-10-02/08u", "2026-10-02/weekrefresh"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), ten), []);
+  const at = Date.parse("2026-10-26T14:05:00Z");
+  const live = lib.finaleState([FIN], at, 8);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), at, live), ["2026-10-26/ig-finale-1500"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { instagram: "off" }), at, live), ["2026-10-26/finale-1500"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), at, live), []);
+  // A finale on a Friday morning has the weekly refresh too, but only with TikTok on.
+  const fri = lib.finaleState([{ ...FIN, started_at: "2026-10-30T06:00:00Z", deadline: "2026-10-30T09:00:00Z" }], Date.parse("2026-10-30T07:40:00Z"), 8);
+  assert.ok(lib.openWindows(CFG, Date.parse("2026-10-30T07:40:00Z"), fri).includes("2026-10-30/weekrefresh"));
+  assert.ok(!lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), Date.parse("2026-10-30T07:40:00Z"), fri).includes("2026-10-30/weekrefresh"));
+});
+
+test("Controleer nu: a platform that is off is left out of the targets and named as skipped", () => {
+  const now = ams("2026-10-06T13:00:00+02:00");
+  const students = [
+    { handle: "a", posts: [], accounts: [{ handle: "a", isPrivate: false }, { handle: "a.ig", isPrivate: false, platform: "instagram" }] },
+    { handle: "instagram:d", posts: [], accounts: [{ handle: "d", isPrivate: false, platform: "instagram" }] },
+    { handle: "done", posts: [{ created_at: "2026-10-06T07:00:00Z" }], accounts: [{ handle: "done", isPrivate: false }] },
+  ];
+  const st = lib.todayStatus(CFG, students, [], now);
+  const freq = (tiktok, instagram) => ({ tiktok, instagram });
+  assert.deepEqual(lib.todayTargets(st), ["a", "instagram:a.ig", "instagram:d"]);                        // no frequency: nothing left out
+  assert.deepEqual(lib.todayTargets(st, freq("12h", "4h")), ["a", "instagram:a.ig", "instagram:d"]);
+  assert.deepEqual(lib.todayTargets(st, freq("off", "4h")), ["instagram:a.ig", "instagram:d"]);
+  assert.deepEqual(lib.todayTargets(st, freq("12h", "off")), ["a"]);
+  assert.deepEqual(lib.todayTargets(st, freq("off", "off")), []);
+  assert.deepEqual(lib.todaySkipped(st, freq("12h", "4h")), []);
+  assert.deepEqual(lib.todaySkipped(st, freq("off", "4h")), ["tiktok"]);
+  assert.deepEqual(lib.todaySkipped(st, freq("off", "off")), ["tiktok", "instagram"]);
+  // A platform that is off but has nothing to check isn't named: only Instagram accounts are left here.
+  const onlyIg = lib.todayStatus(CFG, students.slice(1, 2), [], now);
+  assert.deepEqual(lib.todaySkipped(onlyIg, freq("off", "4h")), []);
 });
 
 // ---------- finale (manual) ----------

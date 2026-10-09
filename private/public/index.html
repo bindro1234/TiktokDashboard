@@ -166,8 +166,9 @@
       <div class="grid2">
         <div class="card">
           <h2>Nu verversen</h2>
-          <p>Haalt nu alle actieve profielen op, TikTok en Instagram (1 record per account). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun van dat platform.</p>
+          <p>Haalt nu alle actieve profielen op, TikTok en Instagram (1 record per account; een platform dat op <em>Uit</em> staat wordt overgeslagen). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun van dat platform.</p>
           <p><button type="button" class="btn primary" id="bh-refresh">↻ Nu verversen</button></p>
+          <p class="meta" id="bh-refresh-note"></p>
           <p class="status" id="bh-refresh-msg" role="status"></p>
           <p class="meta">Laatste profielrun: <strong id="bh-last"></strong></p>
           <h3>Laatste GitHub-runs</h3>
@@ -177,8 +178,16 @@
           <h2>Budget deze maand</h2>
           <div id="bh-budget"></div>
           <h3>Schema</h3>
+          <form id="freq-form" autocomplete="off">
+            <div class="freq-grid">
+              <label for="freq-tiktok">TikTok</label><select id="freq-tiktok" name="tiktok"></select>
+              <label for="freq-instagram">Instagram</label><select id="freq-instagram" name="instagram"></select>
+            </div>
+            <div id="freq-preview" aria-live="polite"></div>
+            <p class="buttons"><button type="submit" class="btn primary" id="freq-save">Opslaan</button> <span class="status" id="freq-msg" role="status"></span></p>
+          </form>
           <div id="bh-schedule"></div>
-          <p class="hint">Limiet, schema en frequentie per platform staan in <code>config.yaml</code> in de repository.</p>
+          <p class="hint">De limiet staat in <code>config.yaml</code>. De frequentie per platform kies je hier en geldt meteen, ook voor de reservetimer en de planning; wat in <code>config.yaml</code> staat is de startwaarde tot je iets opslaat. Elke wijziging komt in het activiteitenlog.</p>
         </div>
       </div>
 

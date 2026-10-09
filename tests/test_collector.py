@@ -1210,6 +1210,15 @@ class FrequencyConfigTests(unittest.TestCase):
         self.assertEqual([w.key(day) for w in CFG.platform_windows("instagram")][:2], ["2026-10-12/ig-00u", "2026-10-12/ig-04u"])
         self.assertTrue({w.key(day) for w in CFG.platform_windows("tiktok")}.isdisjoint({w.key(day) for w in CFG.platform_windows("instagram")}))
 
+    def test_the_page_and_worker_get_the_steps_to_work_out_any_choice(self):
+        from collector import worker_config
+        built = worker_config.build(CFG)
+        self.assertEqual(built["frequency"], {"tiktok": "12h", "instagram": "4h"})
+        self.assertEqual(list(built["frequencySteps"]), list(config.FREQUENCY_STEPS))
+        self.assertEqual(built["frequencySteps"]["12h"], ["08u", "20u"])
+        pool = {w["name"] for w in built["schedule"]["profileRuns"]}
+        self.assertTrue(all(set(names) <= pool for names in built["frequencySteps"].values()))
+
     def test_a_typo_in_the_frequency_settings_fails_loudly(self):
         pool = CFG.profile_windows
         good = {"tiktok": "12h", "instagram": "off", "steps": {"12h": ["08u", "20u"]}}
@@ -1318,6 +1327,152 @@ class BillingTests(unittest.TestCase):
         for bad in [Resp(403, {}), Resp(200, ValueError("not json")), Resp(200, ["unexpected"]),
                     __import__("requests").ConnectionError("down")]:
             self.assertIsNone(BrightData(session=Session(bad)).billed_rows_this_month())
+
+
+class FrequencySettingTests(unittest.TestCase):
+    """The pull frequency chosen on Beheer (private settings tab) over the config.yaml start value."""
+
+    # 10:10 Amsterdam: the TikTok 08u/20u windows and the Instagram 4-hourly windows are all closed.
+    MORNING = dt.datetime(2026, 10, 12, 8, 10, tzinfo=UTC)
+
+    def setting(self, tiktok=None, instagram=None, extra=()):
+        rows = [{"key": k, "value": v, "updated_at": "", "updated_by": ""} for k, v in
+                (("frequency_tiktok", tiktok), ("frequency_instagram", instagram)) if v is not None]
+        return [*extra, *rows]
+
+    def collector(self, settings=None, now=None, **tabs):
+        admin = FakeSheet({"run_log": [], "accounts": [], **({"settings": settings} if settings is not None else {}), **tabs})
+        col = Collector(CFG, admin, FakeSheet({}), bd=None, now=now or self.MORNING)
+        col.apply_settings()
+        return col, admin
+
+    def windows_run(self, admin):
+        return [r["window"] for r in admin.tabs["run_log"]]
+
+    def test_parse(self):
+        steps = CFG.frequency_steps
+        self.assertEqual(config.parse_frequency_settings(self.setting("6h", "OFF"), steps), ({"tiktok": "6h", "instagram": "off"}, []))
+        # Other settings are not ours; the last row of a key counts; nothing set = nothing returned.
+        rows = self.setting("2h", extra=[{"key": "school_hashtags", "value": "glu"}, {"key": "frequency_tiktok", "value": "daily"}])
+        self.assertEqual(config.parse_frequency_settings(rows, steps)[0], {"tiktok": "2h"})
+        self.assertEqual(config.parse_frequency_settings([], steps), ({}, []))
+        self.assertEqual(config.parse_frequency_settings(None), ({}, []))
+        # A value that is not a known step is reported and ignored (also an empty cell), never raised.
+        found, problems = config.parse_frequency_settings(self.setting("13h", ""), steps)
+        self.assertEqual(found, {})
+        self.assertEqual(len(problems), 2)
+        self.assertIn("frequency_tiktok", problems[0])
+        # A later bad value does not keep an earlier good one alive: the start value is used instead.
+        found, _ = config.parse_frequency_settings([{"key": "frequency_tiktok", "value": "4h"}, {"key": "frequency_tiktok", "value": "often"}], steps)
+        self.assertEqual(found, {})
+        # A step the config does not define is refused too.
+        self.assertEqual(config.parse_frequency_settings(self.setting("6h"), {"12h": ("08u", "20u")})[0], {})
+
+    def test_with_frequency_and_platform_on(self):
+        cfg = config.with_frequency(CFG, {"tiktok": "off", "instagram": "2h"})
+        self.assertEqual(cfg.frequency, {"tiktok": "off", "instagram": "2h"})
+        self.assertEqual((cfg.platform_on("tiktok"), cfg.platform_on("instagram")), (False, True))
+        self.assertEqual(cfg.platform_windows("tiktok"), ())
+        self.assertEqual(len(cfg.platform_windows("instagram")), 12)
+        self.assertEqual(CFG.frequency, {"tiktok": "12h", "instagram": "4h"}, "the loaded config is not changed")
+        self.assertEqual(config.with_frequency(CFG, {}).frequency, CFG.frequency)
+
+    def test_apply_settings_replaces_the_start_values_for_the_run(self):
+        col, _ = self.collector(self.setting("off", "2h"))
+        self.assertEqual(col.cfg.frequency, {"tiktok": "off", "instagram": "2h"})
+        # The budget reservation follows the same setting: no TikTok runs left, 8 Instagram windows today
+        # (08u is still open at 08:10... here 10u onwards) plus 12 per day until the end of collection.
+        by = col.reserve_by_platform()
+        self.assertEqual(by["tiktok"][0], 0)
+        today_left = len([w for w in col.cfg.platform_windows("instagram") if w.end > col.now_local.time()])
+        days_left = (CFG.campaign.collect_until - col.now_local.date()).days
+        self.assertEqual(by["instagram"][0], today_left + days_left * 12)
+
+    def test_without_the_tab_or_with_garbage_the_start_values_stay(self):
+        col, _ = self.collector(None)
+        self.assertEqual(col.cfg.frequency, CFG.frequency)
+        col, _ = self.collector(self.setting("sometimes", "whenever"))
+        self.assertEqual(col.cfg.frequency, CFG.frequency)
+        col, _ = self.collector(self.setting(None, "6h"))
+        self.assertEqual(col.cfg.frequency, {"tiktok": "12h", "instagram": "6h"}, "one platform set, the other keeps its start value")
+
+    def test_auto_runs_the_windows_of_the_chosen_step(self):
+        # Start values: nothing is open at 10:10. Instagram every 2 hours: its 10u window is.
+        col, admin = self.collector(None)
+        col.auto()
+        self.assertEqual(self.windows_run(admin), [])
+        col, admin = self.collector(self.setting(None, "2h"))
+        col.auto()
+        self.assertEqual(self.windows_run(admin), ["2026-10-12/ig-10u"])
+        # TikTok every 2 hours as well: both platforms run their own window, TikTok first.
+        col, admin = self.collector(self.setting("2h", "2h"))
+        col.auto()
+        self.assertEqual(self.windows_run(admin), ["2026-10-12/10u", "2026-10-12/ig-10u"])
+
+    def test_auto_does_nothing_for_a_platform_that_is_off(self):
+        at_8 = dt.datetime(2026, 10, 12, 6, 10, tzinfo=UTC)   # 08:10: TikTok 08u and Instagram ig-08u are open at the start values
+        col, admin = self.collector(None, now=at_8)
+        col.auto()
+        self.assertEqual(self.windows_run(admin), ["2026-10-12/08u", "2026-10-12/ig-08u"])
+        for tiktok, instagram, expected in (("off", None, ["2026-10-12/ig-08u"]), (None, "off", ["2026-10-12/08u"]), ("off", "off", [])):
+            col, admin = self.collector(self.setting(tiktok, instagram), now=at_8)
+            col.auto()
+            self.assertEqual(self.windows_run(admin), expected, (tiktok, instagram))
+
+    def test_nu_verversen_skips_a_platform_that_is_off_and_says_so(self):
+        col, admin = self.collector(self.setting("off", None))
+        col.run_force_refresh("2026-10-12/force-1010")
+        col.run_ig_force_refresh("2026-10-12/ig-force-1010")
+        tiktok, instagram = admin.tabs["run_log"]
+        self.assertEqual((tiktok["run_type"], tiktok["status"], tiktok["actual_records"]), ("force_refresh", "skipped", 0))
+        self.assertIn("SKIPPED: tiktok is set to off", tiktok["notes"])
+        self.assertEqual(instagram["run_type"], "ig_force_refresh")
+        self.assertNotIn("set to off", instagram["notes"])        # Instagram is on: it ran (here without accounts)
+        col, admin = self.collector(self.setting(None, "off"))
+        col.run_ig_force_refresh("2026-10-12/ig-force-1010")
+        self.assertEqual((admin.tabs["run_log"][0]["status"], "set to off" in admin.tabs["run_log"][0]["notes"]), ("skipped", True))
+
+    def test_controleer_nu_skips_a_platform_that_is_off(self):
+        accounts = [{"student_name": "A", "tiktok_handle": "aa", "active": "ja", "main_account": "", "instagram_handle": "ig_aa"}]
+        bd = FakeBothBrightData({"aa": profile_record("aa", [("1", "2026-10-12T04:00:00.000Z", 40)])},
+                                {"ig_aa": ig_record("ig_aa", [ig_post(ut(2026, 10, 12, 5, 30))], followers=5)})
+        for tiktok, instagram, asked in (("off", None, {"tiktok": [], "instagram": [["ig_aa"]]}),
+                                         (None, "off", {"tiktok": [["aa"]], "instagram": []}),
+                                         ("off", "off", {"tiktok": [], "instagram": []})):
+            bd.asked = {"tiktok": [], "instagram": []}
+            admin = FakeSheet({"run_log": [], "accounts": accounts, "profile_window": [], "settings": self.setting(tiktok, instagram)})
+            col = Collector(CFG, admin, FakeSheet({}), bd, now=self.MORNING)
+            col.apply_settings()
+            run_today(col, "aa,instagram:ig_aa")
+            self.assertEqual(bd.asked, asked, (tiktok, instagram))
+            rows = {r["run_type"]: r for r in admin.tabs["run_log"]}
+            self.assertEqual(set(rows), {"today_check", "ig_today_check"}, "each platform leaves its own row")
+            for run_type, platform, off in (("today_check", "tiktok", tiktok == "off"), ("ig_today_check", "instagram", instagram == "off")):
+                self.assertEqual(rows[run_type]["status"] == "skipped" and f"SKIPPED: {platform} is set to off" in rows[run_type]["notes"], off, run_type)
+
+    def test_weekly_refresh_is_a_tiktok_pull_and_stops_with_tiktok(self):
+        friday = dt.datetime(2026, 10, 16, 6, 40, tzinfo=UTC)   # 08:40 Amsterdam: inside the weekrefresh window
+        col, admin = self.collector(self.setting("off", None), now=friday)
+        col.auto()
+        refresh = [r for r in admin.tabs["run_log"] if r["run_type"] == "posts_refresh"]
+        self.assertEqual([(r["status"], r["window"]) for r in refresh], [("skipped", "2026-10-16/weekrefresh")])
+        self.assertIn("SKIPPED: tiktok is set to off", refresh[0]["notes"])
+        # With TikTok on it plans normally (no accounts here, so nothing to refresh: also skipped, but not because of "off").
+        col, admin = self.collector(self.setting("12h", None), now=friday)
+        col.auto()
+        refresh = [r for r in admin.tabs["run_log"] if r["run_type"] == "posts_refresh"]
+        self.assertNotIn("set to off", refresh[0]["notes"])
+
+    def test_finale_has_no_runs_for_a_platform_that_is_off(self):
+        row = {"started_at": "2026-10-26T13:00:00Z", "started_by": "x@y.nl", "deadline": "2026-10-26T15:00:00Z",
+               "status": "active", "ended_at": "", "ended_by": ""}
+        now = dt.datetime(2026, 10, 26, 14, 5, tzinfo=UTC)
+        for tiktok, instagram, expected in ((None, None, {"2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"}),
+                                            ("off", None, {"2026-10-26/ig-finale-1500"}),
+                                            (None, "off", {"2026-10-26/finale-1500"}), ("off", "off", set())):
+            col, admin = self.collector(self.setting(tiktok, instagram), now=now, finale=[row])
+            col.auto()
+            self.assertEqual(set(self.windows_run(admin)), expected, (tiktok, instagram))
 
 
 def RunResultFor(expected=0):

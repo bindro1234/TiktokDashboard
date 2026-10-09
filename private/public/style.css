@@ -272,3 +272,8 @@ button.badge:hover, button.badge[aria-expanded="true"] { background: var(--surfa
 #acc-body td.ig .badge { display: inline-block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
 #acc-body td.st { max-width: 250px; }
 #acc-body td.st .badge { white-space: normal; }
+
+/* Schema on Beheer: a choice per platform (labels and selects in a small grid), then what it costs. */
+.freq-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: center; margin: 4px 0 8px; }
+.freq-grid select { max-width: 100%; }
+#freq-preview p.status:empty { display: none; }
