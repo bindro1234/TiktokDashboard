@@ -968,24 +968,35 @@ function inputValues(ms) {
   return { date: lib.localDay(ms), time: lib.localTime(ms) };
 }
 
-// Accounts that are fetched on every finale run: TikTok and Instagram, one record each.
-const finaleAccounts = () => state.raw.budget.byPlatform.tiktok.accounts + state.raw.budget.byPlatform.instagram.accounts;
+// Accounts per platform; one record each per run. During a finale Instagram runs in every slot, TikTok at the start and at
+// the last run, and a platform that is set to "off" doesn't run at all.
+const finaleCounts = () => ({ tiktok: state.raw.budget.byPlatform.tiktok.accounts, instagram: state.raw.budget.byPlatform.instagram.accounts });
 
-function finaleEstimate(m, endMs) {
-  const cfg = m.cfg.finale;
-  const runs = lib.finaleRuns(Date.now(), endMs, cfg.everyMinutes);
-  return { runs, accounts: finaleAccounts(), records: runs * finaleAccounts() };
+// "32 Instagram-runs × 23 accounts + 2 TikTok-runs × 60 accounts" (a platform without runs or accounts is left out).
+function finaleParts(cost, counts) {
+  return [cost.instagramRuns && counts.instagram && `${cost.instagramRuns} Instagram-runs × ${counts.instagram} accounts`,
+    cost.tiktokRuns && counts.tiktok && `${cost.tiktokRuns} TikTok-run${cost.tiktokRuns === 1 ? "" : "s"} × ${counts.tiktok} accounts`].filter(Boolean).join(" + ") || "geen runs";
+}
+
+function finaleEstimate(m, endMs, started = false) {
+  const cost = lib.finaleCost(m.cfg, finaleCounts(), Date.now(), endMs, { started });
+  return { cost, text: finaleParts(cost, finaleCounts()), records: cost.total };
 }
 
 function renderFinaleCard(m) {
   const f = state.raw.finale;
   const phase = f ? (Date.now() >= f.end ? "ended" : "live") : "none";
-  const key = `${phase}|${f ? f.end : ""}|${finaleAccounts()}`;
+  const key = `${phase}|${f ? f.end : ""}|${JSON.stringify(finaleCounts())}|${JSON.stringify(m.cfg.frequency)}`;
   if (key === state.finaleCardKey) return tickFinale();
   state.finaleCardKey = key;
   const cfg = m.cfg.finale;
-  const perHour = (60 / cfg.everyMinutes) * finaleAccounts();
-  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${finaleAccounts()} actieve accounts, TikTok en Instagram), in plaats van de gewone runs die dan vervallen.`;
+  const counts = finaleCounts();
+  const igOn = lib.platformOn(m.cfg, "instagram"), ttOn = lib.platformOn(m.cfg, "tiktok");
+  const perHour = igOn ? (60 / cfg.everyMinutes) * counts.instagram : 0;
+  const offNames = [...(!ttOn ? ["TikTok"] : []), ...(!igOn ? ["Instagram"] : [])];
+  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> voor Instagram (${60 / cfg.everyMinutes} runs × ${counts.instagram} accounts)`
+    + `, plus voor TikTok <strong>${fmt(ttOn ? 2 * counts.tiktok : 0)} records</strong> in totaal (2 runs × ${counts.tiktok} accounts: bij de start en bij de laatste run)`
+    + `, in plaats van de gewone runs die dan vervallen.${offNames.length ? ` ${offNames.join(" en ")} staat uit (Schema hieronder) en doet niet mee.` : ""}`;
   // Dutch day names and 24-hour selects (the browser's own date/time inputs follow its language: "02:00 AM").
   const deadlineForm = (label, defMs, id) => {
     const v = inputValues(defMs);
@@ -1007,8 +1018,8 @@ function renderFinaleCard(m) {
   const formTime = (form) => `${form.querySelector("[name=hour]").value}:${form.querySelector("[name=minute]").value}`;
   const quarter = (ms) => Math.ceil(ms / (15 * 60e3)) * 15 * 60e3;
   let html = `<h2>Finale</h2>
-    <p>Voor de laatste les. Tijdens de finale worden de profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
-      in plaats van de gewone runs. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
+    <p>Voor de laatste les. Tijdens de finale worden de <strong>Instagram</strong>-profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
+      in plaats van de gewone runs; <strong>TikTok</strong> alleen bij de start en bij de laatste run. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
       Na de deadline tonen de sites en de presentatie de <strong>Eindstand</strong>: het podium en de stand, bevroren op de laatste meting
       vóór de deadline. De finale stopt vanzelf bij de deadline en duurt nooit langer dan ${cfg.maxHours} uur. De budgetlimiet blijft gelden.</p>
     <p class="meta">${cost}</p>`;
@@ -1034,9 +1045,9 @@ function renderFinaleCard(m) {
     if (!form) continue;
     const update = () => {
       const t = lib.amsMs(form.querySelector("[name=date]").value, formTime(form));
-      const est = finaleEstimate(m, t);
+      const est = finaleEstimate(m, t, id === "finale-change");
       $(`${id}-estimate`).textContent = Number.isFinite(t) && t > Date.now()
-        ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${est.accounts} accounts ≈ ${fmt(est.records)} records`
+        ? `Tot ${stampFmt.format(t)}: ${est.text} ≈ ${fmt(est.records)} records`
           + ` (budget: ${fmt(state.raw.budget.used)} van ${fmt(state.raw.budget.cap)} gebruikt).`
         : "Kies een moment in de toekomst.";
     };
@@ -1046,12 +1057,13 @@ function renderFinaleCard(m) {
       ev.preventDefault();
       const deadline = `${form.querySelector("[name=date]").value}T${formTime(form)}`;
       const start = id === "finale-start";
-      if (start && !confirm(`Finale starten tot ${dayLabel(deadline.slice(0, 10))} ${deadline.slice(11)}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers.`)) return;
+      if (start && !confirm(`Finale starten tot ${dayLabel(deadline.slice(0, 10))} ${deadline.slice(11)}? Vanaf nu elke ${cfg.everyMinutes} minuten nieuwe cijfers van Instagram; TikTok bij de start en bij de laatste run.`)) return;
       finaleAction(start ? "/api/finale/start" : "/api/finale/deadline", { deadline });
     });
   }
   $("finale-stop")?.addEventListener("click", () => {
-    if (confirm("Finale nu stoppen? De Eindstand wordt de stand van de laatste meting.")) finaleAction("/api/finale/stop", { mode: "stop" });
+    if (confirm("Finale nu stoppen? De Eindstand wordt de stand van de laatste meting. Let op: TikTok wordt alleen bij de start en bij de laatste run opgehaald, "
+      + "dus de TikTok-cijfers in de Eindstand zijn die van de start van de finale (of de laatste gewone run).")) finaleAction("/api/finale/stop", { mode: "stop" });
   });
   $("finale-cancel")?.addEventListener("click", () => {
     if (confirm("Finale annuleren? Er komt geen Eindstand; alles gaat weer gewoon verder.")) finaleAction("/api/finale/stop", { mode: "cancel" });

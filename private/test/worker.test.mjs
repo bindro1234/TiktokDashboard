@@ -338,10 +338,17 @@ test("finale: start checks deadline limits, writes private + public state and lo
 });
 
 test("finale: budget cap refuses a finale that doesn't fit", async () => {
-  sheets.run_log.push([new Date().toISOString(), "profiles", "big", false, 1, CONFIG.budget.monthlyCap - 5, 0, "ok", "sd_x", ""]);
-  const res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  // Only TikTok accounts here (2 of them): a finale costs 2 runs (start and last run) × 2 accounts = 4 records.
+  sheets.run_log.push([new Date().toISOString(), "profiles", "big", false, 1, CONFIG.budget.monthlyCap - 3, 0, "ok", "sd_x", ""]);
+  let res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
   assert.equal(res.status, 409);
-  assert.match((await res.json()).error, /budget/);
+  assert.match((await res.json()).error, /budget.*deze finale kost tot 4 \(2 runs × 2 TikTok-accounts\)/);
+  // With 4 left it fits exactly.
+  sheets.run_log.push([new Date().toISOString(), "profiles", "less", false, 1, -1, 0, "ok", "sd_y", ""]);
+  sheets._runs = [{ status: "completed" }];
+  res = await req("/api/finale/start", { body: { deadline: inHours(2) } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.match((await res.json()).message, /Instagram elke 15 minuten nieuwe cijfers; TikTok bij de start en bij de laatste run\./);
 });
 
 test("finale: change deadline, stop (Eindstand) and cancel are logged", async () => {
@@ -361,17 +368,31 @@ test("finale: change deadline, stop (Eindstand) and cancel are logged", async ()
   assert.ok(sheets.activity_log.some((r) => r[2] === "finale geannuleerd"));
 });
 
-test("timer: during a finale it starts a run every 15 minutes, also outside the 2-hourly windows", async () => {
+test("timer: during a finale it starts Instagram every 15 minutes (TikTok only at the start and the last run), also outside the 2-hourly windows", async () => {
   const start = Date.parse("2026-10-26T13:00:00Z");
   sheets.finale = [["started_at", "started_by", "deadline", "status", "ended_at", "ended_by"],
     ["2026-10-26T13:00:00Z", "x@y.nl", "2026-10-26T15:00:00Z", "active", "", ""]];
   sheets._runs = [{ status: "completed" }];
-  const r = await runSchedule(ENV, strictThisFetch, start + 65 * 60e3); // 15:05 Amsterdam: odd hour
+  // The first slot (14:05 Amsterdam): both platforms.
+  let r = await runSchedule(ENV, strictThisFetch, start + 5 * 60e3);
   assert.equal(r.action, "collector started");
-  assert.deepEqual(r.due, ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]); // both platforms
-  sheets.run_log.push(["2026-10-26T14:06:00Z", "profiles", "2026-10-26/finale-1500", false, 3, 3, 0, "ok", "sd", ""]);
+  assert.deepEqual(r.due, ["2026-10-26/finale-1400", "2026-10-26/ig-finale-1400"]);
+  // A middle slot (15:05 Amsterdam, odd hour): Instagram only.
+  r = await runSchedule(ENV, strictThisFetch, start + 65 * 60e3);
+  assert.equal(r.action, "collector started");
+  assert.deepEqual(r.due, ["2026-10-26/ig-finale-1500"]);
   sheets.run_log.push(["2026-10-26T14:07:00Z", "ig_profiles", "2026-10-26/ig-finale-1500", false, 3, 3, 0, "ok", "sd", ""]);
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 70 * 60e3)).action, "windows already done");
+  // The last slot (15:45 Amsterdam, before the 16:00 deadline): both platforms again.
+  r = await runSchedule(ENV, strictThisFetch, start + 110 * 60e3);
+  assert.deepEqual(r.due, ["2026-10-26/finale-1545", "2026-10-26/ig-finale-1545"]);
+  // TikTok set to off: no TikTok run at the start either; Instagram off: no Instagram.
+  sheets.settings = [["key", "value", "updated_at", "updated_by"], ["frequency_tiktok", "off", "", "x"]];
+  assert.deepEqual((await runSchedule(ENV, strictThisFetch, start + 5 * 60e3)).due, ["2026-10-26/ig-finale-1400"]);
+  sheets.settings = [["key", "value", "updated_at", "updated_by"], ["frequency_instagram", "off", "", "x"]];
+  assert.deepEqual((await runSchedule(ENV, strictThisFetch, start + 5 * 60e3)).due, ["2026-10-26/finale-1400"]);
+  assert.equal((await runSchedule(ENV, strictThisFetch, start + 65 * 60e3)).action, "no window open");   // a middle slot has no TikTok run
+  sheets.settings = undefined;
   // After the deadline (17:05 Amsterdam, an odd hour): back to the normal windows, none open now.
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 185 * 60e3)).action, "no window open");
 });

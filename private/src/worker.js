@@ -512,10 +512,10 @@ class Api {
     return cost;
   }
 
-  // "96 Instagram-runs × 23 accounts + 2 TikTok-runs × 60 accounts" for the messages and the log.
+  // "32 runs × 23 Instagram-accounts + 2 runs × 60 TikTok-accounts" for the messages and the log (a platform without accounts is left out).
   finaleParts(cost, counts) {
-    return [cost.instagramRuns && `${cost.instagramRuns} runs × ${counts.instagram} Instagram-accounts`,
-      cost.tiktokRuns && `${cost.tiktokRuns} runs × ${counts.tiktok} TikTok-accounts`].filter(Boolean).join(" + ");
+    return [cost.instagramRuns && counts.instagram && `${cost.instagramRuns} runs × ${counts.instagram} Instagram-accounts`,
+      cost.tiktokRuns && counts.tiktok && `${cost.tiktokRuns} runs × ${counts.tiktok} TikTok-accounts`].filter(Boolean).join(" + ");
   }
 
   async writePublicFinale(row) {
@@ -546,7 +546,8 @@ class Api {
     } catch (err) {
       console.log(`finale: first run not started now (${err.message}); the timer starts it`);
     }
-    return { ok: true, message: `Finale gestart tot ${lib.localTime(deadline)}. Elke ${CONFIG.finale.everyMinutes} minuten nieuwe cijfers.` };
+    return { ok: true, message: `Finale gestart tot ${lib.localTime(deadline)}. ${cfg && lib.platformOn(cfg, "instagram") ? `Instagram elke ${CONFIG.finale.everyMinutes} minuten nieuwe cijfers` : "Instagram staat uit"}`
+      + `${lib.platformOn(cfg, "tiktok") ? "; TikTok bij de start en bij de laatste run" : "; TikTok staat uit"}.` };
   }
 
   async finaleDeadline(body) {

@@ -653,11 +653,12 @@ class Collector:
         finale = self.finale()
         ran = False
         if finale and finale["phase"] == "live":
-            # Finale: a run every few minutes instead of the normal windows (double-checked here,
-            # whoever started this workflow). Budget cap and run-once-per-window still apply.
+            # Finale: Instagram every few minutes instead of the normal windows, TikTok only at the start and at the
+            # last run (double-checked here, whoever started this workflow). Budget cap and run-once-per-window still apply.
             key = model.finale_window_key(self.now_local, self.cfg.finale.every_minutes)
-            # A platform set to off has no finale runs either.
-            if self.cfg.platform_on("tiktok"):
+            # Instagram runs in every slot, TikTok only at the start and at the last run. A platform set to off has no
+            # finale runs at all.
+            if self.cfg.platform_on("tiktok") and model.finale_tiktok_slot(finale, self.now_utc, self.cfg.finale.every_minutes):
                 ran |= self._maybe(key, self.run_scheduled_profiles)
             if self.cfg.platform_on("instagram"):
                 ran |= self._maybe(key.replace("/finale-", "/ig-finale-"), self.run_scheduled_ig_profiles)

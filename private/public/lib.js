@@ -383,12 +383,15 @@ export function frequencyPreview(cfg, base, counts, nowMs, choice, current = nul
 }
 
 /**
- * Records a finale costs between startMs and endMs: a run every cfg.finale.everyMinutes on each platform that is
- * not set to "off", one record per account. { tiktokRuns, instagramRuns, tiktok, instagram, total }.
+ * Records a finale costs between startMs and endMs, one record per account per run: Instagram in every slot of
+ * cfg.finale.everyMinutes, TikTok only at the start and at the last run (one run when the finale fits in one slot),
+ * and nothing for a platform that is set to "off". started: the finale is already running, so its start run is behind
+ * us (a deadline change). { tiktokRuns, instagramRuns, tiktok, instagram, total }.
  */
-export function finaleCost(cfg, counts, startMs, endMs) {
-  const runs = finaleRuns(startMs, endMs, cfg.finale.everyMinutes);
-  const tiktokRuns = platformOn(cfg, "tiktok") ? runs : 0, instagramRuns = platformOn(cfg, "instagram") ? runs : 0;
+export function finaleCost(cfg, counts, startMs, endMs, { started = false } = {}) {
+  const { count } = finaleSlots(startMs, endMs, cfg.finale.everyMinutes);
+  const instagramRuns = platformOn(cfg, "instagram") ? count : 0;
+  const tiktokRuns = platformOn(cfg, "tiktok") ? Math.min(count, started ? 1 : 2) : 0;
   const tiktok = tiktokRuns * (counts.tiktok ?? 0), instagram = instagramRuns * (counts.instagram ?? 0);
   return { tiktokRuns, instagramRuns, tiktok, instagram, total: tiktok + instagram };
 }
@@ -455,6 +458,26 @@ export function finaleRuns(startMs, endMs, everyMinutes) {
   return Math.max(0, Math.ceil((endMs - startMs) / (everyMinutes * 60e3)));
 }
 
+/** The every-minutes slot of the clock a moment falls in (Amsterdam is a whole number of hours from UTC: the slots finaleWindowKey names). */
+const slotOf = (ms, everyMinutes) => Math.floor(ms / (everyMinutes * 60e3));
+
+/** The slots of a finale: the one it starts in up to the one before its end. { first, last, count } (slot numbers). */
+export function finaleSlots(startMs, endMs, everyMinutes) {
+  const first = slotOf(startMs, everyMinutes);
+  const last = Math.max(first, slotOf(endMs - 1, everyMinutes));
+  return { first, last, count: last - first + 1 };
+}
+
+/**
+ * Instagram is pulled in every slot of a finale, TikTok only at the start and at the last run: true when nowMs is in
+ * the slot the finale started in or in its last slot (same rule as finale_tiktok_slot in collector/model.py).
+ */
+export function finaleTiktokSlot(finale, nowMs, everyMinutes) {
+  const { first, last } = finaleSlots(finale.start, finale.end, everyMinutes);
+  const slot = slotOf(nowMs, everyMinutes);
+  return slot === first || slot === last;
+}
+
 /** Window keys ("YYYY-MM-DD/name") that are open right now, Amsterdam time. */
 export function openWindows(cfg, nowMs, finale = null) {
   const day = localDay(nowMs);
@@ -468,7 +491,9 @@ export function openWindows(cfg, nowMs, finale = null) {
   };
   if (finale && finale.phase === "live") {
     const key = finaleWindowKey(nowMs, cfg.finale.everyMinutes);
-    return [...(platformOn(cfg, "tiktok") ? [key] : []), ...(platformOn(cfg, "instagram") ? [key.replace("/finale-", "/ig-finale-")] : []), ...refreshOpen()];
+    // Instagram in every slot, TikTok only in the first and the last one; a platform that is off has no finale runs.
+    const tiktok = platformOn(cfg, "tiktok") && finaleTiktokSlot(finale, nowMs, cfg.finale.everyMinutes);
+    return [...(tiktok ? [key] : []), ...(platformOn(cfg, "instagram") ? [key.replace("/finale-", "/ig-finale-")] : []), ...refreshOpen()];
   }
   if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
   return [...PLATFORMS.flatMap((p) => platformWindows(cfg, p)).filter(inside).map((w) => `${day}/${w.name}`), ...refreshOpen()];

@@ -946,13 +946,18 @@ await page.close();
   if (await fp.isVisible("#reminder")) fail("reminder banner visible outside the reminder period");
   const card = await fp.textContent("#bh-finale");
   if (!/records per uur/.test(card) || !/elke 15 minuten/.test(card) || !/Eindstand/.test(card)) fail("finale card: explanation or cost per hour missing");
+  // Instagram every 15 minutes, TikTok only at the start and the last run: said in the text and in the cost.
+  const flat = card.replace(/\s+/g, " ");
+  if (!/Instagram-profielen elke 15 minuten/.test(flat) || !/TikTok alleen bij de start en bij de laatste run/.test(flat)
+      || !/records per uur voor Instagram \(4 runs × \d+ accounts\), plus voor TikTok [\d.]+ records in totaal \(2 runs × \d+ accounts: bij de start en bij de laatste run\)/.test(flat)) fail(`finale card: cost text wrong (${flat.slice(0, 600)})`);
   // Dutch 24-hour fields instead of the browser's own date/time inputs ("02:00 AM").
   if (await fp.$('#bh-finale input[type="date"], #bh-finale input[type="time"]')) fail("finale card: native date/time inputs");
   const hours = await fp.$$eval('#finale-start [name="hour"] option', (o) => o.map((x) => x.textContent));
   const dayText = await fp.$eval('#finale-start [name="date"] option', (o) => o.textContent);
   if (hours.length !== 24 || hours[23] !== "23" || !/^(ma|di|wo|do|vr|za|zo) \d+ /.test(dayText)) fail(`finale card: not Dutch 24-hour fields (${dayText}, ${hours.length} hours)`);
   const est = await fp.textContent("#finale-start-estimate");
-  if (!/runs × \d+ accounts/.test(est)) fail(`finale card: no estimate (${est})`);
+  const m = est.match(/(\d+) Instagram-runs × (\d+) accounts \+ 2 TikTok-runs × (\d+) accounts ≈ ([\d.]+) records/);
+  if (!m || Number(m[1]) * Number(m[2]) + 2 * Number(m[3]) !== Number(m[4].replace(/\./g, ""))) fail(`finale card: estimate wrong (${est})`);
   fp.once("dialog", (d) => d.accept());
   await fp.click('#finale-start button[type="submit"]');
   await fp.waitForSelector("#finale-stop", { timeout: 10000 });

@@ -440,21 +440,50 @@ class FinaleTests(unittest.TestCase):
         self.assertEqual(model.finale_window_key(local(2026, 10, 26, 16, 29), 15), "2026-10-26/finale-1615")
         self.assertEqual(model.finale_window_key(local(2026, 10, 26, 16, 30), 15), "2026-10-26/finale-1630")
 
+    def test_tiktok_is_only_pulled_at_the_start_and_the_last_run(self):
+        """Instagram runs in every 15-minute slot of a finale; TikTok only in the slot it starts in and in the last slot."""
+        live = lambda row, hhmm: model.finale_tiktok_slot(model.finale_state([row], dt.datetime.fromisoformat(f"2026-10-26T{hhmm}:00+00:00"), 8),
+                                                          dt.datetime.fromisoformat(f"2026-10-26T{hhmm}:00+00:00"), 15)
+        # 13:00-15:00 UTC: first slot 13:00-13:14, last slot 14:45-14:59.
+        self.assertEqual([live(self.ROW, t) for t in ("13:00", "13:14")], [True, True])
+        self.assertEqual([live(self.ROW, t) for t in ("13:15", "13:45", "14:00", "14:30", "14:44")], [False] * 5)
+        self.assertEqual([live(self.ROW, t) for t in ("14:45", "14:59")], [True, True])
+        # Started in the middle of a slot (13:07): the start run is that slot's run.
+        row = {**self.ROW, "started_at": "2026-10-26T13:07:00Z"}
+        self.assertEqual([live(row, t) for t in ("13:07", "13:14", "13:15")], [True, True, False])
+        # A deadline on a slot boundary: the last slot is the one before it (14:45 is no longer part of the finale).
+        row = {**self.ROW, "deadline": "2026-10-26T14:45:00Z"}
+        self.assertEqual([live(row, t) for t in ("14:15", "14:30", "14:44")], [False, True, True])
+        # Shorter than one slot: the one slot has TikTok (one run, not two).
+        row = {**self.ROW, "deadline": "2026-10-26T13:10:00Z"}
+        self.assertEqual([live(row, "13:05"), live(row, "13:12"), live(row, "13:15")], [True, True, False])   # the slot decides; auto() checks "live" itself
+        # Deadline moved later (Beheer): the last run moves with it.
+        later = {**self.ROW, "deadline": "2026-10-26T15:30:00Z"}
+        self.assertEqual([live(later, "14:50"), live(later, "15:20")], [False, True])
+
     def test_auto_runs_finale_windows_without_the_60_minute_skip(self):
-        """During a finale, auto() runs the 15-minute window (never skipped for a recent run) and not the
-        2-hourly one; a second firing in the same window does nothing."""
-        now = dt.datetime(2026, 10, 26, 14, 5, tzinfo=UTC)  # 15:05 Amsterdam (winter time)
-        run_log = [{"timestamp": "2026-10-26T13:50:00Z", "run_type": "profiles", "window": "2026-10-26/finale-1445",
+        """During a finale, auto() runs the 15-minute window for Instagram (never skipped for a recent run) and not
+        the 2-hourly ones; TikTok runs only in the first and the last slot. A second firing in the same slot does nothing."""
+        mid = dt.datetime(2026, 10, 26, 14, 5, tzinfo=UTC)  # 15:05 Amsterdam (winter time): neither the first nor the last slot
+        run_log = [{"timestamp": "2026-10-26T13:50:00Z", "run_type": "ig_profiles", "window": "2026-10-26/ig-finale-1445",
                     "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}]
         admin = FakeSheet({"run_log": run_log, "accounts": [], "finale": [self.ROW]})
-        Collector(CFG, admin, FakeSheet({}), bd=None, now=now).auto()
-        # Both platforms run in the finale (here without accounts, so both are skipped and done).
+        Collector(CFG, admin, FakeSheet({}), bd=None, now=mid).auto()
         rows = {r["window"]: r for r in admin.tabs["run_log"][1:]}
-        self.assertEqual(set(rows), {"2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"})
-        self.assertNotIn("SKIPPED", rows["2026-10-26/finale-1500"]["notes"])  # 15 min after the last run, but finale runs never skip
-        self.assertEqual({r["run_type"] for r in rows.values()}, {"profiles", "ig_profiles"})
-        Collector(CFG, admin, FakeSheet({}), bd=None, now=now + dt.timedelta(minutes=5)).auto()
-        self.assertEqual(len(admin.tabs["run_log"]), 3)
+        self.assertEqual(set(rows), {"2026-10-26/ig-finale-1500"})        # Instagram only: no TikTok in a middle slot
+        self.assertNotIn("SKIPPED", rows["2026-10-26/ig-finale-1500"]["notes"])  # 15 min after the last run, but finale runs never skip
+        self.assertEqual({r["run_type"] for r in rows.values()}, {"ig_profiles"})
+        Collector(CFG, admin, FakeSheet({}), bd=None, now=mid + dt.timedelta(minutes=5)).auto()
+        self.assertEqual(len(admin.tabs["run_log"]), 2)
+        # First slot (starts 14:00 local, 13:00Z): both platforms. Last slot (15:45 local): both. After the deadline the
+        # normal windows are back (16:05 local: Instagram's 16u window, TikTok has none at 16:00).
+        for when, expected in (("2026-10-26T13:05:00+00:00", {"2026-10-26/finale-1400", "2026-10-26/ig-finale-1400"}),
+                               ("2026-10-26T13:35:00+00:00", {"2026-10-26/ig-finale-1430"}),
+                               ("2026-10-26T14:50:00+00:00", {"2026-10-26/finale-1545", "2026-10-26/ig-finale-1545"}),
+                               ("2026-10-26T15:05:00+00:00", {"2026-10-26/ig-16u"})):
+            admin = FakeSheet({"run_log": [], "accounts": [], "finale": [self.ROW]})
+            Collector(CFG, admin, FakeSheet({}), bd=None, now=dt.datetime.fromisoformat(when)).auto()
+            self.assertEqual({r["window"] for r in admin.tabs["run_log"]}, expected, when)
 
 
 class OffDayTests(unittest.TestCase):
@@ -1466,10 +1495,10 @@ class FrequencySettingTests(unittest.TestCase):
     def test_finale_has_no_runs_for_a_platform_that_is_off(self):
         row = {"started_at": "2026-10-26T13:00:00Z", "started_by": "x@y.nl", "deadline": "2026-10-26T15:00:00Z",
                "status": "active", "ended_at": "", "ended_by": ""}
-        now = dt.datetime(2026, 10, 26, 14, 5, tzinfo=UTC)
-        for tiktok, instagram, expected in ((None, None, {"2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"}),
-                                            ("off", None, {"2026-10-26/ig-finale-1500"}),
-                                            (None, "off", {"2026-10-26/finale-1500"}), ("off", "off", set())):
+        now = dt.datetime(2026, 10, 26, 13, 5, tzinfo=UTC)   # the first slot, where both platforms run
+        for tiktok, instagram, expected in ((None, None, {"2026-10-26/finale-1400", "2026-10-26/ig-finale-1400"}),
+                                            ("off", None, {"2026-10-26/ig-finale-1400"}),
+                                            (None, "off", {"2026-10-26/finale-1400"}), ("off", "off", set())):
             col, admin = self.collector(self.setting(tiktok, instagram), now=now, finale=[row])
             col.auto()
             self.assertEqual(set(self.windows_run(admin)), expected, (tiktok, instagram))

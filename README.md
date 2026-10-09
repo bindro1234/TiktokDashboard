@@ -7,7 +7,7 @@ Bright Data (TikTok- en Instagram-scraper)  →  GitHub Actions (collector/)  �
                                                                               ↘  beheerpagina (private/, Cloudflare, met namen, achter inlog)
 ```
 
-- **TikTok-profielen** worden **elke 12 uur** opgehaald (08:00 en 20:00 Nederlandse tijd), **Instagram-profielen elke 4 uur** (00:00, 04:00, …, 20:00). Eén profiel kost 1 record; het TikTok-profiel bevat de statistieken van de ~16 nieuwste video's, het Instagram-profiel de 12 nieuwste posts (zie *Instagram ophalen*). Hoe vaak per platform kies je op **Beheer → Schema** (vaste stappen, zie *Schema*); `frequency` in `config.yaml` is de startwaarde. Tijdens een **finale** (zie *Beheerpagina*) elke 15 minuten.
+- **TikTok-profielen** worden **elke 12 uur** opgehaald (08:00 en 20:00 Nederlandse tijd), **Instagram-profielen elke 4 uur** (00:00, 04:00, …, 20:00). Eén profiel kost 1 record; het TikTok-profiel bevat de statistieken van de ~16 nieuwste video's, het Instagram-profiel de 12 nieuwste posts (zie *Instagram ophalen*). Hoe vaak per platform kies je op **Beheer → Schema** (vaste stappen, zie *Schema*); `frequency` in `config.yaml` is de startwaarde. Tijdens een **finale** (zie *Beheerpagina*): Instagram elke 15 minuten, TikTok alleen bij de start en bij de laatste run.
 - **Weekrefresh** op vrijdag vanaf 08:30: haalt alleen campagneposts op die ouder zijn dan dat venster van ~16 video's, zodat late weergaven op oudere video's ook meetellen. Accounts waarbij het venster al teruggaat tot vóór de campagnestart worden overgeslagen (0 records).
 - Alleen video's die zijn geplaatst **vanaf 28 september** tellen mee. Foto-/carrouselposts tellen mee, reposts niet.
 - Weergaven van een video kunnen nooit omlaag: valt een video uit het venster, dan blijven de laatst bekende cijfers staan.
@@ -106,10 +106,10 @@ Een profielrecord per account (**1 record per account per run**; ook een privé 
   | Nu verversen (≈ 5×, beide platforms) | ≈ 420 | ≈ 570 |
   | Controleer nu (Vandaag, ≈ 15× een deel van de klas, TikTok en Instagram) | ≈ 600 | ≈ 600 |
   | **totaal zonder finale** | **≈ 12.600** | **≈ 16.500** |
-  | finale van 8 uur, het maximum (32 runs × alle accounts van beide platforms) | +2.700 | +3.600 |
+  | finale van 8 uur, het maximum (32 Instagram-runs × alle Instagram-accounts + 2 TikTok-runs × 61) | +860 | +1.790 |
 
-  Kosten: ca. $1,50 per 1.000 records boven de gratis 5.000, dus (totaal − 5.000) × $1,50 / 1.000: bij 12.600 ≈ $11, bij 16.500 met finale ≈ $23.
-- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand (beide platforms) plus max. 40 posts per account. Zelfs met de hele klas op Instagram en een finale van 8 uur blijft het verwachte verbruik (≈ 20.100) onder de limiet; de rest is ruimte voor *Controleer nu*-checks en extra verversingen. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
+  Kosten: ca. $1,50 per 1.000 records boven de gratis 5.000, dus (totaal − 5.000) × $1,50 / 1.000: bij 12.600 ≈ $11, bij 16.500 met finale (18.300) ≈ $20.
+- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand (beide platforms) plus max. 40 posts per account. Zelfs met de hele klas op Instagram en een finale van 8 uur blijft het verwachte verbruik (≈ 18.300) onder de limiet; de rest is ruimte voor *Controleer nu*-checks en extra verversingen. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
 
 ## Schema
 
@@ -121,7 +121,7 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 | Profielen Instagram | de gekozen frequentie (startwaarde `frequency.instagram`: `4h`): 00:00–00:59, 04:00–04:59, …, 20:00–20:59 (6 per dag) |
 | Weekrefresh | vrijdag 08:30 – 10:00 (alleen als TikTok niet op *Uit* staat) |
 | Eenmalige controle | 5 okt, direct na de run van 22:00 |
-| Finale | alleen als je hem start op de beheerpagina: elke 15 minuten tot de deadline, voor elk platform dat niet op *Uit* staat |
+| Finale | alleen als je hem start op de beheerpagina: **Instagram elke 15 minuten** tot de deadline, **TikTok alleen in het tijdvak van de start en in het laatste tijdvak** voor de deadline; een platform dat op *Uit* staat doet niet mee |
 | Controle *Vandaag* | alleen als je op de beheerpagina op **Controleer nu** klikt: alleen wie vandaag nog niet gepost heeft, op elk platform dat niet op *Uit* staat (eerst TikTok, dan Instagram) |
 
 **Frequentie per platform (Beheer → Budget en schema).** Elk platform heeft een vaste stap: **Uit**, **1× per dag** (16:00), **elke 12 uur** (08:00, 20:00), **elke 6 uur** (02:00, 08:00, 14:00, 20:00), **elke 4 uur** (00:00, 04:00, …, 20:00) of **elke 2 uur** (alle 12 vensters). Geen schuif: elke stap is een deel van de 12 uurvensters van `schedule.profile_runs` in `config.yaml`, dus de runs sluiten altijd aan op de uurlijkse crons (de tests controleren de dekking voor elke stap, ook de dag van de klokwissel). Een TikTok-venster heet `2026-10-12/08u`, een Instagram-venster `2026-10-12/ig-08u`.
@@ -311,10 +311,10 @@ Het tabblad **Opvallend** (alleen op de beheerpagina) laat cijfers zien die veel
 
 Op **Beheer → Finale**:
 
-1. Kies de **deadline** (dag + tijd, Nederlandse tijd, 24-uursklok) en klik **▶ Start finale**. Je ziet vooraf wat het kost: 4 runs per uur × het aantal actieve accounts van TikTok én Instagram samen (bij 61 + 23 accounts ≈ 336 records per uur), en of het binnen de maandlimiet past; zo niet, dan start hij niet.
-2. Tijdens de finale: profielen van **TikTok en Instagram elke 15 minuten** (de gewone runs vervallen dan; voor TikTok verandert dat in een latere stap naar alleen aan het begin en bij de laatste run), op de presentatie (openbaar en privé) en bovenaan beide sites een **aftelklok** en **LIVE**-labels. De eerste run start meteen.
+1. Kies de **deadline** (dag + tijd, Nederlandse tijd, 24-uursklok) en klik **▶ Start finale**. Je ziet vooraf wat het kost: voor Instagram 4 runs per uur × het aantal accounts (bij 23 accounts ≈ 92 records per uur) plus voor TikTok 2 runs (start en laatste run) × het aantal accounts (bij 61 accounts 122 records in totaal), en bij de deadline de som voor precies die tijd (bijv. 2 uur: 8 Instagram-runs × 23 + 2 TikTok-runs × 61 ≈ 306 records). Past het niet binnen de maandlimiet, dan start hij niet.
+2. Tijdens de finale: de profielen van **Instagram elke 15 minuten** en die van **TikTok alleen bij de start en bij de laatste run** (de gewone runs vervallen dan). Een tijdvak is een kwartier op de klok (`finale-1445`); de start is het tijdvak waarin je op *Start* klikt (de eerste run begint meteen), de laatste run het tijdvak waarin de deadline valt (een deadline precies op een kwartier hoort bij het tijdvak ervoor). Een platform dat op *Uit* staat (zie *Schema*) doet niet mee, en zonder runs kan de finale niet starten. Op de presentatie (openbaar en privé) en bovenaan beide sites een **aftelklok** en **LIVE**-labels. De eerste run start meteen.
 3. Bij de deadline stopt hij vanzelf; hij duurt **nooit langer dan 8 uur** (`finale.max_hours`). Daarna tonen de sites en de presentatie de **Eindstand**, bevroren op de laatste meting vóór de deadline.
-4. **Deadline wijzigen** kan zolang hij loopt (binnen die 8 uur). **Stop finale nu** beëindigt hem meteen (Eindstand vanaf nu). **Annuleer finale** stopt zonder Eindstand; ook achteraf, als de Eindstand weg moet.
+4. **Deadline wijzigen** kan zolang hij loopt (binnen die 8 uur); de laatste TikTok-run schuift dan mee. **Stop finale nu** beëindigt hem meteen (Eindstand vanaf nu): omdat er dan geen laatste TikTok-run meer komt, zijn de TikTok-cijfers van die Eindstand die van de start van de finale (of de laatste gewone run). Laat de finale dus bij voorkeur zijn deadline halen; de pagina waarschuwt hiervoor bij *Stop*. **Annuleer finale** stopt zonder Eindstand; ook achteraf, als de Eindstand weg moet.
 
 Alles staat in de privétab `finale` en in het activiteitenlog (wie en wanneer). De openbare site leest een kopie zonder namen (openbare tab `finale`). De budgetlimiet, het één-run-per-tijdvak en alle andere regels blijven gelden; de collector controleert bij elke run zelf of er echt een finale loopt.
 

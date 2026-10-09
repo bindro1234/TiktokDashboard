@@ -425,6 +425,21 @@ def finale_window_key(now_local: dt.datetime, every_minutes: int) -> str:
     return f"{now_local:%Y-%m-%d}/finale-{now_local.hour:02d}{minute:02d}"
 
 
+def finale_slot(moment: dt.datetime, every_minutes: int) -> int:
+    """The every_minutes slot of the clock a moment falls in. Amsterdam is a whole number of hours from UTC, so
+    these are the slots finale_window_key names (private/public/lib.js has the same arithmetic)."""
+    return int(moment.timestamp() // (every_minutes * 60))
+
+
+def finale_tiktok_slot(finale: dict, now: dt.datetime, every_minutes: int) -> bool:
+    """TikTok is only pulled at the start and at the last run of a finale (Instagram in every slot): True when
+    `now` is in the slot the finale started in or in the last slot before its end. A finale shorter than one slot
+    has just that one."""
+    first = finale_slot(finale["start"], every_minutes)
+    last = max(first, finale_slot(finale["end"] - dt.timedelta(milliseconds=1), every_minutes))
+    return finale_slot(now, every_minutes) in (first, last)
+
+
 # ---------- run_log / budget ----------
 
 def month_usage(run_log: list[dict], now_utc: dt.datetime) -> int:

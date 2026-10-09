@@ -366,10 +366,11 @@ test("windows: a platform that is off has no windows, no weekly refresh and no f
   assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), ten), ["2026-10-02/ig-08u"]);
   assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { instagram: "off" }), ten), ["2026-10-02/08u", "2026-10-02/weekrefresh"]);
   assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), ten), []);
-  const at = Date.parse("2026-10-26T14:05:00Z");
+  const at = Date.parse("2026-10-26T13:05:00Z");   // the first slot of the finale, where both platforms run
   const live = lib.finaleState([FIN], at, 8);
-  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), at, live), ["2026-10-26/ig-finale-1500"]);
-  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { instagram: "off" }), at, live), ["2026-10-26/finale-1500"]);
+  assert.deepEqual(lib.openWindows(CFG, at, live), ["2026-10-26/finale-1400", "2026-10-26/ig-finale-1400"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off" }), at, live), ["2026-10-26/ig-finale-1400"]);
+  assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { instagram: "off" }), at, live), ["2026-10-26/finale-1400"]);
   assert.deepEqual(lib.openWindows(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), at, live), []);
   // A finale on a Friday morning has the weekly refresh too, but only with TikTok on.
   const fri = lib.finaleState([{ ...FIN, started_at: "2026-10-30T06:00:00Z", deadline: "2026-10-30T09:00:00Z" }], Date.parse("2026-10-30T07:40:00Z"), 8);
@@ -416,17 +417,55 @@ test("finaleState: live, ended (Eindstand), stopped early, cancelled, hard maxim
   assert.equal(lib.finaleState([], Date.now(), 8), null);
 });
 
-test("finale windows replace the normal ones while live, for both platforms; keys match the collector", () => {
-  const live = lib.finaleState([FIN], Date.parse("2026-10-26T14:05:00Z"), 8);
-  const at = Date.parse("2026-10-26T14:05:00Z"); // 15:05 Amsterdam (winter time)
+test("finale windows replace the normal ones while live: Instagram every slot, TikTok only at the start and the last run; keys match the collector", () => {
+  const at = (hhmm) => Date.parse(`2026-10-26T${hhmm}:00Z`);
+  const live = lib.finaleState([FIN], at("14:05"), 8);   // 13:00-15:00 UTC = 14:00-16:00 Amsterdam (winter time)
   assert.equal(lib.finaleWindowKey(Date.parse("2026-10-26T15:29:00Z"), 15), "2026-10-26/finale-1615");
-  assert.deepEqual(lib.openWindows(CFG, at, live), ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1500", "ok")], at, live), ["2026-10-26/ig-finale-1500"]);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1500", "ok"), log("2026-10-26/ig-finale-1500", "ok")], at, live), []);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1445", "ok")], at, live), ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]);
+  // Middle slot (15:05 local): Instagram only.
+  assert.deepEqual(lib.openWindows(CFG, at("14:05"), live), ["2026-10-26/ig-finale-1500"]);
+  // First slot (14:00 local) and last slot (15:45 local): both platforms.
+  assert.deepEqual(lib.openWindows(CFG, at("13:05"), live), ["2026-10-26/finale-1400", "2026-10-26/ig-finale-1400"]);
+  assert.deepEqual(lib.openWindows(CFG, at("14:50"), live), ["2026-10-26/finale-1545", "2026-10-26/ig-finale-1545"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/ig-finale-1500", "ok")], at("14:05"), live), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1400", "ok")], at("13:05"), live), ["2026-10-26/ig-finale-1400"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1400", "ok"), log("2026-10-26/ig-finale-1400", "ok")], at("13:05"), live), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/ig-finale-1445", "ok")], at("14:05"), live), ["2026-10-26/ig-finale-1500"]);
   assert.equal(lib.amsMs("2026-10-26", "16:00"), Date.parse("2026-10-26T15:00:00Z"));
   assert.equal(lib.amsMs("2026-10-01", "16:00"), Date.parse("2026-10-01T14:00:00Z"));
   assert.equal(lib.finaleRuns(0, 2 * 3600e3, 15), 8);
+});
+
+test("finaleSlots / finaleTiktokSlot: same slots as finale_tiktok_slot in the collector", () => {
+  const at = (hhmm) => Date.parse(`2026-10-26T${hhmm}:00Z`);
+  const f = (start, end) => ({ start: at(start), end: at(end) });
+  const tiktok = (finale, times) => times.map((t) => lib.finaleTiktokSlot(finale, at(t), 15));
+  // 13:00-15:00: first slot 13:00-13:14, last slot 14:45-14:59.
+  assert.deepEqual(tiktok(f("13:00", "15:00"), ["13:00", "13:14", "13:15", "13:45", "14:30", "14:44", "14:45", "14:59"]), [true, true, false, false, false, false, true, true]);
+  assert.equal(lib.finaleSlots(at("13:00"), at("15:00"), 15).count, 8);
+  // Started mid-slot: that slot is the start run. A deadline on a slot boundary ends with the slot before it.
+  assert.deepEqual(tiktok(f("13:07", "15:00"), ["13:07", "13:14", "13:15"]), [true, true, false]);
+  assert.deepEqual(tiktok(f("13:00", "14:45"), ["14:15", "14:30", "14:44"]), [false, true, true]);
+  assert.equal(lib.finaleSlots(at("13:00"), at("14:45"), 15).count, 7);
+  // Shorter than a slot: one slot, one run for each platform.
+  assert.deepEqual(lib.finaleSlots(at("13:00"), at("13:10"), 15), { first: lib.finaleSlots(at("13:00"), at("13:10"), 15).first, last: lib.finaleSlots(at("13:00"), at("13:10"), 15).first, count: 1 });
+  // A deadline moved later moves the last run with it.
+  assert.deepEqual(tiktok(f("13:00", "15:30"), ["14:50", "15:20"]), [false, true]);
+});
+
+test("finaleCost: Instagram every slot, TikTok twice (start and last run), nothing for a platform that is off", () => {
+  const at = (hhmm) => Date.parse(`2026-10-26T${hhmm}:00Z`);
+  const counts = { tiktok: 60, instagram: 23 };
+  // Two hours = 8 slots.
+  assert.deepEqual(lib.finaleCost(CFG, counts, at("13:00"), at("15:00")), { tiktokRuns: 2, instagramRuns: 8, tiktok: 120, instagram: 184, total: 304 });
+  // The longest finale (8 hours = 32 slots): 32 × 23 + 2 × 60.
+  assert.deepEqual(lib.finaleCost(CFG, counts, 0, CFG.finale.maxHours * 3600e3), { tiktokRuns: 2, instagramRuns: 32, tiktok: 120, instagram: 736, total: 856 });
+  // Within one slot there is one run, not two. A running finale has done its start run: only the last one is left.
+  assert.deepEqual(lib.finaleCost(CFG, counts, at("13:00"), at("13:10")), { tiktokRuns: 1, instagramRuns: 1, tiktok: 60, instagram: 23, total: 83 });
+  assert.deepEqual(lib.finaleCost(CFG, counts, at("14:00"), at("15:00"), { started: true }), { tiktokRuns: 1, instagramRuns: 4, tiktok: 60, instagram: 92, total: 152 });
+  // A platform that is off costs nothing.
+  assert.deepEqual(lib.finaleCost(lib.withFrequency(CFG, { tiktok: "off" }), counts, at("13:00"), at("15:00")), { tiktokRuns: 0, instagramRuns: 8, tiktok: 0, instagram: 184, total: 184 });
+  assert.equal(lib.finaleCost(lib.withFrequency(CFG, { instagram: "off" }), counts, at("13:00"), at("15:00")).total, 120);
+  assert.equal(lib.finaleCost(lib.withFrequency(CFG, { tiktok: "off", instagram: "off" }), counts, at("13:00"), at("15:00")).total, 0);
 });
 
 // ---------- dagopdrachten, Vandaag, buiten schaal, Opvallend ----------
