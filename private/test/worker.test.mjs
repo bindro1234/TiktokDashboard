@@ -453,6 +453,100 @@ test("+ account: a second account gets the student's name and main_account; refu
   assert.equal((await req("/api/accounts", { body: { handle: "anna_1", main: "chris" } })).status, 409); // already there
 });
 
+test("Instagram: adding a student with a handle (new column or the old 'Insta ' one); Instagram only; refusals", async () => {
+  // This sheet has no Instagram column yet: it is added to the header.
+  let res = await req("/api/accounts", { body: { name: "Eva", handle: "eva_t", instagram: "https://www.instagram.com/Eva.IG/?igsh=x" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.accounts[0], ["student_name", "tiktok_handle", "active", "instagram_handle"]);
+  assert.deepEqual(sheets.accounts.at(-1), ["Eva", "eva_t", "ja", "eva.ig"]);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "leerling toegevoegd" && r[3].includes("TikTok @eva_t + Instagram @eva.ig")));
+  // The same Instagram account for a second student is refused, also when the first row is inactive.
+  res = await req("/api/accounts", { body: { name: "X", handle: "x1", instagram: "@EVA.ig" } });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /Instagram @eva\.ig staat al in rij 5/);
+  sheets.accounts.at(-1)[2] = "nee";
+  assert.match((await (await req("/api/accounts", { body: { name: "X", handle: "x1", instagram: "eva.ig" } })).json()).error, /\(inactief\)/);
+  // A student with only Instagram: the TikTok cell stays empty and the row is no TikTok problem.
+  res = await req("/api/accounts", { body: { name: "Finn", instagram: "@finn.ig" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.accounts.at(-1), ["Finn", "", "ja", "finn.ig"]);
+  const d = await (await req("/api/data")).json();
+  const finn = d.accounts.find((a) => a.name === "Finn");
+  assert.deepEqual([finn.issue, finn.tracked, finn.instagramTracked, finn.instagram], [null, false, true, "finn.ig"]);
+  // Refused: nothing at all, a link to a post, and an Instagram account on a second TikTok account.
+  assert.equal((await req("/api/accounts", { body: { name: "Y" } })).status, 400);
+  res = await req("/api/accounts", { body: { name: "Y", instagram: "https://www.instagram.com/p/DeRh47eptOn" } });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /post/);
+  assert.equal((await req("/api/accounts", { body: { handle: "anna.ads", main: "anna_1", instagram: "anna.ig" } })).status, 400);
+  assert.equal(sheets.accounts.length, 6, "only Eva and Finn were added");
+  // A sheet with the hand-typed header "Insta ": the value goes into that column, no second column.
+  sheets.accounts[0] = ["student_name", "tiktok_handle", "active", "Insta "];
+  res = await req("/api/accounts", { body: { name: "Gus", handle: "gus", instagram: "gus.ig" } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.accounts.at(-1), ["Gus", "gus", "ja", "gus.ig"]);
+  assert.deepEqual(sheets.accounts[0], ["student_name", "tiktok_handle", "active", "Insta "]);
+});
+
+test("Instagram: set, change and clear a student's handle; logged; refuses stale, second-account and doubles", async () => {
+  sheets.accounts = [
+    ["student_name", "tiktok_handle", "active", "main_account", "Insta "],
+    ["Anna", "@anna_1", "ja", "", "anna.gram"],
+    ["Bram", "bram.b", "nee", "", ""],
+    ["", "chris", "", "", ""],
+    ["Anna", "anna.ads", "ja", "anna_1", ""],
+  ];
+  const set = (row, was, handle) => req("/api/accounts/instagram", { body: { row, was, handle } });
+  let res = await set(4, "", "@Chris.IG");
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(sheets.accounts[3][4], "chris.ig");
+  res = await set(2, "anna.gram", "https://www.instagram.com/Anna.New/");
+  assert.equal(res.status, 200);
+  assert.equal(sheets.accounts[1][4], "anna.new");
+  assert.deepEqual(sheets.activity_log.filter((r) => r[2].startsWith("instagram-handle")).map((r) => [r[2], r[3]]), [
+    ["instagram-handle toegevoegd", "(geen naam): geen → @chris.ig, rij 4"],
+    ["instagram-handle gewijzigd", "Anna: @anna.gram → @anna.new, rij 2"]]);
+  // Refused: the sheet changed meanwhile, another student's handle, a second TikTok account, a post link.
+  assert.equal((await set(2, "anna.gram", "x")).status, 409);
+  res = await set(3, "", "anna.new");
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /rij 2/);
+  assert.match((await (await set(5, "", "anna.ig")).json()).error, /eerste rij/);
+  assert.equal((await set(3, "", "https://www.instagram.com/reel/abc/")).status, 400);
+  assert.equal((await set(9, "", "nobody")).status, 409);
+  assert.equal(sheets.accounts[2][4], "", "nothing written by the refused calls");
+  // Same value: nothing written. Clear: the cell is emptied and it is logged (the row is never deleted).
+  assert.match((await (await set(2, "anna.new", "Anna.New")).json()).message, /Ongewijzigd/);
+  res = await set(2, "anna.new", "");
+  assert.equal(res.status, 200);
+  assert.equal(sheets.accounts[1][4], "");
+  assert.equal(sheets.accounts.length, 5);
+  assert.deepEqual(sheets.activity_log.at(-1).slice(2), ["instagram-handle verwijderd", "Anna: @anna.new → geen, rij 2"]);
+  // Setting it again: the data endpoint shows it per student, from the first row only.
+  await set(2, "", "anna.back");
+  const d = await (await req("/api/data")).json();
+  assert.deepEqual(d.accounts.filter((a) => a.instagramTracked).map((a) => [a.row, a.instagram]), [[2, "anna.back"], [4, "chris.ig"]]);
+  // An older sheet without the column: it is added to the header on the first handle.
+  sheets.accounts = [["student_name", "tiktok_handle", "active"], ["Dana", "dana", "ja"]];
+  res = await set(2, "", "dana.ig");
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual(sheets.accounts, [["student_name", "tiktok_handle", "active", "instagram_handle"], ["Dana", "dana", "ja", "dana.ig"]]);
+});
+
+test("(de)activating a student that only has Instagram goes by the Instagram handle", async () => {
+  sheets.accounts.push(["Finn", "", "ja", "finn.ig"]);
+  sheets.accounts[0] = ["student_name", "tiktok_handle", "active", "instagram_handle"];
+  let res = await req("/api/accounts/active", { body: { row: 5, instagram: "finn.ig", active: false } });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.equal(sheets.accounts[4][2], "nee");
+  assert.equal((await req("/api/accounts/active", { body: { row: 5, instagram: "other.ig", active: true } })).status, 409);
+  assert.equal((await req("/api/accounts/active", { body: { row: 5, active: true } })).status, 400);
+  res = await req("/api/accounts/active", { body: { row: 5, instagram: "@FINN.IG", active: true } });
+  assert.equal(res.status, 200);
+  assert.equal(sheets.accounts[4][2], "ja");
+  assert.match(sheets.activity_log.at(-1)[3], /Finn Instagram @finn\.ig, rij 5/);
+});
+
 test("Controleer nu: a student with two accounts is done when either posted; otherwise both are checked", async () => {
   const now = new Date().toISOString();
   sheets.accounts[0].push("main_account");

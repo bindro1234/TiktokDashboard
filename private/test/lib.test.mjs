@@ -9,7 +9,61 @@ const ams = (s) => Date.parse(s); // ISO strings with an explicit offset
 
 test("handle normalization matches the Python collector (tests/handle_cases.json)", () => {
   const cases = JSON.parse(readFileSync(new URL("../../tests/handle_cases.json", import.meta.url)));
-  for (const c of cases) assert.equal(lib.normalizeHandle(c.raw).handle, c.handle, JSON.stringify(c.raw));
+  const tiktok = cases.filter((c) => (c.platform ?? "tiktok") === "tiktok");
+  assert.ok(tiktok.length > 10);
+  for (const c of tiktok) assert.equal(lib.normalizeHandle(c.raw).handle, c.handle, JSON.stringify(c.raw));
+});
+
+test("Instagram handle normalization matches the Python collector (same cases, Instagram's own rules)", () => {
+  const cases = JSON.parse(readFileSync(new URL("../../tests/handle_cases.json", import.meta.url)));
+  const instagram = cases.filter((c) => c.platform === "instagram");
+  assert.ok(instagram.length > 20);
+  for (const c of instagram) {
+    const { handle, reason } = lib.normalizeInstagramHandle(c.raw);
+    assert.equal(handle, c.handle, JSON.stringify(c.raw));
+    assert.equal(reason === null, handle !== null, JSON.stringify(c.raw));
+  }
+  // The platforms differ: 30 characters and double periods.
+  assert.equal(lib.normalizeHandle("a".repeat(30)).handle, null);
+  assert.equal(lib.normalizeInstagramHandle("a".repeat(30)).handle, "a".repeat(30));
+  assert.equal(lib.normalizeHandle("two..dots").handle, "two..dots");
+  assert.equal(lib.normalizeInstagramHandle("two..dots").handle, null);
+  assert.match(lib.normalizeInstagramHandle("https://www.instagram.com/p/DeRh47eptOn").reason, /post/);
+});
+
+test("Instagram: one account per student, on the first row; problems are reported", () => {
+  // Same rows as test_instagram_accounts in tests/test_collector.py.
+  const rows = [
+    { _row: 2, student_name: "Anna", tiktok_handle: "@anna", active: "ja", main_account: "", Insta: "Anna.Gram" },
+    { _row: 3, student_name: "Anna", tiktok_handle: "anna.ads", active: "ja", main_account: "anna", Insta: "anna.second" },
+    { _row: 4, student_name: "Bram", tiktok_handle: "bram", active: "nee", Insta: "bram" },
+    { _row: 5, student_name: "Cas", tiktok_handle: "cas", active: "ja", instagram_handle: "https://www.instagram.com/cas_ig/" },
+    { _row: 6, student_name: "Dee", tiktok_handle: "dee", active: "ja", instagram_handle: "cas_ig" },
+    { _row: 7, student_name: "Eli", tiktok_handle: "eli", active: "ja", instagram_handle: "https://www.instagram.com/p/Xyz" },
+    { _row: 8, student_name: "Fay", tiktok_handle: "", active: "ja", instagram_handle: "fay.only" },
+    { _row: 9, student_name: "Gus", tiktok_handle: "gus", active: "ja", instagram_handle: "" },
+    { _row: 10, student_name: "Hal", tiktok_handle: "hal", active: "misschien", instagram_handle: "hal" },
+  ];
+  const out = lib.parseAccounts(rows);
+  assert.deepEqual(out.filter((a) => a.instagramTracked).map((a) => [a.instagram, a.row]), [["anna.gram", 2], ["cas_ig", 5], ["fay.only", 8]]);
+  const issue = (row) => out.find((a) => a.row === row).instagramIssue;
+  assert.match(issue(3), /eerste rij/);       // on a second TikTok account's row
+  assert.match(issue(6), /rij 5/);            // used by two students
+  assert.match(issue(7), /post/);             // a link to a post, not a profile
+  assert.equal(issue(4), null);               // inactive: ignored silently
+  assert.equal(out.find((a) => a.row === 9).instagram, null);
+  // A student with only Instagram is not a TikTok problem (and not tracked on TikTok); a row with nothing is.
+  const fay = out.find((a) => a.row === 8);
+  assert.equal([fay.issue, fay.tracked].join(), ",false");
+  assert.equal(lib.parseAccounts([{ _row: 2, student_name: "Zed", tiktok_handle: "", active: "ja" }])[0].issue, "geen handle ingevuld");
+  // Students: the Instagram handle comes from the student's first row; a student without one has null.
+  const groups = lib.groupAccounts(out);
+  assert.equal(groups.get("anna").instagram, "anna.gram");
+  assert.equal(groups.get("anna").accounts.length, 2);
+  assert.equal(groups.get("gus").instagram, null);
+  assert.equal(groups.get("dee").instagram, null);
+  assert.equal(groups.get("dee").instagramIssue, "dubbel: Instagram @cas_ig staat ook in rij 5");
+  assert.equal(lib.instagramCell({ "Insta ": "x" }), "x");
 });
 
 test("parseAccounts flags problems like the collector and keeps row numbers", () => {

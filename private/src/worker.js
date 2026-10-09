@@ -46,6 +46,10 @@ const json = (data, status = 200) => new Response(JSON.stringify(data), {
 // 0 -> A, 26 -> AA (sheet column letters).
 const colName = (i) => (i >= 26 ? colName(Math.floor(i / 26) - 1) : "") + String.fromCharCode(65 + (i % 26));
 
+// The accounts column with the student's Instagram handle: instagram_handle, or the old hand-typed "Insta ".
+const IG_COLUMN = "instagram_handle";
+const igColumn = (header) => header.findIndex((h) => [IG_COLUMN, "insta"].includes(String(h).trim().toLowerCase()));
+
 const nowIso = () => new Date().toISOString().replace(/\.\d+Z$/, "Z");
 
 function withHeaders(res) {
@@ -128,6 +132,7 @@ export async function handle(request, env, ctx, fetchImpl = fetch) {
       case "POST /api/refresh": return json(await api.refresh());
       case "POST /api/accounts": return json(await api.addAccount(await request.json()));
       case "POST /api/accounts/active": return json(await api.setActive(await request.json()));
+      case "POST /api/accounts/instagram": return json(await api.setInstagram(await request.json()));
       case "POST /api/log": return json(await api.logClient(await request.json()));
       case "POST /api/finale/start": return json(await api.finaleStart(await request.json()));
       case "POST /api/finale/deadline": return json(await api.finaleDeadline(await request.json()));
@@ -292,8 +297,21 @@ class Api {
   async addAccount(body) {
     let name = String(body?.name ?? "").trim().replace(/\s+/g, " ");
     const active = body?.active !== false;
-    const { handle, reason } = lib.normalizeHandle(body?.handle);
-    if (!handle) throw new HttpError(400, `Handle: ${reason}.`);
+    // TikTok and Instagram are both optional, but a student needs at least one (a second TikTok account needs TikTok).
+    const tiktokGiven = String(body?.handle ?? "").trim() !== "";
+    const igGiven = String(body?.instagram ?? "").trim() !== "";
+    if (!tiktokGiven && !(igGiven && !body?.main)) {
+      throw new HttpError(400, body?.main ? "Handle: lege handle." : "Vul een TikTok-handle of een Instagram-handle in.");
+    }
+    const { handle, reason } = tiktokGiven ? lib.normalizeHandle(body?.handle) : { handle: null, reason: null };
+    if (tiktokGiven && !handle) throw new HttpError(400, `Handle: ${reason}.`);
+    let instagram = null;
+    if (igGiven) {
+      const ig = lib.normalizeInstagramHandle(body.instagram);
+      if (!ig.handle) throw new HttpError(400, `Instagram-handle: ${ig.reason}.`);
+      if (body?.main) throw new HttpError(400, "Instagram hoort bij de leerling, niet bij een tweede TikTok-account.");
+      instagram = ig.handle;
+    }
     let { header, rows } = await this.readAccounts();
     let main = null;
     if (body?.main) {
@@ -306,19 +324,24 @@ class Api {
     if (!name && !main) throw new HttpError(400, "Vul een naam in.");
     if (name.length > 80) throw new HttpError(400, "Naam is te lang (max. 80 tekens).");
     for (const r of rows) {
-      if (lib.normalizeHandle(r.tiktok_handle).handle !== handle) continue;
+      if (!handle || lib.normalizeHandle(r.tiktok_handle).handle !== handle) continue;
       const on = lib.parseActive(r.active);
       throw new HttpError(409, on === false
         ? `@${handle} staat al in rij ${r._row} (inactief). Activeer die rij in plaats van een nieuwe toe te voegen.`
         : `@${handle} staat al in rij ${r._row}.`);
     }
+    if (instagram) this.checkInstagramFree(rows, instagram, null);
     if (main && !header.includes("main_account")) {
       // Older sheets: add the column at the end of the header row.
       await this.sheets.update(this.admin, "accounts", `${colName(header.length)}1`, [["main_account"]]);
       header = [...header, "main_account"];
     }
-    const cells = { student_name: name, tiktok_handle: handle, active: active ? "ja" : "nee", main_account: main || "" };
-    const row = header.map((h) => cells[h] ?? "");
+    if (instagram && igColumn(header) < 0) {
+      await this.sheets.update(this.admin, "accounts", `${colName(header.length)}1`, [[IG_COLUMN]]);
+      header = [...header, IG_COLUMN];
+    }
+    const cells = { student_name: name, tiktok_handle: handle || "", active: active ? "ja" : "nee", main_account: main || "" };
+    const row = header.map((h, i) => (i === igColumn(header) ? instagram || "" : cells[h] ?? ""));
     const res = await this.sheets.append(this.admin, "accounts", [row]);
     const range = res?.updates?.updatedRange || "";
     const rowNo = Number((range.match(/![A-Z]+(\d+)/) || [])[1]) || null;
@@ -326,30 +349,81 @@ class Api {
       await this.log("account toegevoegd aan leerling", `${name}: @${handle} (bij @${main})${rowNo ? `, rij ${rowNo}` : ""}`);
       return { ok: true, handle, row: rowNo, message: `@${handle} toegevoegd als tweede account van ${name}. Wordt vanaf de volgende profielrun gevolgd; de weergaven tellen samen.` };
     }
-    await this.log("leerling toegevoegd", `${name} @${handle}${active ? "" : " (inactief)"}${rowNo ? `, rij ${rowNo}` : ""}`);
-    return { ok: true, handle, row: rowNo, message: `@${handle} toegevoegd. Wordt vanaf de volgende profielrun gevolgd.` };
+    const accounts = [handle && `TikTok @${handle}`, instagram && `Instagram @${instagram}`].filter(Boolean).join(" + ");
+    await this.log("leerling toegevoegd", `${name} ${accounts}${active ? "" : " (inactief)"}${rowNo ? `, rij ${rowNo}` : ""}`);
+    return { ok: true, handle, instagram, row: rowNo,
+      message: `${accounts} toegevoegd. Wordt vanaf de volgende profielrun gevolgd.` };
+  }
+
+  // One Instagram account per student: refuse a handle that another row already has (also an inactive one).
+  checkInstagramFree(rows, instagram, exceptRow) {
+    for (const r of rows) {
+      if (r._row === exceptRow || lib.normalizeInstagramHandle(lib.instagramCell(r)).handle !== instagram) continue;
+      const on = lib.parseActive(r.active);
+      throw new HttpError(409, `Instagram @${instagram} staat al in rij ${r._row}${on === false ? " (inactief)" : ""}.`);
+    }
+  }
+
+  // Set, change or clear (empty handle) the Instagram handle of a student, on the student's first row.
+  async setInstagram(body) {
+    const rowNo = Number(body?.row);
+    if (!Number.isInteger(rowNo) || rowNo < 2) throw new HttpError(400, "Ongeldig verzoek");
+    const raw = String(body?.handle ?? "").trim();
+    let instagram = null;
+    if (raw) {
+      const ig = lib.normalizeInstagramHandle(raw);
+      if (!ig.handle) throw new HttpError(400, `Instagram-handle: ${ig.reason}.`);
+      instagram = ig.handle;
+    }
+    let { header, rows } = await this.readAccounts();
+    const target = rows.find((r) => r._row === rowNo);
+    const before = target ? lib.normalizeInstagramHandle(lib.instagramCell(target)).handle : null;
+    if (!target || (before ?? "") !== String(body?.was ?? "")) {
+      throw new HttpError(409, "De sheet is intussen veranderd. Laad de pagina opnieuw.");
+    }
+    if (String(target.main_account ?? "").trim()) {
+      throw new HttpError(409, "Dit is een tweede TikTok-account. Zet de Instagram-handle bij de eerste rij van de leerling.");
+    }
+    if (instagram === before) return { ok: true, handle: instagram, message: "Ongewijzigd: de Instagram-handle stond er al zo." };
+    if (instagram) this.checkInstagramFree(rows, instagram, rowNo);
+    let col = igColumn(header);
+    if (col < 0) {
+      if (!instagram) return { ok: true, handle: null, message: "Er stond geen Instagram-handle." };
+      col = header.length; // older sheet without the column: add it at the end of the header row
+      await this.sheets.update(this.admin, "accounts", `${colName(col)}1`, [[IG_COLUMN]]);
+    }
+    await this.sheets.update(this.admin, "accounts", `${colName(col)}${rowNo}`, [[instagram ?? ""]]);
+    const who = String(target.student_name ?? "").trim() || "(geen naam)";
+    const action = !before ? "instagram-handle toegevoegd" : instagram ? "instagram-handle gewijzigd" : "instagram-handle verwijderd";
+    await this.log(action, `${who}: ${before ? "@" + before : "geen"} → ${instagram ? "@" + instagram : "geen"}, rij ${rowNo}`);
+    return { ok: true, handle: instagram, message: instagram
+      ? `Instagram van ${who}: @${instagram} opgeslagen.` : `Instagram-handle van ${who} verwijderd.` };
   }
 
   async setActive(body) {
     const rowNo = Number(body?.row);
     const active = body?.active === true;
+    // The row is identified by its TikTok handle, or (a student with only Instagram) by its Instagram handle.
     const expected = lib.normalizeHandle(body?.handle).handle;
-    if (!Number.isInteger(rowNo) || rowNo < 2 || !expected) throw new HttpError(400, "Ongeldig verzoek");
+    const expectedIg = expected ? null : lib.normalizeInstagramHandle(body?.instagram).handle;
+    if (!Number.isInteger(rowNo) || rowNo < 2 || !(expected || expectedIg)) throw new HttpError(400, "Ongeldig verzoek");
     const { header, rows } = await this.readAccounts();
     const target = rows.find((r) => r._row === rowNo);
-    if (!target || lib.normalizeHandle(target.tiktok_handle).handle !== expected) {
+    const igOnly = (r) => !lib.normalizeHandle(r?.tiktok_handle).handle && lib.normalizeInstagramHandle(lib.instagramCell(r ?? {})).handle === expectedIg;
+    if (!target || !(expected ? lib.normalizeHandle(target.tiktok_handle).handle === expected : igOnly(target))) {
       throw new HttpError(409, "De sheet is intussen veranderd. Laad de pagina opnieuw.");
     }
+    const label = expected ? `@${expected}` : `Instagram @${expectedIg}`;
     if (active) {
       const other = rows.find((r) => r._row !== rowNo && lib.parseActive(r.active) === true
-        && lib.normalizeHandle(r.tiktok_handle).handle === expected);
-      if (other) throw new HttpError(409, `@${expected} is al actief in rij ${other._row}.`);
+        && (expected ? lib.normalizeHandle(r.tiktok_handle).handle === expected : igOnly(r)));
+      if (other) throw new HttpError(409, `${label} is al actief in rij ${other._row}.`);
     }
     const col = String.fromCharCode(65 + header.indexOf("active"));
     await this.sheets.update(this.admin, "accounts", `${col}${rowNo}`, [[active ? "ja" : "nee"]]);
     await this.log(active ? "leerling geactiveerd" : "leerling gedeactiveerd",
-      `${String(target.student_name ?? "").trim() || "(geen naam)"} @${expected}, rij ${rowNo}`);
-    return { ok: true, message: `@${expected} is nu ${active ? "actief" : "inactief"}.` };
+      `${String(target.student_name ?? "").trim() || "(geen naam)"} ${label}, rij ${rowNo}`);
+    return { ok: true, message: `${label} is nu ${active ? "actief" : "inactief"}.` };
   }
 
   // ---------- finale ----------

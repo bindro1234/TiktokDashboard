@@ -257,3 +257,11 @@ button.badge:hover, button.badge[aria-expanded="true"] { background: var(--surfa
 .today-list li:last-child { border-bottom: 0; }
 .tick { color: var(--good); font-weight: 800; }
 .chart-box { position: relative; height: 280px; }
+
+/* Beheer: "Leerlingen zonder Instagram" - name and TikTok handle, then the input and its save button */
+.ig-who { display: inline-flex; flex-direction: column; min-width: 200px; align-self: center; }
+.today-list .add-form input { min-width: 240px; }
+#acc-body td.ig { white-space: nowrap; }
+#acc-body td.ig .badge { display: inline-block; max-width: 190px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+#acc-body td.st { max-width: 250px; }
+#acc-body td.st .badge { white-space: normal; }

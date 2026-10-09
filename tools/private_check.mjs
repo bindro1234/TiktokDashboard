@@ -24,6 +24,11 @@ const accountsSheet = [
   // Anna has a second account (brand + ads): counted together everywhere.
   { _row: 16, student_name: "Anna", tiktok_handle: "test_13", active: "ja", main_account: "test_01" },
 ];
+// Instagram: one account per student, typed on the first row in different ways; most students have none yet.
+Object.assign(accountsSheet[0], { instagram_handle: "@Anna.Gram" });
+Object.assign(accountsSheet[1], { instagram_handle: "https://www.instagram.com/bram.ig/?igsh=x" });
+Object.assign(accountsSheet[2], { instagram_handle: "chris.ig" });
+Object.assign(accountsSheet[3], { instagram_handle: "https://www.instagram.com/p/DeRh47eptOn" }); // a post link: invalid
 const tracked = lib.parseAccounts(accountsSheet).filter((a) => a.tracked).map((a) => a.handle);
 const students = lib.groupAccounts(lib.parseAccounts(accountsSheet)).size; // rows per student
 const tagsPool = ["fyp", "glu", "schoolproject", "viral", "tiktoknl", "sport"];
@@ -106,8 +111,16 @@ function api(req, body) {
     if (req.url === "/api/accounts") {
       const { handle } = lib.normalizeHandle(body.handle);
       // A second account (main) is recorded but not added, so the rest of the check keeps the same class.
-      if (!body.main) accountsSheet.push({ _row: accountsSheet.length + 2, student_name: body.name, tiktok_handle: handle, active: body.active ? "ja" : "nee" });
+      if (!body.main) accountsSheet.push({ _row: accountsSheet.length + 2, student_name: body.name, tiktok_handle: handle,
+        instagram_handle: body.instagram || "", active: body.active ? "ja" : "nee" });
       return [200, { ok: true, message: `@${handle} toegevoegd.` }];
+    }
+    if (req.url === "/api/accounts/instagram") {
+      const row = accountsSheet.find((r) => r._row === body.row);
+      const { handle } = lib.normalizeInstagramHandle(body.handle);
+      if (body.handle && !handle) return [400, { error: "Instagram-handle: geen geldige Instagram-handle." }];
+      row.instagram_handle = handle || "";
+      return [200, { ok: true, message: handle ? `Instagram van ${row.student_name}: @${handle} opgeslagen.` : "Instagram-handle verwijderd." }];
     }
     if (req.url === "/api/accounts/active") {
       const row = accountsSheet.find((r) => r._row === body.row);
@@ -291,6 +304,8 @@ console.log(`student detail: Anna ${allPosts} posts together, ${onePosts} on @te
 if (onePosts !== expected13 || allPosts !== expected13 + posts.filter((p) => p.handle === "test_01").length) fail("student detail: account dropdown wrong");
 await page.selectOption("#st-account", "");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
+const igLink = await page.$eval("#ll-content .detail-head", (h) => [...h.querySelectorAll("a")].map((a) => a.textContent.trim()).filter((t) => /Instagram/.test(t)));
+if (igLink.join() !== "@anna.gram op Instagram ↗") fail(`student detail: Instagram link wrong (${igLink.join()})`);
 const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
 for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
 console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval("#ll-content tbody tr", (r) => r.length)}`);
@@ -333,11 +348,45 @@ if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`be
 await page.fill('#add-form [name="handle"]', "https://www.tiktok.com/@Nieuw.Account");
 const preview = await page.textContent("#add-preview");
 if (!preview.includes("@nieuw.account")) fail(`beheer: handle preview wrong: ${preview}`);
+await page.fill('#add-form [name="instagram"]', "https://www.instagram.com/Nora.IG/?igsh=1");
+const preview2 = await page.textContent("#add-preview");
+if (!preview2.includes("TikTok @nieuw.account + Instagram @nora.ig")) fail(`beheer: handle preview with Instagram wrong: ${preview2}`);
+await page.fill('#add-form [name="instagram"]', "https://www.instagram.com/p/abc");
+if (!(await page.textContent("#add-preview")).includes("Instagram kan niet")) fail("beheer: a post link is not refused in the preview");
+await page.fill('#add-form [name="instagram"]', "https://www.instagram.com/Nora.IG/?igsh=1");
 await page.fill('#add-form [name="name"]', "Nora");
 await page.click('#add-form button[type="submit"]');
 await page.waitForFunction(() => document.getElementById("add-preview").textContent.includes("toegevoegd"));
 const added = posted.find((p) => p.url === "/api/accounts");
 if (!added || added.body.name !== "Nora") fail("beheer: add student did not post");
+if (added.body.instagram !== "https://www.instagram.com/Nora.IG/?igsh=1") fail(`beheer: add student did not post the Instagram field (${JSON.stringify(added.body)})`);
+
+// Instagram handles: the list of active students without one, filled in from there; the table; no edit on a second account.
+const groupsNow = [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()];
+const wantMissing = groupsNow.filter((g) => !g.instagram).length;
+const missingNow = await page.$$eval("#ig-missing form[data-ig-quick]", (f) => f.length);
+console.log(`beheer: ${missingNow} students without Instagram, of ${groupsNow.length}`);
+if (missingNow !== wantMissing || !wantMissing) fail(`beheer: "zonder Instagram" list has ${missingNow}, expected ${wantMissing}`);
+if (!(await page.textContent("#ig-count")).includes(`${wantMissing} van ${groupsNow.length}`)) fail("beheer: Instagram count wrong");
+const withIssue = await page.$$eval("#ig-missing .badge.bad", (b) => b.map((x) => x.textContent));
+if (!withIssue.some((t) => /post/.test(t))) fail(`beheer: the invalid Instagram link is not flagged in the list (${withIssue.join("|")})`);
+if (!(await page.textContent("#acc-issues")).includes("Instagram")) fail("beheer: invalid Instagram handle missing from the problems list");
+const anna = await page.$eval('#acc-body tr:has(button[data-ig-edit="2"])', (tr) => tr.children[3].querySelector("a")?.textContent.trim());
+if (anna !== "@anna.gram") fail(`beheer: Instagram column shows "${anna}", expected @anna.gram`);
+if (await page.$('#acc-body button[data-ig-edit="16"]')) fail("beheer: Instagram edit offered on a second TikTok account");
+await page.fill('#ig-missing form[data-ig-quick] input', "@Quick.IG");
+await page.click('#ig-missing form[data-ig-quick] button[type=submit]');
+await page.waitForFunction(() => /opgeslagen/.test(document.getElementById("ig-msg").textContent));
+const quick = posted.find((p) => p.url === "/api/accounts/instagram");
+if (!quick || quick.body.handle !== "@Quick.IG" || quick.body.was !== "") fail(`beheer: quick Instagram did not post right (${JSON.stringify(quick && quick.body)})`);
+await page.waitForFunction((n) => document.querySelectorAll("#ig-missing form[data-ig-quick]").length === n, wantMissing - 1);
+// Change an existing handle from the table (was = the current one).
+await page.click('#acc-body button[data-ig-edit="2"]');
+await page.fill('#acc-body form[data-ig-form] [name=instagram]', "anna.new");
+await page.click('#acc-body form[data-ig-form] button[type=submit]');
+await page.waitForFunction(() => /opgeslagen/.test(document.getElementById("acc-msg").textContent));
+const change = posted.filter((p) => p.url === "/api/accounts/instagram").at(-1);
+if (change.body.row !== 2 || change.body.was !== "anna.gram" || change.body.handle !== "anna.new") fail(`beheer: Instagram change did not post right (${JSON.stringify(change.body)})`);
 page.once("dialog", (d) => d.accept());
 await page.click('#acc-body button[data-active="false"][data-handle="test_12"]');
 await page.waitForTimeout(500);

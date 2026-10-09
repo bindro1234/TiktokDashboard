@@ -24,6 +24,43 @@ export function normalizeHandle(raw) {
   return { handle: text, reason: null };
 }
 
+// ---------- Instagram handles (same rules as normalize_instagram_handle in collector/handles.py) ----------
+
+const IG_RE = /^[a-z0-9._]{1,30}$/;
+const IG_URL_RE = /(?:instagram\.com|instagr\.am)\/([^?#]*)/i;
+// First path segment of instagram.com links that is not a profile (/p/<code>, /explore, ...).
+const IG_NOT_PROFILE = new Set(["p", "reel", "reels", "tv", "explore", "accounts", "direct", "about", "web", "legal",
+  "developer", "directory", "challenge", "emails", "session", "oauth", "login", "share"]);
+
+/** name, @Name, instagram.com/name, a profile link with ?igsh=..., /name/reel/... links; not a link to a post. */
+export function normalizeInstagramHandle(raw) {
+  let text = String(raw ?? "").replace(/\s+/g, "").toLowerCase();
+  if (!text) return { handle: null, reason: "lege handle" };
+  if (text.includes("instagram.com") || text.includes("instagr.am") || text.startsWith("http")) {
+    const m = text.match(IG_URL_RE);
+    const parts = (m ? m[1] : "").split("/").filter(Boolean);
+    if (!parts.length) return { handle: null, reason: "link zonder /handle" };
+    let first = parts[0];
+    if (IG_NOT_PROFILE.has(first)) return { handle: null, reason: "link naar een post of pagina, niet naar een profiel" };
+    if (first === "_u" || first === "stories") { // instagram.com/_u/name (app link), instagram.com/stories/name/123
+      if (parts.length < 2) return { handle: null, reason: "link zonder /handle" };
+      first = parts[1];
+    }
+    text = first;
+  }
+  text = text.replace(/^@+/, "");
+  if (!IG_RE.test(text) || text.endsWith(".") || text.includes("..")) return { handle: null, reason: "geen geldige Instagram-handle" };
+  return { handle: text, reason: null };
+}
+
+/** The Instagram cell of an accounts row: column instagram_handle, or the old "Insta " column. */
+export function instagramCell(row) {
+  for (const [key, value] of Object.entries(row)) {
+    if (["instagram_handle", "insta"].includes(key.trim().toLowerCase())) return value;
+  }
+  return "";
+}
+
 /** Blank counts as active. Returns null for values we don't understand. */
 export function parseActive(value) {
   const text = String(value ?? "").trim().toLowerCase();
@@ -40,13 +77,22 @@ export function parseActive(value) {
 export function parseAccounts(rows) {
   const out = [];
   const seen = new Map();
+  const seenIg = new Map();
   for (const r of rows) {
     const rawHandle = String(r.tiktok_handle ?? "").trim();
     const name = String(r.student_name ?? "").trim();
-    const entry = { row: r._row, name, rawHandle, handle: null, active: parseActive(r.active), issue: null, tracked: false };
+    const igRaw = String(instagramCell(r) ?? "").trim();
+    const ig = igRaw ? normalizeInstagramHandle(igRaw) : { handle: null, reason: null };
+    const entry = { row: r._row, name, rawHandle, handle: null, active: parseActive(r.active), issue: null, tracked: false,
+      // Instagram: one account per student, on the student's first row (no main_account).
+      instagramRaw: igRaw, instagram: ig.handle, instagramIssue: igRaw && !ig.handle ? ig.reason : null,
+      instagramTracked: false, mainRaw: String(r.main_account ?? "").trim() };
     if (!rawHandle) {
-      if (!name && String(r.active ?? "").trim() === "") continue; // empty row
-      entry.issue = "geen handle ingevuld";
+      if (!name && !igRaw && String(r.active ?? "").trim() === "") continue; // empty row
+      if (!ig.handle) entry.issue = "geen handle ingevuld";
+      // A student with only Instagram is no TikTok problem: there is just nothing to follow on TikTok.
+      else if (entry.active === null) entry.issue = `actief='${r.active}' niet begrepen (gebruik ja/nee)`;
+      markInstagram(entry, seenIg);
       out.push(entry);
       continue;
     }
@@ -61,6 +107,7 @@ export function parseAccounts(rows) {
     }
     const main = String(r.main_account ?? "").trim() ? normalizeHandle(r.main_account).handle : null;
     entry.main = main && main !== handle ? main : null;
+    markInstagram(entry, seenIg);
     out.push(entry);
   }
   // Second accounts (main_account = the handle of the student's first account) join that student's
@@ -77,9 +124,26 @@ export function parseAccounts(rows) {
   return out;
 }
 
+// Same rules as parse_instagram_accounts in collector/handles.py: only active rows count, a handle on a
+// second TikTok account's row is ignored (and reported), and two students can't share one handle.
+function markInstagram(e, seenIg) {
+  if (!e.instagram || e.active !== true) return;
+  if (e.mainRaw) {
+    e.instagramIssue = "Instagram hoort bij de leerling: zet de handle op de eerste rij van de leerling (deze wordt genegeerd)";
+    return;
+  }
+  if (seenIg.has(e.instagram)) {
+    e.instagramIssue = `dubbel: Instagram @${e.instagram} staat ook in rij ${seenIg.get(e.instagram)}`;
+    return;
+  }
+  seenIg.set(e.instagram, e.row);
+  e.instagramTracked = true;
+}
+
 /**
- * Tracked accounts per student: Map(group -> { key, name, accounts }) with the main account first.
- * key = the main account's handle; name = the name on the main account's row.
+ * Tracked accounts per student: Map(group -> { key, name, accounts, instagram, instagramRow, instagramIssue })
+ * with the main account first. key = the main account's handle; name = the name on the main account's row;
+ * instagram = the student's Instagram handle (from the main account's row), or null.
  */
 export function groupAccounts(accounts) {
   const groups = new Map();
@@ -88,7 +152,13 @@ export function groupAccounts(accounts) {
     const g = groups.get(a.group);
     if (a.handle === a.group) g.accounts.unshift(a); else g.accounts.push(a);
   }
-  for (const g of groups.values()) g.name = g.accounts[0].name || g.accounts.find((a) => a.name)?.name || "";
+  for (const g of groups.values()) {
+    const main = g.accounts[0];
+    g.name = main.name || g.accounts.find((a) => a.name)?.name || "";
+    g.instagram = main.instagramTracked ? main.instagram : null;
+    g.instagramRow = main.row;
+    g.instagramIssue = main.instagramIssue || null;
+  }
   return groups;
 }
 

@@ -98,6 +98,20 @@ class Spreadsheet:
         self._call("POST", ":batchUpdate", json={"requests": freeze})
         return existing
 
+    def rename_header(self, tab: str, renames: dict[str, str]) -> list[str]:
+        """Rename header cells in place: {old name (lowercase, trimmed): new name}. A column that is
+        already called the new name is left alone, so this is safe to repeat. Returns what it renamed."""
+        header = self.header(tab, refresh=True)
+        done = []
+        for index, name in enumerate(header):
+            new = renames.get(name.strip().lower())
+            if new and new not in header:
+                self._call("PUT", f"/values/{_a1(tab, f'{_col(index + 1)}1')}", params={"valueInputOption": "RAW"},
+                           json={"values": [[new]]})
+                header[index] = new
+                done.append(f"{name.strip()} -> {new}")
+        return done
+
     def ensure_columns(self, tab: str, columns: list[str]) -> None:
         """Add columns that are new in the schema to the end of an existing header row."""
         header = self.header(tab)

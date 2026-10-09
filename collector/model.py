@@ -16,7 +16,9 @@ NO_POSTS_MESSAGE = "no public posts in the profile for the specified period"
 
 SCHEMA_ADMIN = {
     # main_account (optional): for a student's second account, the handle of their first account.
-    "accounts": ["student_name", "tiktok_handle", "active", "main_account"],
+    # instagram_handle (optional): the student's one Instagram account, on the student's first row.
+    # Typed by hand (name, @name or a link; see handles.normalize_instagram_handle).
+    "accounts": ["student_name", "tiktok_handle", "active", "main_account", "instagram_handle"],
     "run_log": ["timestamp", "run_type", "window", "dry_run", "expected_records", "actual_records",
                 "errors", "status", "snapshot_ids", "notes"],
     "profile_window": ["handle", "checked_at", "videos_count", "window_count", "pinned_in_window",

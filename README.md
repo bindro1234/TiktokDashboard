@@ -28,7 +28,7 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 
 | Sheet | Tabblad | Inhoud |
 |---|---|---|
-| privé | `accounts` | `student_name`, `tiktok_handle`, `active` (ja/nee), en optioneel `main_account` (alleen bij een tweede account: de handle van het hoofdaccount) — **dit vul je zelf in** |
+| privé | `accounts` | `student_name`, `tiktok_handle`, `active` (ja/nee), optioneel `main_account` (alleen bij een tweede account: de handle van het hoofdaccount) en optioneel `instagram_handle` (het ene Instagram-account van de leerling, zie *Instagram-handles*) — **dit vul je zelf in** |
 | privé | `run_log` | per run: tijd, type, venster, dry-run, verwachte en echte records, fouten, status, notities |
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | privé | `activity_log` | wie (e-mail) wat deed op de beheerpagina en wanneer: geopend (1× per dag), nu verversen, leerling toegevoegd/(de)geactiveerd, finale gestart/gewijzigd/gestopt, export. Wordt vanzelf aangemaakt |
@@ -45,6 +45,16 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 ### Accounts toevoegen
 
 Zet in `accounts` per leerling een rij. De handle mag in elke vorm: `@naam`, `naam`, `https://www.tiktok.com/@naam`, met hoofdletters of spaties. Ongeldige handles (bijv. een korte `vm.tiktok.com`-link) worden overgeslagen en gemeld in `run_log`; de run gaat gewoon door. Zet `active` op `nee` om een account niet meer te volgen (leeg = ja).
+
+### Instagram-handles
+
+Sinds de campagne van TikTok naar Instagram is verhuisd (rond 7 okt) heeft elke leerling ook één Instagram-account, in de kolom `instagram_handle` van `accounts` (eerst typte je die als `Insta `; `python -m collector setup` hernoemt de kop vanzelf, en tot die tijd worden beide namen gelezen).
+
+- **Elke vorm mag**, net als bij TikTok: `naam`, `@Naam`, `instagram.com/naam`, een profiellink met `?igsh=…`, of een link als `instagram.com/naam/reel/…`. Instagram heeft eigen regels: 1–30 tekens (letters, cijfers, `_` en `.`), niet eindigend op een punt en zonder twee punten achter elkaar. Een link naar een **post** (`/p/…`, `/reel/…`) of een andere pagina wordt geweigerd: dat is geen profiel. Dezelfde regels staan in `collector/handles.py` en `private/public/lib.js`; `tests/handle_cases.json` test beide.
+- **Eén Instagram-account per leerling**, los van de TikTok-handle (sommige leerlingen gebruiken op beide dezelfde naam). Hij staat op de **eerste rij** van de leerling; een handle op de rij van een tweede TikTok-account wordt genegeerd en gemeld. Twee leerlingen met dezelfde Instagram-handle: de tweede wordt overgeslagen en gemeld. Een leerling met alléén Instagram heeft een rij zonder `tiktok_handle`; dat is geen fout.
+- **Beheer**: in *Leerling toevoegen* staat een veld *Instagram-handle* (vul minstens één van de twee handles in). In *Alle leerlingen* staat een kolom Instagram met **+ Instagram** / **Wijzig** (leeg opslaan of *Verwijderen* haalt hem weg; de rij blijft staan). Het blok **Leerlingen zonder Instagram** toont alle actieve leerlingen zonder (geldige) handle, met een invoerveld per leerling. Elke wijziging komt in het activiteitenlog (*instagram-handle toegevoegd / gewijzigd / verwijderd*). Ongeldige of dubbele handles staan onder *Problemen in accounts*.
+- Overal waar een account wordt aangeduid, hoort het platform erbij (`tiktok` of `instagram`): dezelfde naam op beide platforms is twee verschillende accounts.
+- Het ophalen van Instagram komt in een volgende stap; tot dan worden de handles alleen bewaard.
 
 ### Twee accounts per leerling
 
@@ -181,7 +191,7 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 | **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt. Met *zonder buiten schaal* |
 | **Opvallend** | video's en accounts om even naar te kijken (zie hieronder) |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
-| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
+| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen (met optionele Instagram-handle), **Instagram-handles** toevoegen of wijzigen en de lijst *Leerlingen zonder Instagram*, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
 | **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling, ook met `opdrachten_niet_gehaald` en `mediaan_weergaven_per_video` |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).

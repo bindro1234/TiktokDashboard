@@ -29,8 +29,90 @@ class HandleTests(unittest.TestCase):
     def test_shared_cases(self):
         """Same cases as the private site's JavaScript port (private/test)."""
         cases = json.loads((pathlib.Path(__file__).parent / "handle_cases.json").read_text(encoding="utf-8"))
-        for case in cases:
+        tiktok = [c for c in cases if c.get("platform", "tiktok") == "tiktok"]
+        self.assertGreater(len(tiktok), 10)
+        for case in tiktok:
             self.assertEqual(normalize_handle(case["raw"])[0], case["handle"], case["raw"])
+
+    def test_shared_instagram_cases(self):
+        """Instagram's own rules; same cases as private/public/lib.js (private/test)."""
+        from collector.handles import normalize_instagram_handle
+        cases = json.loads((pathlib.Path(__file__).parent / "handle_cases.json").read_text(encoding="utf-8"))
+        instagram = [c for c in cases if c.get("platform") == "instagram"]
+        self.assertGreater(len(instagram), 20)
+        for case in instagram:
+            handle, reason = normalize_instagram_handle(case["raw"])
+            self.assertEqual(handle, case["handle"], case["raw"])
+            self.assertEqual(reason is None, handle is not None, case["raw"])
+
+    def test_instagram_handle_is_not_a_tiktok_handle(self):
+        """The platforms have their own rules: 30 characters and double periods differ."""
+        from collector.handles import normalize_instagram_handle
+        self.assertIsNone(normalize_handle("a" * 30)[0])
+        self.assertEqual(normalize_instagram_handle("a" * 30)[0], "a" * 30)
+        self.assertEqual(normalize_handle("two..dots")[0], "two..dots")
+        self.assertIsNone(normalize_instagram_handle("two..dots")[0])
+        self.assertIsNone(normalize_instagram_handle("https://www.tiktok.com/@naam")[0])
+
+    def test_instagram_column_header(self):
+        """The column was typed as 'Insta ' (the sheet reader trims header cells): both names are read."""
+        from collector.handles import instagram_cell
+        self.assertEqual(instagram_cell({"student_name": "A", "Insta": "@one"}), "@one")
+        self.assertEqual(instagram_cell({"instagram_handle": "two"}), "two")
+        self.assertEqual(instagram_cell({"student_name": "A"}), "")
+        self.assertIn("instagram_handle", model.SCHEMA_ADMIN["accounts"])
+
+    def test_instagram_accounts(self):
+        """One Instagram account per student, on the student's first row; problems are reported without names."""
+        from collector.handles import parse_instagram_accounts
+        rows = [
+            {"student_name": "Anna", "tiktok_handle": "@anna", "active": "ja", "main_account": "", "Insta": "Anna.Gram"},
+            {"student_name": "Anna", "tiktok_handle": "anna.ads", "active": "ja", "main_account": "anna", "Insta": "anna.second"},
+            {"student_name": "Bram", "tiktok_handle": "bram", "active": "nee", "Insta": "bram"},            # inactive
+            {"student_name": "Cas", "tiktok_handle": "cas", "active": "ja", "Insta": "https://www.instagram.com/cas_ig/"},
+            {"student_name": "Dee", "tiktok_handle": "dee", "active": "ja", "Insta": "cas_ig"},              # same account as Cas
+            {"student_name": "Eli", "tiktok_handle": "eli", "active": "ja", "Insta": "https://www.instagram.com/p/Xyz"},
+            {"student_name": "Fay", "tiktok_handle": "", "active": "ja", "Insta": "fay.only"},               # no TikTok at all
+            {"student_name": "Gus", "tiktok_handle": "gus", "active": "ja", "Insta": ""},                    # none yet
+            {"student_name": "Hal", "tiktok_handle": "hal", "active": "misschien", "Insta": "hal"},
+        ]
+        accounts, issues = parse_instagram_accounts(rows)
+        self.assertEqual([(a["handle"], a["student"]) for a in accounts],
+                         [("anna.gram", "anna"), ("cas_ig", "cas"), ("fay.only", "instagram:fay.only")])
+        self.assertEqual(len(issues), 4)
+        self.assertEqual([a["row"] for a in accounts], [2, 5, 8])
+        text = " ".join(issues)
+        self.assertIn("second TikTok account", text)
+        self.assertIn("duplicate of row 5", text)
+        self.assertFalse(any(n in text for n in ["Anna", "Bram", "Cas", "Dee", "Eli", "Fay", "Hal"]))
+        # A student who only has Instagram is not a TikTok problem; a row with nothing at all still is.
+        handles, tiktok_issues = parse_accounts(rows[6:7] + [{"student_name": "Zed", "tiktok_handle": "", "active": "ja"}])
+        self.assertEqual((handles, len(tiktok_issues)), ([], 1))
+        self.assertIn("row 3", tiktok_issues[0])
+
+    def test_rename_header_in_place(self):
+        """setup renames the typed 'Insta ' header instead of adding a second, empty column."""
+        from collector.sheets import Spreadsheet
+        calls = []
+        header = ["student_name", "tiktok_handle", "active", "main_account", "Insta "]
+
+        class Sheet(Spreadsheet):
+            def _call(self, method, path="", **kw):
+                calls.append((method, path, kw.get("json")))
+                if method == "PUT":  # like the real sheet: the cell now holds the new name
+                    header[4] = kw["json"]["values"][0][0]
+                return {"values": [list(header)]}
+
+        sheet = Sheet(None, "x")
+        self.assertEqual(sheet.rename_header("accounts", {"insta": "instagram_handle"}), ["Insta -> instagram_handle"])
+        put = [c for c in calls if c[0] == "PUT"]
+        self.assertEqual(len(put), 1)
+        self.assertTrue(put[0][1].endswith("!E1"), put[0][1])
+        self.assertEqual(put[0][2], {"values": [["instagram_handle"]]})
+        # Already renamed (or both present): nothing to do.
+        calls.clear()
+        self.assertEqual(sheet.rename_header("accounts", {"insta": "instagram_handle"}), [])
+        self.assertEqual([c for c in calls if c[0] == "PUT"], [])
 
     def test_invalid(self):
         for raw in ["", "https://vm.tiktok.com/ZMabc/", "naam met €", "a" * 25, "ends.with.dot."]:
