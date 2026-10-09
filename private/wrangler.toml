@@ -17,7 +17,7 @@ binding = "ASSETS"
 run_worker_first = true
 
 # Timer for the collector (GitHub's own cron in collect.yml stays, but can skip firings):
-# every 5 minutes. Each firing checks config.yaml's 2-hourly windows (Amsterdam time) and the
+# every 5 minutes. Each firing checks config.yaml's windows of both platforms (Amsterdam time) and the
 # finale state in the private sheet, and only starts the collector when a window or a 15-minute
 # finale run is due and not done yet (see runSchedule in src/worker.js).
 [triggers]

@@ -21,10 +21,16 @@ const expected = {
   post_history: ["video_id", "handle", "timestamp", "views", "likes"],
   finale: ["started_at", "deadline", "status", "ended_at"],
   outliers: ["handle", "buiten_schaal"],
+  // Instagram tabs (fixed gids, created by `setup` or the first Instagram run).
+  ig_handles: ["handle", "is_private", "followers", "last_status"],
+  ig_history: ["timestamp", "handle", "followers", "following", "posts_count", "is_private", "campaign_posts"],
+  ig_posts: ["post_id", "handle", "created_at", "post_type", "hashtags", "url"],
+  ig_baseline: ["handle", "baseline_at", "baseline_followers"],
+  ig_outliers: ["handle", "buiten_schaal"],
 };
 // Created by the first collector run after it was added (or the first "buiten schaal" switch);
 // until then the site simply has no outliers.
-const optional = new Set(["outliers"]);
+const optional = new Set(["outliers", "ig_handles", "ig_history", "ig_posts", "ig_baseline", "ig_outliers"]);
 const missingTabs = new Set();
 
 let failed = false;

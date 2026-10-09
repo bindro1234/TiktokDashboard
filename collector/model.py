@@ -48,10 +48,23 @@ SCHEMA_DATA = {
     "finale": ["started_at", "deadline", "status", "ended_at"],
     # "Buiten schaal": accounts left out of the chart scales (handles only), set on the private site.
     "outliers": ["handle", "buiten_schaal", "updated_at"],
+    # Instagram, in tabs of its own so the TikTok tabs stay as they are. Handles only, no names, and
+    # nothing that links a student's Instagram account to their TikTok account.
+    "ig_handles": ["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"],
+    # One row per account per run: followers, following, post count, private yes/no (the record has no
+    # likes or views) and the number of campaign posts so far.
+    "ig_history": ["timestamp", "handle", "followers", "following", "posts_count", "is_private", "campaign_posts"],
+    # One row per post (post_id), from instagram.start_date. post_type: photo, carousel or reel.
+    "ig_posts": ["post_id", "handle", "created_at", "post_type", "hashtags", "url", "first_seen", "last_seen"],
+    # The first successful measurement of each account (followers). Only ever added to, never changed:
+    # the Instagram standings count followers gained since this moment.
+    "ig_baseline": ["handle", "baseline_at", "baseline_followers"],
+    "ig_outliers": ["handle", "buiten_schaal", "updated_at"],
 }
 # Tabs created with a fixed tab id (gid), so the website can link to them before they exist
 # (site/config.js gids). The private Worker uses the same id when it creates the tab.
-FIXED_SHEET_IDS = {"outliers": 702500001}
+FIXED_SHEET_IDS = {"outliers": 702500001, "ig_handles": 702500002, "ig_history": 702500003,
+                   "ig_posts": 702500004, "ig_baseline": 702500005, "ig_outliers": 702500006}
 
 # run_log statuses that mean "this window is handled, don't run it again".
 DONE_STATUSES = {"ok", "partial", "refused", "skipped"}
@@ -440,7 +453,10 @@ def window_state(run_log: list[dict]) -> tuple[set[str], dict[str, int]]:
 
 # Full profiles runs. "today_check" (Vandaag tab: only the accounts that have not posted yet
 # today) is left out on purpose: a partial check must never make a full run skip itself.
+# Instagram has its own run types, so a TikTok run never makes an Instagram window skip or the other
+# way round; both count toward the same monthly cap (month_usage adds up every run).
 PROFILE_RUN_TYPES = {"profiles", "force_refresh"}
+IG_PROFILE_RUN_TYPES = {"ig_profiles", "ig_force_refresh"}
 
 
 def status_kind(status) -> str:
@@ -458,11 +474,12 @@ def private_since(snapshots: list[dict], handle: str) -> str | None:
     return since
 
 
-def last_profiles_run(run_log: list[dict]) -> dt.datetime | None:
-    """Time of the last profiles run that actually started a Bright Data job (so it may have cost records)."""
+def last_profiles_run(run_log: list[dict], types: set[str] = PROFILE_RUN_TYPES) -> dt.datetime | None:
+    """Time of the last profiles run (of these run types: TikTok's by default) that actually started a
+    Bright Data job, so it may have cost records."""
     last = None
     for row in run_log:
-        if row.get("run_type") not in PROFILE_RUN_TYPES or truthy(row.get("dry_run")):
+        if row.get("run_type") not in types or truthy(row.get("dry_run")):
             continue
         if not str(row.get("snapshot_ids", "")).strip():
             continue
@@ -472,13 +489,15 @@ def last_profiles_run(run_log: list[dict]) -> dt.datetime | None:
     return last
 
 
-def remaining_profile_runs(cfg: Config, now_local: dt.datetime, done: set[str]) -> int:
-    """Scheduled profile windows still to come in this calendar month (UTC), not yet run."""
+def remaining_profile_runs(cfg: Config, now_local: dt.datetime, done: set[str], platform: str = "tiktok") -> int:
+    """Scheduled profile windows of a platform still to come in this calendar month (UTC), not yet run.
+    Only the windows of the platform's frequency step count (config.yaml frequency)."""
     now_utc = now_local.astimezone(UTC)
     count = 0
     day = now_local.date()
+    windows = cfg.platform_windows(platform)
     while day <= cfg.campaign.collect_until:
-        for window in cfg.profile_windows:
+        for window in windows:
             end_local = dt.datetime.combine(day, window.end, cfg.tz)
             end_utc = end_local.astimezone(UTC)
             if end_local <= now_local or window.key(day) in done:

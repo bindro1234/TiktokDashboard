@@ -292,7 +292,7 @@ function baseline(s, latest) {
 }
 
 // Rank by total views; "+ 24 uur" and the rank change compare with the run of ~24 hours earlier
-// (rolling, so it doesn't reset at midnight now that there are runs every 2 hours).
+// (rolling, so it doesn't reset at midnight; TikTok runs every 12 hours).
 function standings(accounts, series, latest) {
   const rows = accounts.map((a) => {
     const s = series.get(a.handle);

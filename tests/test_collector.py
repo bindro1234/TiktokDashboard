@@ -240,12 +240,15 @@ class BudgetTests(unittest.TestCase):
 
     def test_remaining_profile_runs(self):
         now = local(2026, 10, 23, 8, 45)  # Friday refresh time; the 08u window already ran
-        done = {"2026-10-23/08u"}
-        # 10u..22u on the 23rd (7) + 12 on each of the 24th to the 30th (84) = 91 runs;
+        # TikTok every 12 hours (08u, 20u): 20u on the 23rd + 2 on each of the 24th to the 30th = 15 runs;
         # collection stops after 30 Oct.
-        self.assertEqual(model.remaining_profile_runs(CFG, now, done), 91)
+        self.assertEqual(model.remaining_profile_runs(CFG, now, {"2026-10-23/08u"}), 15)
         # Without the 08u run it is still open (ends 08:59), so it counts too.
-        self.assertEqual(model.remaining_profile_runs(CFG, now, set()), 92)
+        self.assertEqual(model.remaining_profile_runs(CFG, now, set()), 16)
+        # Instagram every 4 hours (6 a day): 12u, 16u, 20u on the 23rd + 6 on each of the next 7 days = 45;
+        # its windows are keyed ig-08u, so a TikTok 08u run says nothing about them.
+        self.assertEqual(model.remaining_profile_runs(CFG, now, {"2026-10-23/08u"}, "instagram"), 46)
+        self.assertEqual(model.remaining_profile_runs(CFG, now, {"2026-10-23/ig-08u"}, "instagram"), 45)
 
     def test_campaign_end_and_cap(self):
         self.assertEqual((CAMP.end, CAMP.collect_until), (dt.date(2026, 10, 30), dt.date(2026, 10, 30)))
@@ -253,10 +256,13 @@ class BudgetTests(unittest.TestCase):
         # 26-30 Oct are normal school days; the Herfstvakantie stays 19-23 Oct.
         self.assertFalse(any(CFG.off_days.contains(dt.date(2026, 10, d)) for d in range(26, 31)))
         self.assertTrue(CFG.off_days.contains(dt.date(2026, 10, 23)))
-        # Every profile window of the last day is still collected; none on 31 Oct.
-        last = local(2026, 10, 30, 21, 0)
-        self.assertEqual(model.remaining_profile_runs(CFG, last, set()), 1)  # 22u (20u ended at 20:59)
+        # Every window of the last day is still collected (20u for both platforms); none on 31 Oct.
+        last = local(2026, 10, 30, 19, 0)
+        self.assertEqual(model.remaining_profile_runs(CFG, last, set()), 1)
+        self.assertEqual(model.remaining_profile_runs(CFG, last, set(), "instagram"), 1)
+        self.assertEqual(model.remaining_profile_runs(CFG, local(2026, 10, 30, 21, 0), set()), 0)  # 20u ended at 20:59
         self.assertEqual(model.remaining_profile_runs(CFG, local(2026, 10, 31, 1, 0), set()), 0)
+        self.assertEqual(model.remaining_profile_runs(CFG, local(2026, 10, 31, 1, 0), set(), "instagram"), 0)
 
     def test_window_state(self):
         rows = [{"window": "k1", "status": "failed", "dry_run": False},
@@ -441,11 +447,13 @@ class FinaleTests(unittest.TestCase):
                     "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}]
         admin = FakeSheet({"run_log": run_log, "accounts": [], "finale": [self.ROW]})
         Collector(CFG, admin, FakeSheet({}), bd=None, now=now).auto()
-        row = admin.tabs["run_log"][-1]
-        self.assertEqual(row["window"], "2026-10-26/finale-1500")
-        self.assertNotIn("SKIPPED", row["notes"])  # 15 min after the last run, but finale runs never skip
+        # Both platforms run in the finale (here without accounts, so both are skipped and done).
+        rows = {r["window"]: r for r in admin.tabs["run_log"][1:]}
+        self.assertEqual(set(rows), {"2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"})
+        self.assertNotIn("SKIPPED", rows["2026-10-26/finale-1500"]["notes"])  # 15 min after the last run, but finale runs never skip
+        self.assertEqual({r["run_type"] for r in rows.values()}, {"profiles", "ig_profiles"})
         Collector(CFG, admin, FakeSheet({}), bd=None, now=now + dt.timedelta(minutes=5)).auto()
-        self.assertEqual(len(admin.tabs["run_log"]), 2)
+        self.assertEqual(len(admin.tabs["run_log"]), 3)
 
 
 class OffDayTests(unittest.TestCase):
@@ -459,12 +467,16 @@ class OffDayTests(unittest.TestCase):
 
     def test_fixed_tab_id_matches_the_website(self):
         site = (config.ROOT / "site" / "config.js").read_text(encoding="utf-8")
-        self.assertIn(f"outliers: {model.FIXED_SHEET_IDS['outliers']}", site)
-        self.assertIn("outliers", model.SCHEMA_DATA)
-        self.assertLess(model.FIXED_SHEET_IDS["outliers"], 2 ** 31)  # Sheets tab ids are int32
+        self.assertEqual(set(model.FIXED_SHEET_IDS),
+                         {"outliers", "ig_handles", "ig_history", "ig_posts", "ig_baseline", "ig_outliers"})
+        for tab, gid in model.FIXED_SHEET_IDS.items():
+            self.assertIn(f"{tab}: {gid}", site)   # the site knows these tabs before they exist
+            self.assertIn(tab, model.SCHEMA_DATA)
+            self.assertLess(gid, 2 ** 31)  # Sheets tab ids are int32
+        self.assertEqual(len(set(model.FIXED_SHEET_IDS.values())), len(model.FIXED_SHEET_IDS))
         from collector import worker_config
         out = worker_config.build(config.load())
-        self.assertEqual(out["fixedGids"], {"outliers": model.FIXED_SHEET_IDS["outliers"]})
+        self.assertEqual(out["fixedGids"], model.FIXED_SHEET_IDS)
         self.assertEqual(out["todayCheck"], {"cooldownMinutes": 10})
         self.assertEqual(out["signals"]["minViews"], CFG.signals["min_views"])
         self.assertEqual(set(out["signals"]), {"minViews", "likeRatioFactor", "stepShare", "stepMaxHours", "flatHours",
@@ -651,6 +663,509 @@ class ForceRefreshTests(unittest.TestCase):
                                "dry_run": False, "snapshot_ids": "sd_a", "status": "ok"}])
         # Past the cooldown it goes on to the normal profiles run (here: no accounts, so skipped).
         self.assertEqual((row["run_type"], row["status"]), ("force_refresh", "skipped"))
+
+
+# ---------- Instagram ----------
+
+def ig_id(ts: dt.datetime) -> str:
+    """An Instagram media id for a moment (the same formula the real ids follow)."""
+    from collector import instagram
+    return str(((int(ts.timestamp() * 1000) - instagram.IG_EPOCH_MS) << 23) | 4321)
+
+
+def ig_post(ts, content_type="Image", caption="", tags=None, listed=None):
+    return {"caption": caption, "datetime": listed or ts.strftime("%Y-%m-%dT00:00:00.000Z"), "id": ig_id(ts),
+            "image_url": "https://example.invalid/x.jpg", "post_hashtags": tags, "content_type": content_type,
+            "url": f"https://www.instagram.com/p/C{ig_id(ts)[-8:]}"}
+
+
+def ig_record(handle, posts, followers=10, following=3, private=False, posts_count=None):
+    return {"account": handle, "id": "99", "followers": followers, "following": following,
+            "posts_count": posts_count if posts_count is not None else len(posts), "is_private": private,
+            "posts": posts, "input": {"url": f"https://www.instagram.com/{handle}/"},
+            "discovery_input": {"user_name": handle}}
+
+
+def ut(y, m, d, hh=12, mm=0):
+    return dt.datetime(y, m, d, hh, mm, tzinfo=UTC)
+
+
+class InstagramParseTests(unittest.TestCase):
+    NOW = ut(2026, 10, 12, 12, 0)
+
+    def test_post_time_comes_from_the_id(self):
+        from collector import instagram
+        moment = dt.datetime(2026, 10, 9, 12, 38, 17, tzinfo=UTC)
+        self.assertEqual(instagram.post_time_from_id(ig_id(moment), self.NOW), moment)
+        for bad in ["", "abc", "123", None, "9" * 30, "-5"]:
+            self.assertIsNone(instagram.post_time_from_id(bad, self.NOW), bad)
+        # An id from the future is not plausible.
+        self.assertIsNone(instagram.post_time_from_id(ig_id(self.NOW + dt.timedelta(days=3)), self.NOW))
+
+    def test_created_at_is_the_id_time_never_before_the_listed_day(self):
+        from collector import instagram
+        t = dt.datetime(2026, 10, 9, 12, 38, 17, tzinfo=UTC)
+        # Normal post: the listing holds the same day, the id gives the exact time.
+        self.assertEqual(instagram.created_at(ig_post(t), self.NOW), t)
+        # Listed a day earlier than the id says: the id wins (the list is off by a day for about 1 post in 10).
+        self.assertEqual(instagram.created_at(ig_post(t, listed="2026-10-08T00:00:00.000Z"), self.NOW), t)
+        # A scheduled post (created before it was published): not earlier than the listed day.
+        self.assertEqual(instagram.created_at(ig_post(t, listed="2026-10-10T00:00:00.000Z"), self.NOW), ut(2026, 10, 10, 0))
+        # No usable id: the listed date, as it is.
+        broken = {**ig_post(t), "id": "x"}
+        self.assertEqual(instagram.created_at(broken, self.NOW), ut(2026, 10, 9, 0))
+        self.assertIsNone(instagram.created_at({"id": "x"}, self.NOW))
+
+    def test_types_and_hashtags(self):
+        from collector import instagram
+        self.assertEqual([instagram.post_type(x) for x in ["Image", "Carousel", "Video", "Reel", None]],
+                         ["photo", "carousel", "reel", "reel", ""])
+        post = {"caption": "Nieuw! #GLU #fotografie📷 #glu #Grafisch_Lyceum, #", "post_hashtags": ["fotografie📷", "AV"]}
+        self.assertEqual(instagram.hashtags(post), "fotografie av glu grafisch_lyceum")
+        self.assertEqual(instagram.hashtags({"caption": None, "post_hashtags": None}), "")
+
+    def test_only_posts_from_the_instagram_start_day_to_the_campaign_end_count(self):
+        from collector import instagram
+        camp = CFG.instagram_campaign
+        self.assertEqual((camp.start, camp.end), (dt.date(2026, 10, 7), dt.date(2026, 10, 30)))
+        before = camp.start_utc - dt.timedelta(minutes=1)   # 23:59 Amsterdam on 6 Oct
+        first = camp.start_utc                               # 00:00 Amsterdam on 7 Oct
+        last = camp.end_utc_exclusive - dt.timedelta(minutes=1)  # 23:59 Amsterdam on 30 Oct
+        after = camp.end_utc_exclusive
+        rec = ig_record("stu", [ig_post(t) for t in (before, first, last, after)])
+        now = after + dt.timedelta(hours=1)
+        out = instagram.parse_profile(rec, "stu", camp, now)
+        self.assertEqual(sorted(p["created_at"] for p in out["posts"]), sorted(model.iso(t) for t in (first, last)))
+        self.assertEqual(out["array_size"], 4)
+        snap = out["snapshot"]
+        self.assertEqual((snap["followers"], snap["following"], snap["posts_count"], snap["is_private"]), (10, 3, 4, False))
+        # The week before the start (TikTok days) is not an Instagram day.
+        self.assertFalse(camp.counts(ut(2026, 10, 1)))
+
+    def test_record_handle_and_errors(self):
+        from collector import instagram
+        self.assertEqual(instagram.record_handle(ig_record("Stu.IG", [])), "stu.ig")
+        err = {"error": "Profile does not exist", "error_code": "dead_page", "input": {"url": "https://www.instagram.com/gone/"}}
+        self.assertEqual(instagram.record_handle(err), "gone")
+        self.assertTrue(instagram.is_error(err))
+        self.assertEqual(instagram.error_reason(err), "dead_page: Profile does not exist")
+        self.assertFalse(instagram.is_error(ig_record("stu", [])))
+        # An empty record for an account that is gone is a failure too, never a measurement without followers.
+        empty = {"input": {"url": "https://www.instagram.com/gone/"}, "followers": None, "posts": None}
+        self.assertTrue(instagram.is_error(empty))
+        self.assertEqual(instagram.error_reason(empty), "error: no profile data in the record")
+        self.assertFalse(instagram.is_error({"input": {"url": "x"}, "followers": 0}))   # zero followers is real data
+        self.assertFalse(instagram.is_error(ig_record("stu", [], private=True, followers=3)))
+
+    def test_window_full_warning(self):
+        from collector import instagram
+        camp = CFG.instagram_campaign
+        now = ut(2026, 10, 12)
+        times = [now - dt.timedelta(hours=3 * i) for i in range(12)]
+        full = instagram.parse_profile(ig_record("stu", [ig_post(t) for t in times]), "stu", camp, now)
+        self.assertTrue(instagram.window_full(full, set()))             # first sighting, nearly all inside the campaign
+        self.assertFalse(instagram.window_full(full, {full["array_ids"][5]}))  # overlaps with what we stored
+        self.assertTrue(instagram.window_full(full, {"1"}))             # stored posts, none in the list
+        some = instagram.parse_profile(ig_record("stu", [ig_post(t) for t in times[:11]]), "stu", camp, now)
+        self.assertFalse(instagram.window_full(some, set()))            # not full
+        # Full, but many posts are older than the campaign (pinned or just an older account): no warning.
+        old = [ig_post(ut(2026, 9, 1 + i)) for i in range(5)]
+        mixed = instagram.parse_profile(ig_record("stu", old + [ig_post(t) for t in times[:7]]), "stu", camp, now)
+        self.assertFalse(instagram.window_full(mixed, set()))
+
+    def test_upsert_keeps_dropped_posts_and_the_first_time(self):
+        from collector import instagram
+        old = [{"post_id": "1", "handle": "a", "created_at": "2026-10-08T10:00:00Z", "post_type": "photo", "hashtags": "glu",
+                "url": "u1", "first_seen": "t0", "last_seen": "t0"},
+               {"post_id": "2", "handle": "a", "created_at": "2026-10-09T10:00:00Z", "post_type": "reel", "hashtags": "",
+                "url": "u2", "first_seen": "t0", "last_seen": "t0"}]
+        new = [{"post_id": "1", "handle": "a", "created_at": "2026-10-08T12:00:00Z", "post_type": "photo", "hashtags": "glu av", "url": "u1"},
+               {"post_id": "3", "handle": "a", "created_at": "2026-10-10T10:00:00Z", "post_type": "carousel", "hashtags": "", "url": "u3"}]
+        by = {r["post_id"]: r for r in instagram.upsert_posts(old, new, "t1")}
+        self.assertEqual(sorted(by), ["1", "2", "3"])                      # post 2 left the list but stays
+        self.assertEqual((by["1"]["first_seen"], by["1"]["last_seen"], by["1"]["hashtags"]), ("t0", "t1", "glu av"))
+        self.assertEqual(by["1"]["created_at"], "2026-10-08T10:00:00Z")    # as first computed
+        self.assertEqual((by["2"]["last_seen"], by["3"]["first_seen"]), ("t0", "t1"))
+
+    def test_baseline_only_ever_grows(self):
+        from collector import instagram
+        have = [{"handle": "a", "baseline_at": "t0", "baseline_followers": 5}]
+        snaps = [{"handle": "a", "followers": 50}, {"handle": "b", "followers": 7}, {"handle": "c", "followers": None}]
+        rows = instagram.new_baselines(have, snaps, "t1")
+        self.assertEqual(rows, [{"handle": "b", "baseline_at": "t1", "baseline_followers": 7}])
+        self.assertEqual(instagram.new_baselines(have + rows, snaps, "t2"), [])
+
+
+class FakeBothBrightData:
+    """TikTok and Instagram profile records by dataset; remembers what was asked, per platform."""
+
+    def __init__(self, tiktok=None, ig=None):
+        self.tiktok, self.ig = tiktok or {}, ig or {}
+        self.asked = {"tiktok": [], "instagram": []}
+        self._last = None
+
+    def trigger(self, dataset, inputs, **params):
+        if dataset == CFG.instagram_dataset:
+            self._last = ("instagram", [i["url"].rstrip("/").rsplit("/", 1)[1] for i in inputs])
+        else:
+            self._last = ("tiktok", [i["url"].split("@")[1] for i in inputs])
+        self.asked[self._last[0]].append(self._last[1])
+        return "sd_" + self._last[0]
+
+    def wait(self, snapshot):
+        return {"status": "ready", "records": len(self._last[1])}
+
+    def download(self, snapshot):
+        platform, handles = self._last
+        source = self.ig if platform == "instagram" else self.tiktok
+        return [source[h] for h in handles if h in source]
+
+
+class InstagramRunTests(unittest.TestCase):
+    NOW = dt.datetime(2026, 10, 12, 6, 10, tzinfo=UTC)   # 08:10 Amsterdam: TikTok 08u and Instagram ig-08u are open
+
+    def setUp(self):
+        accounts = [{"student_name": n, "tiktok_handle": h, "active": a, "main_account": "", "instagram_handle": i}
+                    for n, h, a, i in [("A", "aa", "ja", "IG_AA"), ("B", "bb", "ja", "https://www.instagram.com/ig_bb/"),
+                                       ("C", "cc", "ja", ""), ("D", "dd", "ja", "ig_dd"), ("E", "ee", "nee", "ig_ee")]]
+        self.admin = FakeSheet({"accounts": accounts, "run_log": [], "profile_window": []})
+        self.data = FakeSheet({})
+        self.posts = {
+            "ig_aa": [ig_post(ut(2026, 10, 11, 17, 45), "Video", "Nieuw #GLU #reel📷"), ig_post(ut(2026, 10, 9, 8, 0)),
+                      ig_post(ut(2026, 9, 20, 8, 0))],            # the last one is older than the Instagram start day
+            "ig_bb": [ig_post(ut(2026, 10, 12, 5, 30), "Carousel", "#av")],
+            "ig_dd": [],
+        }
+        self.recs = {"ig_aa": ig_record("ig_aa", self.posts["ig_aa"], followers=100, following=40),
+                     "ig_bb": ig_record("ig_bb", self.posts["ig_bb"], followers=20),
+                     "ig_dd": ig_record("ig_dd", [], followers=8, private=True)}
+        self.tt = {h: profile_record(h, [(str(800 + i), "2026-10-12T04:00:00.000Z", 40)]) for i, h in enumerate(["aa", "bb", "cc", "dd"])}
+        self.bd = FakeBothBrightData(self.tt, self.recs)
+
+    def col(self, now=None, dry=False, bd=True, cfg=CFG):
+        return Collector(cfg, self.admin, self.data, self.bd if bd else None, dry_run=dry, now=now or self.NOW)
+
+    def last_row(self):
+        return self.admin.tabs["run_log"][-1]
+
+    def test_dry_run_plans_the_cost_and_touches_nothing(self):
+        self.col(dry=True).run_ig_profiles("2026-10-12/ig-manual-0810")
+        row = self.last_row()
+        self.assertEqual((row["run_type"], row["status"], row["dry_run"], row["expected_records"], row["actual_records"]),
+                         ("ig_profiles", "dry-run", True, 3, 0))
+        self.assertIn("would fetch 3 Instagram profile(s), 1 record each: @ig_aa, @ig_bb, @ig_dd", row["notes"])
+        self.assertIn("budget: used this month 0 + this run max 3", row["notes"])
+        self.assertEqual(self.bd.asked, {"tiktok": [], "instagram": []})
+        self.assertFalse(any(t.startswith("ig_") for t in self.data.tabs), "a dry run creates no tabs")
+
+    def test_real_run_stores_posts_history_baseline_and_status(self):
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")
+        self.assertEqual(self.bd.asked["instagram"], [["ig_aa", "ig_bb", "ig_dd"]])   # one record per account, normalised handles
+        row = self.last_row()
+        self.assertEqual((row["run_type"], row["status"], row["expected_records"], row["actual_records"], row["errors"]),
+                         ("ig_profiles", "ok", 3, 3, 0))
+        posts = {r["post_id"]: r for r in self.data.tabs["ig_posts"]}
+        self.assertEqual(len(posts), 3)   # the post before the start day is not stored
+        reel = next(r for r in posts.values() if r["post_type"] == "reel")
+        self.assertEqual((reel["handle"], reel["hashtags"], reel["created_at"]), ("ig_aa", "glu reel", "2026-10-11T17:45:00Z"))
+        self.assertTrue(reel["url"].startswith("https://www.instagram.com/p/"))
+        self.assertEqual(sorted(r["post_type"] for r in posts.values()), ["carousel", "photo", "reel"])
+        self.assertTrue(set(self.data.tabs["ig_posts"][0]) >= {"post_id", "handle", "created_at", "post_type", "hashtags", "url", "first_seen", "last_seen"})
+        self.assertFalse(any(k in self.data.tabs["ig_posts"][0] for k in ("likes", "comments", "views")))
+        hist = {r["handle"]: r for r in self.data.tabs["ig_history"]}
+        self.assertEqual((hist["ig_aa"]["followers"], hist["ig_aa"]["following"], hist["ig_aa"]["posts_count"], hist["ig_aa"]["campaign_posts"]), (100, 40, 3, 2))
+        handles = {r["handle"]: r for r in self.data.tabs["ig_handles"]}
+        self.assertEqual(sorted(handles), ["ig_aa", "ig_bb", "ig_dd"])
+        self.assertEqual((handles["ig_aa"]["last_status"], handles["ig_dd"]["last_status"]), ("ok", "privé"))
+        self.assertEqual(handles["ig_dd"]["status_since"], "2026-10-12T06:10:00Z")
+        self.assertEqual({r["handle"]: r["baseline_followers"] for r in self.data.tabs["ig_baseline"]}, {"ig_aa": 100, "ig_bb": 20, "ig_dd": 8})
+        self.assertIn("ig_outliers", self.data.tabs)   # created with the others (fixed tab ids)
+        # No student names and no TikTok handles in any cell of the public Instagram tabs.
+        cells = {str(v) for tab, rows in self.data.tabs.items() if tab.startswith("ig_") for row in rows for v in row.values()}
+        self.assertEqual(cells & {"A", "B", "C", "D", "aa", "bb", "cc", "dd"}, set())
+        self.assertFalse(any("tiktok" in c.lower() for c in cells))
+
+    def test_second_run_adds_history_but_the_baseline_never_shifts(self):
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")
+        self.recs["ig_aa"] = ig_record("ig_aa", self.posts["ig_aa"] + [ig_post(ut(2026, 10, 12, 9, 0), "Image", "#glu")], followers=130)
+        self.recs["ig_zz"] = ig_record("ig_zz", [], followers=4)
+        later = self.NOW + dt.timedelta(hours=4)
+        self.col(now=later).run_ig_profiles("2026-10-12/ig-manual-1210")
+        base = {r["handle"]: r for r in self.data.tabs["ig_baseline"]}
+        self.assertEqual((base["ig_aa"]["baseline_followers"], base["ig_aa"]["baseline_at"]), (100, "2026-10-12T06:10:00Z"))
+        self.assertEqual(len(self.data.tabs["ig_history"]), 6)
+        self.assertEqual([r["followers"] for r in self.data.tabs["ig_history"] if r["handle"] == "ig_aa"], [100, 130])
+        posts = [r for r in self.data.tabs["ig_posts"] if r["handle"] == "ig_aa"]
+        self.assertEqual(len(posts), 3)
+        self.assertEqual({r["first_seen"] for r in posts if r["post_type"] != "reel" or True} - {"2026-10-12T06:10:00Z", "2026-10-12T10:10:00Z"}, set())
+        # A student added later gets a baseline of their own, at their own first measurement.
+        self.admin.tabs["accounts"].append({"student_name": "Z", "tiktok_handle": "zz", "active": "ja", "main_account": "", "instagram_handle": "ig_zz"})
+        self.col(now=later + dt.timedelta(hours=4)).run_ig_profiles("2026-10-12/ig-manual-1410")
+        base = {r["handle"]: r for r in self.data.tabs["ig_baseline"]}
+        self.assertEqual((base["ig_zz"]["baseline_followers"], base["ig_zz"]["baseline_at"]), (4, "2026-10-12T14:10:00Z"))
+        self.assertEqual(base["ig_aa"]["baseline_followers"], 100)
+
+    def test_not_found_and_private_get_the_tiktok_statuses(self):
+        self.recs["ig_bb"] = {"error": "Profile does not exist", "error_code": "dead_page",
+                              "input": {"url": "https://www.instagram.com/ig_bb/"}}
+        del self.recs["ig_dd"]   # no record at all
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")
+        row = self.last_row()
+        self.assertEqual((row["status"], row["errors"], row["actual_records"]), ("partial", 2, 3))
+        self.assertIn("@ig_bb failed: dead_page: Profile does not exist", row["notes"])
+        self.assertIn("@ig_dd failed: no record returned", row["notes"])
+        handles = {r["handle"]: r for r in self.data.tabs["ig_handles"]}
+        self.assertTrue(handles["ig_bb"]["last_status"].startswith("fout"))
+        self.assertEqual(model.status_kind(handles["ig_bb"]["last_status"]), "fout")
+        self.assertEqual(handles["ig_bb"]["status_since"], "2026-10-12T06:10:00Z")
+        # A failed account has no history row and no baseline (not a successful measurement).
+        self.assertEqual([r["handle"] for r in self.data.tabs["ig_history"]], ["ig_aa"])
+        self.assertEqual([r["handle"] for r in self.data.tabs["ig_baseline"]], ["ig_aa"])
+
+    def test_issues_in_accounts_are_reported_without_names(self):
+        self.admin.tabs["accounts"].append({"student_name": "Fay", "tiktok_handle": "ff", "active": "ja", "main_account": "",
+                                            "instagram_handle": "https://www.instagram.com/p/xyz"})
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")
+        self.assertIn("Instagram 'https://www.instagram.com/p/xyz' skipped", self.last_row()["notes"])
+        self.assertNotIn("Fay", self.last_row()["notes"])
+
+    def test_the_platforms_never_make_each_others_windows_skip(self):
+        """08:10: TikTok 08u and Instagram ig-08u both run, once; at 04:10 only Instagram (TikTok runs 08u and 20u)."""
+        self.col().auto()
+        rows = {r["window"]: r for r in self.admin.tabs["run_log"]}
+        self.assertEqual(set(rows), {"2026-10-12/08u", "2026-10-12/ig-08u"})
+        self.assertEqual({r["status"] for r in rows.values()}, {"ok"})   # the TikTok run just before did not skip Instagram
+        self.assertEqual((self.bd.asked["tiktok"], self.bd.asked["instagram"]), ([["aa", "bb", "cc", "dd"]], [["ig_aa", "ig_bb", "ig_dd"]]))
+        self.col(now=self.NOW + dt.timedelta(minutes=20)).auto()          # same windows again: nothing
+        self.assertEqual(len(self.admin.tabs["run_log"]), 2)
+        self.col(now=dt.datetime(2026, 10, 13, 2, 10, tzinfo=UTC)).auto()   # 04:10 Amsterdam
+        self.assertEqual([r["window"] for r in self.admin.tabs["run_log"][2:]], ["2026-10-13/ig-04u"])
+        self.col(now=dt.datetime(2026, 10, 13, 8, 10, tzinfo=UTC)).auto()   # 10:10: a pool window, but in nobody's step
+        self.assertEqual(len(self.admin.tabs["run_log"]), 3)
+
+    def test_a_platform_set_to_off_has_no_scheduled_runs(self):
+        import dataclasses
+        cfg = dataclasses.replace(CFG, frequency={"tiktok": "12h", "instagram": "off"})
+        self.col(cfg=cfg).auto()
+        self.assertEqual([r["window"] for r in self.admin.tabs["run_log"]], ["2026-10-12/08u"])
+        self.assertEqual(self.bd.asked["instagram"], [])
+
+    def test_skip_after_a_recent_run_is_per_platform(self):
+        def run(ts, run_type, ids="sd_x"):
+            return {"timestamp": ts, "run_type": run_type, "window": "w-" + run_type, "dry_run": False, "snapshot_ids": ids, "status": "ok"}
+        # A TikTok "Nu verversen" 10 minutes ago does not make the Instagram window skip ...
+        self.admin.tabs["run_log"] = [run("2026-10-12T06:00:00Z", "force_refresh")]
+        self.col().run_scheduled_ig_profiles("2026-10-12/ig-08u")
+        self.assertEqual(self.last_row()["status"], "ok")
+        # ... but a recent Instagram run does, while TikTok goes on.
+        self.admin.tabs["run_log"] = [run("2026-10-12T05:40:00Z", "ig_force_refresh")]
+        self.col().run_scheduled_ig_profiles("2026-10-12/ig-08u")
+        row = self.last_row()
+        self.assertEqual((row["status"], row["actual_records"]), ("skipped", 0))
+        self.assertIn("SKIPPED: last Instagram run was 30 min ago", row["notes"])
+        self.col().run_scheduled_profiles("2026-10-12/08u")
+        self.assertEqual(self.last_row()["status"], "ok")
+        # A partial check never counts as a full run.
+        self.admin.tabs["run_log"] = [run("2026-10-12T06:05:00Z", "ig_today_check")]
+        self.assertIsNone(model.last_profiles_run(self.admin.tabs["run_log"], model.IG_PROFILE_RUN_TYPES))
+        # The finale windows never skip.
+        self.admin.tabs["run_log"] = [run("2026-10-12T06:05:00Z", "ig_profiles")]
+        self.col().run_scheduled_ig_profiles("2026-10-12/ig-finale-0810")
+        self.assertEqual(self.last_row()["status"], "ok")
+
+    def test_both_platforms_share_one_monthly_cap(self):
+        used = CFG.monthly_cap - 2   # TikTok runs already used almost all of it
+        self.admin.tabs["run_log"] = [{"timestamp": "2026-10-05T10:00:00Z", "run_type": "profiles", "window": "w", "dry_run": False,
+                                       "actual_records": used, "status": "ok"}]
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")   # 3 records: does not fit in the 2 that are left
+        row = self.last_row()
+        self.assertEqual((row["status"], row["actual_records"]), ("refused", 0))
+        self.assertIn("REFUSED: would exceed the monthly cap", row["notes"])
+        self.assertEqual(self.bd.asked["instagram"], [])
+
+    def test_force_refresh_has_its_own_cooldown(self):
+        self.admin.tabs["run_log"] = [{"timestamp": "2026-10-12T06:00:00Z", "run_type": "ig_profiles", "window": "w", "dry_run": False,
+                                       "snapshot_ids": "sd_x", "status": "ok"}]
+        self.col().run_ig_force_refresh("2026-10-12/ig-force-0810")
+        self.assertEqual(self.last_row()["status"], "refused")
+        self.col().run_force_refresh("2026-10-12/force-0810")        # TikTok has not run: goes ahead
+        self.assertEqual(self.last_row()["status"], "ok")
+
+    def test_today_check_fetches_only_the_given_instagram_accounts(self):
+        self.data.tabs["ig_handles"] = [{"handle": "ig_dd", "is_private": True}]
+        self.col().run_ig_today_check("2026-10-12/ig-today-0810", ["ig_bb", "ig_dd", "nobody", "ig_ee"])
+        self.assertEqual(self.bd.asked["instagram"], [["ig_bb"]])    # private, unknown and inactive accounts are not fetched
+        row = self.last_row()
+        self.assertEqual((row["run_type"], row["status"], row["expected_records"]), ("ig_today_check", "ok", 1))
+        self.assertIn("not checked (inactive, unknown or private): @ig_dd, @nobody, @ig_ee", row["notes"])
+        handles = {r["handle"]: r for r in self.data.tabs["ig_handles"]}
+        self.assertEqual(sorted(handles), ["ig_aa", "ig_bb", "ig_dd"])    # every account keeps its row
+        self.assertEqual([r["handle"] for r in self.data.tabs["ig_history"]], ["ig_bb"])
+
+    def test_reserve_counts_both_platforms_and_status_shows_them(self):
+        by = self.col().reserve_by_platform()
+        # From 08:10 on 12 Oct (the 08u windows are still open): TikTok 08u + 20u today and two a day to the 30th;
+        # Instagram 08u, 12u, 16u, 20u today and six a day to the 30th.
+        self.assertEqual(by["tiktok"][:2], (2 + 2 * 18, 4))
+        self.assertEqual(by["instagram"][:2], (4 + 6 * 18, 3))
+        self.assertEqual(self.col()._reserve(), (by["tiktok"][0] + by["instagram"][0], by["tiktok"][2] + by["instagram"][2]))
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.col().status()
+        text = out.getvalue()
+        self.assertIn("Instagram: 3 active handles, pulled 4h", text)
+        self.assertIn("TikTok: 4 active handles, pulled 12h", text)
+        self.assertIn("projected month total without refreshes:", text)
+
+    def test_window_full_is_reported(self):
+        times = [self.NOW - dt.timedelta(hours=2 * i) for i in range(12)]
+        self.recs["ig_aa"] = ig_record("ig_aa", [ig_post(t) for t in times])
+        self.col().run_ig_profiles("2026-10-12/ig-manual-0810")
+        self.assertIn("post list full (12) without overlap with stored posts, posts may be missing for: @ig_aa", self.last_row()["notes"])
+
+
+class FakeSheetsSession:
+    """In-memory stand-in for the Google Sheets REST API (just the calls collector/sheets.py makes), so the
+    real Spreadsheet class runs: tab creation with fixed tab ids, headers, append, rewrite, read."""
+
+    class Resp:
+        def __init__(self, data):
+            self.status_code, self._data = 200, data
+            self.content = b"x" if data else b""
+            self.text = ""
+
+        def json(self):
+            return self._data
+
+    def __init__(self, tabs=None):
+        self.tabs = {title: {"id": 100 + i, "rows": [list(r) for r in rows]} for i, (title, rows) in enumerate((tabs or {}).items())}
+        self.frozen = set()
+
+    def request(self, method, url, timeout=None, params=None, json=None):
+        import re
+        path = re.match(r"^[^/:]+(.*)$", url.split("/spreadsheets/", 1)[1]).group(1).split("?")[0]  # after the id
+        if method == "GET" and path == "":
+            return self.Resp({"sheets": [{"properties": {"sheetId": t["id"], "title": n}} for n, t in self.tabs.items()]})
+        if path == ":batchUpdate":
+            for req in json["requests"]:
+                if "addSheet" in req:
+                    props = req["addSheet"]["properties"]
+                    assert props["title"] not in self.tabs
+                    ids = {t["id"] for t in self.tabs.values()}
+                    new_id = props.get("sheetId", max(ids | {0}) + 1)
+                    assert new_id not in ids, "tab id already used"
+                    self.tabs[props["title"]] = {"id": new_id, "rows": []}
+                elif "updateSheetProperties" in req:
+                    props = req["updateSheetProperties"]["properties"]
+                    tab = next(n for n, t in self.tabs.items() if t["id"] == props["sheetId"])
+                    if "title" in props:
+                        self.tabs[props["title"]] = self.tabs.pop(tab)
+                    else:
+                        self.frozen.add(tab)
+            return self.Resp({})
+        if method == "GET" and path.endswith("!1:1"):   # the header row
+            rows = self.tabs[re.match(r"/values/'([^']+)'", path).group(1)]["rows"]
+            return self.Resp({"values": rows[:1]} if rows else {})
+        m = re.match(r"/values/'([^']+)'(?:!([A-Z]+)(\d*)(?::[A-Z]+\d*)?)?(:append|:clear)?$", path)
+        assert m, path
+        tab, col, row, action = m.group(1), m.group(2), m.group(3), m.group(4)
+        rows = self.tabs[tab]["rows"]
+        if method == "GET":
+            return self.Resp({"values": rows} if rows else {})
+        if action == ":append":
+            rows.extend([list(r) for r in json["values"]])
+            return self.Resp({})
+        if action == ":clear":
+            del rows[int(row) - 1:]
+            return self.Resp({})
+        start, c0 = int(row) - 1, ord(col[0]) - 65   # PUT
+        for i, values in enumerate(json["values"]):
+            while len(rows) <= start + i:
+                rows.append([])
+            target = rows[start + i]
+            while len(target) < c0 + len(values):
+                target.append("")
+            target[c0:c0 + len(values)] = values
+        return self.Resp({})
+
+
+class InstagramSheetsEndToEndTests(unittest.TestCase):
+    """The first real Instagram run creates the ig_* tabs with their fixed ids; later runs reuse them."""
+    NOW = dt.datetime(2026, 10, 12, 6, 10, tzinfo=UTC)
+
+    def test_first_run_creates_the_tabs_with_fixed_ids_and_the_second_run_reuses_them(self):
+        from collector.sheets import Spreadsheet
+        header = ["student_name", "tiktok_handle", "active", "main_account", "instagram_handle"]
+        admin_session = FakeSheetsSession({"accounts": [header, ["A", "aa", "ja", "", "Ig_Aa"], ["B", "bb", "ja", "", ""],
+                                                        ["C", "cc", "ja", "", "https://www.instagram.com/ig_cc/"]],
+                                           "run_log": [model.SCHEMA_ADMIN["run_log"]], "profile_window": [model.SCHEMA_ADMIN["profile_window"]]})
+        data_session = FakeSheetsSession({"handles": [model.SCHEMA_DATA["handles"]]})
+        admin, data = Spreadsheet(admin_session, "admin"), Spreadsheet(data_session, "data")
+        recs = {"ig_aa": ig_record("ig_aa", [ig_post(ut(2026, 10, 11, 17, 45), "Video", "#glu")], followers=100),
+                "ig_cc": ig_record("ig_cc", [], followers=8, private=True)}
+        bd = FakeBothBrightData(ig=recs)
+        Collector(CFG, admin, data, bd, now=self.NOW).run_ig_profiles("2026-10-12/ig-manual-0810")
+        # The tabs exist, with the ids the website knows and the schema's headers, frozen header row.
+        for tab in ("ig_handles", "ig_history", "ig_posts", "ig_baseline", "ig_outliers"):
+            self.assertEqual(data_session.tabs[tab]["id"], model.FIXED_SHEET_IDS[tab], tab)
+            self.assertEqual(data_session.tabs[tab]["rows"][0], model.SCHEMA_DATA[tab], tab)
+            self.assertIn(tab, data_session.frozen)
+        log = admin_session.tabs["run_log"]["rows"]
+        self.assertEqual([log[1][1], log[1][7], log[1][5]], ["ig_profiles", "ok", 2])
+        # Post ids stay text (they are 19 digits, more than a spreadsheet number can hold).
+        posts = data_session.tabs["ig_posts"]["rows"]
+        self.assertEqual(len(posts), 2)
+        self.assertIsInstance(posts[1][0], str)
+        self.assertEqual(posts[1][0], ig_id(ut(2026, 10, 11, 17, 45)))
+        # Second run, 4 hours later: tabs reused (no second creation), history grows, baseline stays.
+        recs["ig_aa"]["followers"] = 130
+        Collector(CFG, admin, data, bd, now=self.NOW + dt.timedelta(hours=4)).run_ig_profiles("2026-10-12/ig-manual-1210")
+        self.assertEqual(len(data_session.tabs["ig_history"]["rows"]), 1 + 4)
+        self.assertEqual(len(data_session.tabs["ig_posts"]["rows"]), 2)
+        base = {r[0]: r for r in data_session.tabs["ig_baseline"]["rows"][1:]}
+        self.assertEqual((base["ig_aa"][2], base["ig_cc"][2]), (100, 8))
+        handles = {r[0]: r for r in data_session.tabs["ig_handles"]["rows"][1:]}
+        self.assertEqual(handles["ig_aa"][2], 130)
+        self.assertEqual(sorted(handles), ["ig_aa", "ig_cc"])
+        # The tab ids were created once: a third tab with the same fixed id would have been refused by the API.
+        self.assertEqual(len({t["id"] for t in data_session.tabs.values()}), len(data_session.tabs))
+
+
+class FrequencyConfigTests(unittest.TestCase):
+    def test_every_step_is_a_set_of_hourly_windows_from_the_pool(self):
+        pool = [w.name for w in CFG.profile_windows]
+        self.assertEqual(len(pool), 12)
+        for step in config.FREQUENCY_STEPS:
+            names = [w.name for w in CFG.platform_windows("tiktok", step)]
+            self.assertTrue(names and set(names) <= set(pool), step)
+            self.assertEqual(names, [n for n in pool if n in names], "in clock order")
+            ig = [w.name for w in CFG.platform_windows("instagram", step)]
+            self.assertEqual(ig, ["ig-" + n for n in names])
+        counts = {s: len(CFG.platform_windows("tiktok", s)) for s in config.FREQUENCY_STEPS}
+        self.assertEqual(counts, {"daily": 1, "12h": 2, "6h": 4, "4h": 6, "2h": 12})
+        # Each step is evenly spaced, so "every N hours" really is.
+        for step, n in (("12h", 12), ("6h", 6), ("4h", 4), ("2h", 2)):
+            hours = [w.start.hour for w in CFG.platform_windows("tiktok", step)]
+            self.assertEqual({(b - a) % 24 for a, b in zip(hours, hours[1:] + hours[:1])}, {n}, step)
+        self.assertEqual(CFG.platform_windows("tiktok", "off"), ())
+
+    def test_start_values_and_window_keys(self):
+        self.assertEqual(CFG.frequency, {"tiktok": "12h", "instagram": "4h"})
+        day = dt.date(2026, 10, 12)
+        self.assertEqual([w.key(day) for w in CFG.platform_windows("tiktok")], ["2026-10-12/08u", "2026-10-12/20u"])   # teachers check in the morning
+        self.assertEqual([w.key(day) for w in CFG.platform_windows("instagram")][:2], ["2026-10-12/ig-00u", "2026-10-12/ig-04u"])
+        self.assertTrue({w.key(day) for w in CFG.platform_windows("tiktok")}.isdisjoint({w.key(day) for w in CFG.platform_windows("instagram")}))
+
+    def test_a_typo_in_the_frequency_settings_fails_loudly(self):
+        pool = CFG.profile_windows
+        good = {"tiktok": "12h", "instagram": "off", "steps": {"12h": ["08u", "20u"]}}
+        config._frequency(good, pool)
+        for bad in [{**good, "tiktok": "13h"}, {**good, "steps": {"12h": ["08u", "21u"]}},
+                    {**good, "steps": {"every-now-and-then": ["08u"]}}, {**good, "steps": {"12h": []}}]:
+            with self.assertRaises(ValueError, msg=str(bad)):
+                config._frequency(bad, pool)
 
 
 class FakeBilledBrightData(FakeBrightData):

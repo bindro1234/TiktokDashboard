@@ -3,8 +3,10 @@
 window.TT_CONFIG = {
   sheetId: "1syVgGLY2t8XnllGAkWSVvGXmElDJW7ng2pLVQKSXWjA",
   // Tab ids (gid) inside the public sheet; the collector's `setup` prints them for new tabs.
-  // outliers ("buiten schaal") always gets this fixed id (collector/model.py FIXED_SHEET_IDS).
-  gids: { handles: 0, history: 127434821, posts: 2114443715, post_history: 1792734288, finale: 448534042, outliers: 702500001 },
+  // outliers ("buiten schaal") and the ig_* tabs always get these fixed ids (collector/model.py FIXED_SHEET_IDS).
+  gids: { handles: 0, history: 127434821, posts: 2114443715, post_history: 1792734288, finale: 448534042, outliers: 702500001,
+    // Instagram tabs: fixed ids too (collector/model.py FIXED_SHEET_IDS), created by `setup` or by the first Instagram run.
+    ig_handles: 702500002, ig_history: 702500003, ig_posts: 702500004, ig_baseline: 702500005, ig_outliers: 702500006 },
   // "Publish to web" link id (the part after /d/e/, starting with 2PACX-). Required: a sheet
   // that is published but not shared by link is only served through this id.
   publishedId: "2PACX-1vTcErigCeOR2PncRcPTm11YH09aUMkoOq6uS_yKQVeBWBNn4ZQIYJ1g69kW6NmWKFlOR9_-pIAKOiks",

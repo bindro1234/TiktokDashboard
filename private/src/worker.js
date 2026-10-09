@@ -62,7 +62,7 @@ export default {
   async fetch(request, env, ctx) {
     return handle(request, env, ctx, fetch);
   },
-  // Cloudflare Cron Trigger (wrangler.toml, every 5 min): the 2-hourly windows (backup for GitHub's
+  // Cloudflare Cron Trigger (wrangler.toml, every 5 min): the profile windows of both platforms (backup for GitHub's
   // unreliable cron) and the 15-minute finale runs.
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runSchedule(env, fetch, controller.scheduledTime).then(
@@ -78,7 +78,7 @@ export default {
  */
 export async function runSchedule(env, fetchImpl = fetch, nowMs = Date.now()) {
   const sheets = new Sheets(env.GOOGLE_SERVICE_ACCOUNT_B64, fetchImpl);
-  // Cheap check first: outside the 2-hourly windows only a live finale can need a run.
+  // Cheap check first: outside the platforms' windows only a live finale can need a run.
   const { run_log: values, [FINALE_TAB]: finaleValues } =
     await sheets.readTabs(CONFIG.sheets.adminId, ["run_log", FINALE_TAB]);
   const finale = lib.finaleState(lib.rowsToObjects(finaleValues), nowMs, CONFIG.finale.maxHours);
@@ -197,6 +197,7 @@ class Api {
 
     const last = lib.lastProfilesRun(runLog);
     const tracked = accounts.filter((a) => a.tracked).length;
+    const igTracked = accounts.filter((a) => a.instagramTracked).length;
     const strip = ({ _row, ...rest }) => rest;
     const finaleRows = lib.rowsToObjects(admin[FINALE_TAB]);
     const finale = lib.finaleState(finaleRows, now, CONFIG.finale.maxHours);
@@ -207,6 +208,7 @@ class Api {
         campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: CONFIG.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
         finale: CONFIG.finale, offDays: CONFIG.offDays, todayCheck: CONFIG.todayCheck, signals: CONFIG.signals,
+        frequency: CONFIG.frequency, instagram: CONFIG.instagram,
       },
       finale: finale && { ...finale, row: undefined },
       // Any finale that really ran (not cancelled): hides the "start the finale" reminder.
@@ -217,8 +219,9 @@ class Api {
       posts: lib.rowsToObjects(data.posts_latest).map(strip),
       runLog: runLog.slice(-60).reverse().map(strip),
       activity: activity.slice(-80).reverse().map(strip),
-      budget: lib.budget(CONFIG, runLog, tracked, now),
+      budget: lib.budget(CONFIG, runLog, { tiktok: tracked, instagram: igTracked }, now),
       lastProfilesRun: last,
+      lastInstagramRun: lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES),
       lastTodayCheck: lib.lastTodayCheck(runLog, activity),
       tasks: lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])),
       outliers: [...lib.parseOutliers(lib.rowsToObjects(data[OUTLIERS_TAB]))],
@@ -262,14 +265,17 @@ class Api {
   }
 
   async refresh() {
-    const { run_log: values } = await this.sheets.readTabs(this.admin, ["run_log"]);
-    const last = lib.lastProfilesRun(lib.rowsToObjects(values));
-    if (last !== null) {
-      const minutes = (Date.now() - last) / 60000;
-      if (minutes < CONFIG.forceMinMinutes) {
-        throw new HttpError(409, `De laatste profielrun was ${Math.floor(minutes)} min geleden. `
-          + `Verversen kan weer over ${Math.ceil(CONFIG.forceMinMinutes - minutes)} min.`);
-      }
+    // "Nu verversen" refreshes TikTok and Instagram, each with its own cooldown (the collector checks again).
+    // Refused here only when every platform that has accounts was refreshed less than forceMinMinutes ago.
+    const { run_log: values, accounts } = await this.sheets.readTabs(this.admin, ["run_log", "accounts"]);
+    const runLog = lib.rowsToObjects(values);
+    const igCount = lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.instagramTracked).length;
+    const lasts = [lib.lastProfilesRun(runLog), ...(igCount ? [lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES)] : [])];
+    const minutes = lasts.map((t) => (t === null ? Infinity : (Date.now() - t) / 60000));
+    if (minutes.every((m) => m < CONFIG.forceMinMinutes)) {
+      const wait = Math.min(...minutes); // the platform that can be refreshed first
+      throw new HttpError(409, `De laatste profielrun was ${Math.floor(wait)} min geleden. `
+        + `Verversen kan weer over ${Math.ceil(CONFIG.forceMinMinutes - wait)} min.`);
     }
     const recent = await this.github(`/actions/workflows/${CONFIG.workflows.force}/runs?per_page=5`);
     if ((recent.workflow_runs || []).some((r) => RUNNING.has(r.status))) {
@@ -279,7 +285,7 @@ class Api {
       method: "POST", body: JSON.stringify({ ref: "main" }),
     });
     await this.log("nu verversen");
-    return { ok: true, message: "Verversen gestart. Nieuwe cijfers staan er over ongeveer 5–7 minuten." };
+    return { ok: true, message: `Verversen gestart${igCount ? " (TikTok en Instagram)" : ""}. Nieuwe cijfers staan er over ongeveer 5–7 minuten.` };
   }
 
   async readAccounts() {
@@ -437,7 +443,9 @@ class Api {
       now,
       state: lib.finaleState(lib.rowsToObjects(values), now, CONFIG.finale.maxHours),
       runLog: lib.rowsToObjects(log),
-      active: lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.tracked).length,
+      // Both platforms run every 15 minutes during a finale, one record per account on each.
+      active: lib.parseAccounts(lib.rowsToObjects(accounts)).filter((a) => a.tracked || a.instagramTracked)
+        .reduce((n, a) => n + (a.tracked ? 1 : 0) + (a.instagramTracked ? 1 : 0), 0),
     };
   }
 
@@ -621,7 +629,7 @@ class Api {
     const status = lib.todayStatus(CONFIG, students, lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
     const targets = lib.todayTargets(status);
     if (!targets.length) throw new HttpError(409, "Iedereen die gecontroleerd kan worden heeft vandaag al gepost.");
-    const b = lib.budget(CONFIG, runLog, tracked.length, now);
+    const b = lib.budget(CONFIG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, now);
     if (b.projected + targets.length > CONFIG.budget.monthlyCap) {
       throw new HttpError(409, `Past niet in het budget: ${b.used} gebruikt + ${b.reserved} nodig voor de resterende profielruns `
         + `+ ${targets.length} voor deze controle is meer dan ${CONFIG.budget.monthlyCap}.`);

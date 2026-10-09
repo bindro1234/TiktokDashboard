@@ -1,13 +1,13 @@
 # TikTok-campagne tracker
 
-Houdt de TikTok-statistieken bij van de klas tijdens de Social Media Campagne (28 sept – 30 okt 2026) en toont de stand op een website.
+Houdt de statistieken van de klas bij tijdens de Social Media Campagne (28 sept – 30 okt 2026) en toont de stand op een website. De campagne liep eerst op TikTok en is rond 7 okt verhuisd naar **Instagram** (posts, carrousels en reels); beide platforms worden opgehaald.
 
 ```
-Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Sheets  →  website (site/, GitHub Pages, alleen handles)
+Bright Data (TikTok- en Instagram-scraper)  →  GitHub Actions (collector/)  →  Google Sheets  →  website (site/, GitHub Pages, alleen handles)
                                                                               ↘  beheerpagina (private/, Cloudflare, met namen, achter inlog)
 ```
 
-- **Profielen** van alle accounts worden **elke 2 uur** opgehaald, dag en nacht (00:00, 02:00, …, 22:00 Nederlandse tijd). Eén profiel kost 1 record en bevat de statistieken van de ~16 nieuwste video's. Tijdens een **finale** (zie *Beheerpagina*) elke 15 minuten.
+- **TikTok-profielen** worden **elke 12 uur** opgehaald (08:00 en 20:00 Nederlandse tijd), **Instagram-profielen elke 4 uur** (00:00, 04:00, …, 20:00). Eén profiel kost 1 record; het TikTok-profiel bevat de statistieken van de ~16 nieuwste video's, het Instagram-profiel de 12 nieuwste posts (zie *Instagram ophalen*). Hoe vaak per platform staat onder `frequency` in `config.yaml` (vaste stappen, zie *Schema*). Tijdens een **finale** (zie *Beheerpagina*) elke 15 minuten.
 - **Weekrefresh** op vrijdag vanaf 08:30: haalt alleen campagneposts op die ouder zijn dan dat venster van ~16 video's, zodat late weergaven op oudere video's ook meetellen. Accounts waarbij het venster al teruggaat tot vóór de campagnestart worden overgeslagen (0 records).
 - Alleen video's die zijn geplaatst **vanaf 28 september** tellen mee. Foto-/carrouselposts tellen mee, reposts niet.
 - Weergaven van een video kunnen nooit omlaag: valt een video uit het venster, dan blijven de laatst bekende cijfers staan.
@@ -29,17 +29,22 @@ Bright Data (TikTok-scraper)  →  GitHub Actions (collector/)  →  Google Shee
 | Sheet | Tabblad | Inhoud |
 |---|---|---|
 | privé | `accounts` | `student_name`, `tiktok_handle`, `active` (ja/nee), optioneel `main_account` (alleen bij een tweede account: de handle van het hoofdaccount) en optioneel `instagram_handle` (het ene Instagram-account van de leerling, zie *Instagram-handles*) — **dit vul je zelf in** |
-| privé | `run_log` | per run: tijd, type, venster, dry-run, verwachte en echte records, fouten, status, notities |
+| privé | `run_log` | per run: tijd, type (`profiles`, `force_refresh`, `today_check`, `posts_refresh`, … voor TikTok; `ig_profiles`, `ig_force_refresh`, `ig_today_check` voor Instagram), venster, dry-run, verwachte en echte records, fouten, status, notities |
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | privé | `activity_log` | wie (e-mail) wat deed op de beheerpagina en wanneer: geopend (1× per dag), nu verversen, leerling toegevoegd/(de)geactiveerd, finale gestart/gewijzigd/gestopt, export. Wordt vanzelf aangemaakt |
 | privé | `finale` | per finale: start, wie, deadline, status (`active`, `stopped` = vroeg gestopt, `cancelled` = geannuleerd), wanneer gestopt en door wie. De laatste rij telt |
 | privé | `dagopdrachten` | per dagopdracht: `date`, `min_posts`, `label`, `active` (verwijderen = `nee`, rijen blijven staan), wanneer en door wie gewijzigd. Wordt vanzelf aangemaakt op Beheer |
 | openbaar | `handles` | actieve handles, privé ja/nee, laatste status, en `status_since`: sinds wanneer die status (ok / privé / niet gevonden) geldt, en `group`: de handle van het hoofdaccount (bij één account de eigen handle; zie *Twee accounts*) |
-| openbaar | `outliers` | *buiten schaal*: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Heeft een vaste `gid` (702500001), zodat de site hem zonder extra stap vindt |
+| openbaar | `outliers` | *buiten schaal*: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Heeft een vaste `gid` (702500001), zodat de site hem zonder extra stap vindt (de `ig_*`-tabbladen hebben ook vaste gids, 702500002 t/m 702500006) |
 | openbaar | `profile_snapshots` | volgers, volgend, likes, aantal video's per run |
 | openbaar | `posts_latest` | één rij per video (`video_id`), steeds bijgewerkt met de nieuwste cijfers, plus `hashtags`, `missing_since` en `hist_*` (laatste `post_history`-rij) |
 | openbaar | `history` | per run per account: totaal weergaven, volgers, likes en posts in de campagne (voor de grafieken) |
 | openbaar | `post_history` | per video over tijd: `video_id`, `handle`, `timestamp`, `views`, `likes` (licht gehouden, zie boven) |
+| openbaar | `ig_handles` | actieve Instagram-handles: privé ja/nee, volgers, laatste status (ok / privé / fout) en `status_since`. Geen groepen en geen koppeling met TikTok |
+| openbaar | `ig_history` | per run per account: volgers, volgend, aantal posts, privé ja/nee en het aantal posts in de campagne |
+| openbaar | `ig_posts` | één rij per post (`post_id`): handle, tijdstip, type (`photo`, `carousel`, `reel`), hashtags, link, eerste en laatste keer gezien |
+| openbaar | `ig_baseline` | per account de eerste geslaagde meting van de volgers (de basislijn voor de ranglijst); wordt alleen aangevuld, nooit aangepast |
+| openbaar | `ig_outliers` | *buiten schaal* voor Instagram (komt in een latere stap in gebruik) |
 | openbaar | `finale` | kopie van de huidige finale zonder namen of e-mail: start, deadline, status, gestopt (voor de aftelklok en de Eindstand op de openbare site) |
 
 ### Accounts toevoegen
@@ -54,7 +59,7 @@ Sinds de campagne van TikTok naar Instagram is verhuisd (rond 7 okt) heeft elke 
 - **Eén Instagram-account per leerling**, los van de TikTok-handle (sommige leerlingen gebruiken op beide dezelfde naam). Hij staat op de **eerste rij** van de leerling; een handle op de rij van een tweede TikTok-account wordt genegeerd en gemeld. Twee leerlingen met dezelfde Instagram-handle: de tweede wordt overgeslagen en gemeld. Een leerling met alléén Instagram heeft een rij zonder `tiktok_handle`; dat is geen fout.
 - **Beheer**: in *Leerling toevoegen* staat een veld *Instagram-handle* (vul minstens één van de twee handles in). In *Alle leerlingen* staat een kolom Instagram met **+ Instagram** / **Wijzig** (leeg opslaan of *Verwijderen* haalt hem weg; de rij blijft staan). Het blok **Leerlingen zonder Instagram** toont alle actieve leerlingen zonder (geldige) handle, met een invoerveld per leerling. Elke wijziging komt in het activiteitenlog (*instagram-handle toegevoegd / gewijzigd / verwijderd*). Ongeldige of dubbele handles staan onder *Problemen in accounts*.
 - Overal waar een account wordt aangeduid, hoort het platform erbij (`tiktok` of `instagram`): dezelfde naam op beide platforms is twee verschillende accounts.
-- Het ophalen van Instagram komt in een volgende stap; tot dan worden de handles alleen bewaard.
+- Het ophalen staat onder *Instagram ophalen*.
 
 ### Twee accounts per leerling
 
@@ -67,26 +72,43 @@ Sommige leerlingen hebben twee accounts (bijv. één voor hun merk en één voor
 - **Let op, openbaar:** de kolom `group` in de openbare tab `handles` laat zien dat twee handles bij dezelfde deelnemer horen (zonder naam). De openbare site toont ze samen als `@merk + @reclame`. Op de openbare site gebeurt het samenvoegen pas na de volgende ophaalrun; op de beheerpagina meteen.
 - **Kosten:** elk extra account is een extra profiel per run: ≈ 12 records per dag, ≈ 360 per maand.
 
+## Instagram ophalen
+
+Een profielrecord per account (**1 record per account per run**; ook een privé account of een account dat niet bestaat kost 1 record) bevat het aantal volgers en gevolgden, het aantal posts, privé ja/nee en de **12 nieuwste posts** (vastgezette posts staan vooraan) met id, link, type en onderschrift. Per post bewaren we `post_id`, link, tijdstip, type (`photo`, `carousel`, `reel`) en de hashtags uit het onderschrift.
+
+- **Alleen posts van `instagram.start_date` (7 okt) t/m 30 okt tellen**; eerdere posts worden nooit opgeslagen.
+- **Niet in het record, dus niet in de tabbladen:** likes, reacties en weergaven per post (bewust weggelaten in plaats van lege kolommen), **stories** (er is geen scraper voor; ze worden niet meegeteld) en hashtags in reacties of in de bio. Alleen hashtags uit het onderschrift zijn te zien.
+- **Tijdstip van een post:** het record noemt alleen een datum, en die is bij ongeveer 1 post op de 10 een dag verkeerd. Het tijdstip komt daarom uit het **post-id**: Instagram-id's bevatten het moment van maken (milliseconden sinds 24 aug 2011, 23 bits naar links). Een ingeplande post (aangemaakt vóór hij gepubliceerd wordt) telt hoogstens vanaf de genoemde datum; zonder bruikbaar id geldt de datum zelf.
+- **Venster van 12 posts:** wie tussen twee runs meer dan ongeveer 9 posts plaatst, mist er een. De run meldt dat in de notities (*post list full (12) without overlap with stored posts*).
+- **Verdwenen posts** blijven in `ig_posts` staan en tellen dus nog mee voor de dag waarop ze geplaatst zijn.
+- **Privé en niet gevonden:** dezelfde meldingen als bij TikTok (`last_status` in `ig_handles`: ok / privé / fout, met `status_since`); op de beheerpagina komen ze in stap 3 bij de waarschuwingen.
+- **Basislijn:** de eerste geslaagde meting van de volgers per account komt in `ig_baseline` en wordt nooit meer aangepast (de ranglijst telt de volgers erbij sinds die meting). Een later toegevoegd account krijgt zijn basislijn bij zijn eigen eerste meting.
+- **Eigen run-types** in `run_log` (`ig_profiles`, `ig_force_refresh`, `ig_today_check`) en eigen vensters (`2026-10-12/ig-08u`): een TikTok-run en een Instagram-run laten elkaars tijdvak nooit overslaan, maar tellen wel voor **dezelfde maandlimiet**. De "net ververst"-regel en de 30-minutengrens van *Nu verversen* gelden per platform.
+- **Tabbladen** (alleen handles, geen namen; niets in de openbare sheet verbindt iemands TikTok- en Instagram-account): `ig_handles`, `ig_history`, `ig_posts`, `ig_baseline` en `ig_outliers`, zie *Tabbladen*. Ze krijgen vaste `gid`s en worden aangemaakt door `setup` of door de eerste Instagram-run.
+- **Proberen kost niets:** `python -m collector ig-profiles --dry-run` (of in GitHub *Collect TikTok stats → `ig-profiles`* met dry-run aan) toont welke accounts opgehaald zouden worden en wat het kost, zonder iets op te halen of aan te maken.
+
 ## Kosten en budget
 
 - Bright Data rekent per record: 1 profiel = 1 record, 1 post = 1 record. 5.000 records per kalendermaand zijn gratis, daarna ca. $1,50 per 1.000.
 - **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **23.000**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
 - **De telling klopt met de rekening:** vóór elke run vergelijkt de collector `run_log` met het aantal rijen dat Bright Data zelf voor deze maand heeft gefactureerd (`/customer/bw`, in `status` te zien). Is dat hoger (een job die nooit gelogd is, een test met de hand), dan telt het verschil mee als een rij `billing_adjustment` in `run_log`; de limiet zit dus nooit onder wat echt gefactureerd wordt. Het telt alleen omhoog, nooit omlaag. Is het niet te lezen (bijv. geen rechten voor de sleutel), dan staat er *billing check unavailable* in de notities en telt `run_log` alleen, zoals eerder.
-- Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen, zodat de hoofdbron nooit zonder budget komt te zitten.
+- Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen (TikTok en Instagram samen), zodat de hoofdbronnen nooit zonder budget komen te zitten.
 - De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu **40**). Dat is ook de bovengrens die de dry-run gebruikt en die wordt gereserveerd.
-- **Schatting oktober** (profielen elke 2 uur, 1 t/m 30 oktober = 30 dagen × 12 runs):
+- **Schatting tot 30 oktober** (stand 9 okt: ≈ 5.850 records verbruikt; TikTok 61 accounts elke 12 uur, Instagram elke 4 uur; `python -m collector status` toont de actuele cijfers):
 
-  | | 40 accounts | 48 accounts |
+  | | 23 Instagram-accounts (nu) | 52 Instagram-accounts (hele klas) |
   |---|---|---|
-  | profielruns | 14.400 | 17.280 |
-  | weekrefreshes (5×, verbruik) | ≈ 700–1.400 | ≈ 850–1.650 |
-  | Nu verversen (≈ 5×) | ≈ 200 | ≈ 240 |
-  | Controleer nu (Vandaag, ≈ 15× een deel van de klas) | ≈ 300 | ≈ 360 |
-  | **totaal zonder finale** | **≈ 15.600–16.300** | **≈ 18.700–19.500** |
-  | finale van 8 uur, het maximum (+28 runs) | +1.120 | +1.344 |
+  | al verbruikt (9 okt) | ≈ 5.850 | ≈ 5.850 |
+  | TikTok-profielruns (43 runs × 61) | ≈ 2.620 | ≈ 2.620 |
+  | Instagram-profielruns (128 runs) | ≈ 2.940 | ≈ 6.660 |
+  | weekrefreshes (3 vrijdagen, verbruik ≈ 10–60 per keer) | ≈ 150 | ≈ 150 |
+  | Nu verversen (≈ 5×, beide platforms) | ≈ 420 | ≈ 570 |
+  | Controleer nu (Vandaag, ≈ 15× een deel van de klas) | ≈ 300 | ≈ 300 |
+  | **totaal zonder finale** | **≈ 12.300** | **≈ 16.200** |
+  | finale van 8 uur, het maximum (32 runs × alle accounts van beide platforms) | +2.700 | +3.600 |
 
-  Boven de gratis 5.000 kost dat bij 48 accounts ≈ $22–24 (≈ €20–22).
-- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand plus max. 40 posts per account (48 × 40 = 1.920). Met 48 accounts komt dat samen met een finale van 8 uur op ≈ 20.500; 23.000 laat ruimte voor de *Controleer nu*-checks. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
+  Kosten: ca. $1,50 per 1.000 records boven de gratis 5.000, dus (totaal − 5.000) × $1,50 / 1.000: bij 12.300 ≈ $11, bij 16.200 met finale ≈ $22.
+- **Waarom 23.000:** een weekrefresh reserveert vooraf alle resterende profielruns van de maand (beide platforms) plus max. 40 posts per account. Zelfs met de hele klas op Instagram en een finale van 8 uur blijft het verwachte verbruik (≈ 19.800) onder de limiet; de rest is ruimte voor *Controleer nu*-checks en extra verversingen. De limiet is een bovengrens, geen verbruik: betaald wordt alleen wat echt wordt opgehaald.
 
 ## Schema
 
@@ -94,15 +116,18 @@ GitHub-cron draait in UTC en is vaak 5–30 minuten te laat of slaat soms een ke
 
 | Run | Tijdvak (Amsterdam) |
 |---|---|
-| Profielen | elke 2 uur, dag en nacht: 00:00–00:59, 02:00–02:59, …, 22:00–22:59 (12 per dag) |
+| Profielen TikTok | `frequency.tiktok` (nu `12h`): 08:00–08:59 en 20:00–20:59 |
+| Profielen Instagram | `frequency.instagram` (nu `4h`): 00:00–00:59, 04:00–04:59, …, 20:00–20:59 (6 per dag) |
 | Weekrefresh | vrijdag 08:30 – 10:00 |
 | Eenmalige controle | 5 okt, direct na de run van 22:00 |
-| Finale | alleen als je hem start op de beheerpagina: elke 15 minuten tot de deadline |
+| Finale | alleen als je hem start op de beheerpagina: elke 15 minuten tot de deadline, voor TikTok én Instagram |
 | Controle *Vandaag* | alleen als je op de beheerpagina op **Controleer nu** klikt: alleen wie vandaag nog niet gepost heeft |
 
-**Twee timers.** GitHub-cron (`collect.yml`) vuurt elk uur om :10, :30 en :50. Omdat die niet betrouwbaar is, heeft de beheerpagina-Worker een eigen *Cron Trigger* (`[triggers]` in `private/wrangler.toml`): **elke 5 minuten**. Die kijkt naar de tijdvakken uit `config.yaml`, naar een lopende finale (tab `finale` in de privésheet) en naar `run_log`. Staat er een tijdvak of een finale-run open die nog niet gedraaid heeft, en loopt de collector nog niet, dan start de Worker *Collect TikTok stats* met `auto` (via `GH_DISPATCH_TOKEN`). De collector controleert dat daarna zelf nog een keer. Starten ze allebei, dan doet de tweede niets en kost niets: elk tijdvak draait maar één keer. Zomer- en wintertijd: beide timers vuren elk uur, dus ook de dag van de klokwissel (25 okt) gaat goed; de tests controleren dat voor beide. Wat de timer deed staat in de Worker-logs (Cloudflare → Workers & Pages → tiktok-beheer → Logs).
+**Frequentie per platform.** Onder `frequency` in `config.yaml` kiest elk platform een vaste stap: `off`, `daily` (16:00), `12h` (08:00, 20:00), `6h` (02:00, 08:00, 14:00, 20:00), `4h` (00:00, 04:00, …, 20:00) of `2h` (alle 12 vensters van `schedule.profile_runs`). Elke stap is een deel van die 12 uurvensters, dus de runs sluiten altijd aan op de uurlijkse crons; de test `test_crons_cover_every_window` controleert alle 12. Een TikTok-venster heet `2026-10-12/08u`, een Instagram-venster `2026-10-12/ig-08u`. De collector, de reservetimer van de Worker en de budgetreservering lezen dezelfde vensters.
 
-**Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun was, bijvoorbeeld via *Nu verversen* om 13:30 (dan vervalt de run van 14:00; de volgende is om 16:00). Finale-runs worden nooit overgeslagen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`. Een controle via *Vandaag* (`today_check` in `run_log`) telt hier **niet** mee: die haalt maar een deel van de klas op, dus de volgende geplande run gaat gewoon door.
+**Twee timers.** GitHub-cron (`collect.yml`) vuurt elk uur om :10, :30 en :50. Omdat die niet betrouwbaar is, heeft de beheerpagina-Worker een eigen *Cron Trigger* (`[triggers]` in `private/wrangler.toml`): **elke 5 minuten**. Die kijkt naar de tijdvakken van beide platforms uit `config.yaml`, naar een lopende finale (tab `finale` in de privésheet) en naar `run_log`. Staat er een tijdvak of een finale-run open die nog niet gedraaid heeft, en loopt de collector nog niet, dan start de Worker *Collect TikTok stats* met `auto` (via `GH_DISPATCH_TOKEN`). De collector controleert dat daarna zelf nog een keer. Starten ze allebei, dan doet de tweede niets en kost niets: elk tijdvak draait maar één keer. Zomer- en wintertijd: beide timers vuren elk uur, dus ook de dag van de klokwissel (25 okt) gaat goed; de tests controleren dat voor beide. Wat de timer deed staat in de Worker-logs (Cloudflare → Workers & Pages → tiktok-beheer → Logs).
+
+**Net ververst?** Een geplande profielrun wordt overgeslagen (status `skipped`, 0 records) als er minder dan 60 minuten eerder al een echte profielrun **van hetzelfde platform** was, bijvoorbeeld via *Nu verversen* om 07:45 (dan vervalt de TikTok-run van 08:00; de volgende is om 20:00). Een TikTok-run laat dus nooit een Instagram-run overslaan, of andersom. Finale-runs worden nooit overgeslagen. Instelbaar via `schedule.skip_if_profiles_ran_within_minutes`. Een controle via *Vandaag* (`today_check` in `run_log`) telt hier **niet** mee: die haalt maar een deel van de klas op, dus de volgende geplande run gaat gewoon door.
 
 Alles staat in **`config.yaml`**. Pas je tijden aan, controleer dan ook de cron-regels in `.github/workflows/collect.yml` en `private/wrangler.toml` (de test `test_crons_cover_every_window` controleert dat).
 
@@ -123,10 +148,11 @@ In GitHub: **Actions → Collect TikTok stats → Run workflow**. Kies een comma
 | Commando | Wat |
 |---|---|
 | `status` | verbruik deze maand, resterende runs, problemen in `accounts` |
-| `profiles` | profielen nu ophalen (zonder 30-minutengrens) |
+| `profiles` | TikTok-profielen nu ophalen (zonder 30-minutengrens) |
+| `ig-profiles` | Instagram-profielen nu ophalen; met dry-run aan zie je alleen wat het zou kosten |
 | `refresh` | weekrefresh nu |
 | `check` | eenmalige controle nu (optioneel eigen lijst handles) |
-| `today` | *Controleer nu* van het tabblad Vandaag: profielen van alleen de opgegeven handles (veld *handles*, met komma's). Normaal start de beheerpagina dit |
+| `today` | *Controleer nu* van het tabblad Vandaag: profielen van alleen de opgegeven handles (veld *handles*, met komma's; Instagram met het platform ervoor: `instagram:naam`, een kale naam is TikTok). Normaal start de beheerpagina dit |
 | `auto` | wat een geplande run ook doet |
 | `setup` | tabbladen en kopregels aanmaken (veilig om opnieuw te draaien) |
 
@@ -138,6 +164,7 @@ export GOOGLE_SERVICE_ACCOUNT_B64=...   # base64 van de service-account-JSON
 export BRIGHTDATA_API_KEY=...           # zet dit NOOIT in een bestand in de repo
 python -m collector status
 python -m collector profiles --dry-run
+python -m collector ig-profiles --dry-run
 python -m unittest
 ```
 
@@ -166,7 +193,7 @@ Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**,
 
 ## Nu verversen (alleen beheerder)
 
-Extra profielrun buiten het schema, bijvoorbeeld vlak voor de les.
+Extra profielrun buiten het schema, bijvoorbeeld vlak voor de les, voor **TikTok en Instagram**: elk platform met een eigen run in `run_log` (`force_refresh` en `ig_force_refresh`) en een eigen 30-minutengrens.
 
 1. Open de **privé-site** (achter Cloudflare Access) en ga naar **Beheer**. Klik op **↻ Nu verversen**. Nieuwe cijfers staan binnen ~5–7 minuten op beide sites.
 2. Alternatief zonder privé-site: op GitHub onder **Actions → Nu verversen → Run workflow** (alleen met schrijfrechten op deze repo).
@@ -176,8 +203,8 @@ De openbare site heeft geen beheerdersknop meer (de oude `?beheerder`-link doet 
 Beveiliging en kosten:
 
 - De openbare site bevat **geen tokens of sleutels** en geen beheerfuncties. De privé-site start de workflow via de Worker, die de Access-login zelf controleert.
-- Een run haalt alle actieve profielen op (1 record per account) en valt onder dezelfde **maandlimiet**.
-- **Dubbel tikken kost niets extra:** was de laatste echte profielrun (gepland of handmatig) minder dan 30 minuten geleden, dan wordt de run geweigerd en als `refused` gelogd in `run_log` (instelbaar via `force_refresh.min_minutes_between` in `config.yaml`). Loopt er net een geplande run, dan wacht de workflow daarop en wordt hij daarna geweigerd.
+- Een run haalt alle actieve profielen op (1 record per account, beide platforms) en valt onder dezelfde **maandlimiet**.
+- **Dubbel tikken kost niets extra:** was de laatste echte profielrun van dat platform (gepland of handmatig) minder dan 30 minuten geleden, dan wordt die run geweigerd en als `refused` gelogd in `run_log` (instelbaar via `force_refresh.min_minutes_between` in `config.yaml`). Loopt er net een geplande run, dan wacht de workflow daarop en wordt hij daarna geweigerd.
 
 ## Beheerpagina (privé, met namen)
 
@@ -248,8 +275,8 @@ Het tabblad **Opvallend** (alleen op de beheerpagina) laat cijfers zien die veel
 
 Op **Beheer → Finale**:
 
-1. Kies de **deadline** (dag + tijd, Nederlandse tijd, 24-uursklok) en klik **▶ Start finale**. Je ziet vooraf wat het kost: 4 runs per uur × het aantal actieve accounts (bij 40 accounts ≈ 160 records per uur), en of het binnen de maandlimiet past; zo niet, dan start hij niet.
-2. Tijdens de finale: profielen **elke 15 minuten** (de 2-uurlijkse runs vervallen dan), op de presentatie (openbaar en privé) en bovenaan beide sites een **aftelklok** en **LIVE**-labels. De eerste run start meteen.
+1. Kies de **deadline** (dag + tijd, Nederlandse tijd, 24-uursklok) en klik **▶ Start finale**. Je ziet vooraf wat het kost: 4 runs per uur × het aantal actieve accounts van TikTok én Instagram samen (bij 61 + 23 accounts ≈ 336 records per uur), en of het binnen de maandlimiet past; zo niet, dan start hij niet.
+2. Tijdens de finale: profielen van **TikTok en Instagram elke 15 minuten** (de gewone runs vervallen dan; voor TikTok verandert dat in een latere stap naar alleen aan het begin en bij de laatste run), op de presentatie (openbaar en privé) en bovenaan beide sites een **aftelklok** en **LIVE**-labels. De eerste run start meteen.
 3. Bij de deadline stopt hij vanzelf; hij duurt **nooit langer dan 8 uur** (`finale.max_hours`). Daarna tonen de sites en de presentatie de **Eindstand**, bevroren op de laatste meting vóór de deadline.
 4. **Deadline wijzigen** kan zolang hij loopt (binnen die 8 uur). **Stop finale nu** beëindigt hem meteen (Eindstand vanaf nu). **Annuleer finale** stopt zonder Eindstand; ook achteraf, als de Eindstand weg moet.
 
@@ -334,7 +361,7 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 
 Statische site in `site/` (HTML + Chart.js). Leest de gepubliceerde CSV's van `handles`, `history`, `posts_latest`, `finale` en `outliers`, en ververst zichzelf elke 10 minuten (tijdens een finale elke 2 minuten). `post_history` wordt alleen geladen voor *Video's* en accountpagina's.
 
-- **Stand**: ranglijst op totaal weergaven, met `+ 24 uur` (vergeleken met de meting van 24 uur eerder; met runs elke 2 uur schuift dat mee en springt het niet terug om middernacht), stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
+- **Stand**: ranglijst op totaal weergaven, met `+ 24 uur` (vergeleken met de meting van 24 uur eerder; het schuift mee en springt niet terug om middernacht), stijgers/dalers (▲▼) en een label *privé* voor accounts die op privé staan. Klik op **Weergaven, Volgers, Posts of Likes** om daarop te sorteren (hoog → laag); nog een keer klikken draait de volgorde om. Het nummer blijft de echte plaats in de stand. Op een telefoon kies je dit met *Sorteer op*.
 - **Grafiek**: tot 8 accounts tegelijk over tijd; wissel tussen weergaven, volgers, posts en likes, en tussen **Alles / 7 dagen / 48 uur** (met 12 metingen per dag zie je zo het verloop binnen een dag; bij korte periodes staan er ook uren op de as). Overige accounts kunnen grijs erbij. Een account *buiten schaal* staat als grijs ▲ bovenaan met zijn echte getal.
 - **Groei**: erbij per dag of per week (per dag = laatste meting van die dag min die van de dag ervoor), plus de grootste stijgers.
 - **Video's**: *Snelste stijgers*, de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur.

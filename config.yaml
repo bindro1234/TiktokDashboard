@@ -19,6 +19,11 @@ campaign:
     periods:
       - {name: Herfstvakantie, from: 2026-10-19, to: 2026-10-23}
 
+instagram:
+  # The campaign moved from TikTok to Instagram (posts, carousels, reels; no stories). Only Instagram posts
+  # from this day (inclusive) to campaign.end_date count; earlier ones are never stored.
+  start_date: 2026-10-07
+
 sheets:
   # Private: accounts (student names), run_log, profile_window. Never publish.
   admin_id: 1CnX4WcJkCgKvGXIDRb_P1CTzADUc_qkkCCqQXTpu_No
@@ -28,6 +33,9 @@ sheets:
 brightdata:
   profiles_dataset: gd_l1villgoiiidt09ci   # TikTok - Profiles (1 record per profile)
   posts_dataset: gd_lu702nij2f790tmv9h      # TikTok - Posts, discover by profile URL (1 record per post)
+  # Instagram - Profiles, collect by profile URL: 1 record per account, with its newest 12 posts (pinned
+  # posts first): caption, hashtags, id, url, content type. No likes, comments or views in this record.
+  instagram_profiles_dataset: gd_l1vikfch901nx3by4
   poll_seconds: 15
   timeout_minutes: 30
 
@@ -46,10 +54,11 @@ schedule:
   # e.g. "Nu verversen", happened less than this many minutes ago. Posts after that come
   # in with the next run.
   skip_if_profiles_ran_within_minutes: 60
-  # Profile runs every 2 hours, around the clock, on even hours. Each window is one hour
-  # long, so a late run can never make the next window skip itself (60-minute rule above).
-  # Both crons (collect.yml and private/wrangler.toml) fire every hour, which covers these
-  # windows in summer and winter time; tests check that.
+  # The pool of profile windows: every 2 hours, around the clock, on even hours. Each window is one
+  # hour long, so a late run can never make the next window skip itself (60-minute rule above).
+  # Both crons (collect.yml and private/wrangler.toml) fire every hour, which covers every window of
+  # the pool in summer and winter time; tests check that. Which of these windows a platform really
+  # uses is set under `frequency`.
   profile_runs:
     - {name: 00u, start: "00:00", end: "00:59"}
     - {name: 02u, start: "02:00", end: "02:59"}
@@ -69,6 +78,21 @@ schedule:
     start: "08:30"
     end: "10:00"
 
+frequency:
+  # How often each platform's profiles are pulled, in fixed steps (not a free choice): every step is a
+  # set of windows from the pool above, so runs stay aligned with the hourly crons. "off" = no scheduled
+  # runs. A TikTok window is keyed 2026-10-12/08u, an Instagram window 2026-10-12/ig-08u: the platforms
+  # never mark each other's windows as done, and both count toward the same monthly cap.
+  # Start values (they move to the private sheet, on Beheer, in a later step):
+  tiktok: 12h        # 08:00 and 20:00: teachers check in the morning, students still post there
+  instagram: 4h
+  steps:
+    daily: [16u]
+    12h: [08u, 20u]
+    6h: [02u, 08u, 14u, 20u]
+    4h: [00u, 04u, 08u, 12u, 16u, 20u]
+    2h: [00u, 02u, 04u, 06u, 08u, 10u, 12u, 14u, 16u, 18u, 20u, 22u]
+
 posts_refresh:
   # Max posts fetched per account in the weekly refresh (also the dry-run upper bound).
   # 40 covers an account that posts twice a day for three weeks, so older campaign days
@@ -79,7 +103,7 @@ posts_refresh:
 finale:
   # Finale for the last lesson, started by hand on the private site (Beheer tab), which also
   # sets the deadline. While it runs: profile runs every `every_minutes` (instead of the
-  # 2-hourly windows), a countdown and LIVE labels on the presentation; after the deadline the
+  # windows above; TikTok and Instagram both for now), a countdown and LIVE labels on the presentation; after the deadline the
   # sites show the "Eindstand", frozen at the last run before it. It always ends by itself at
   # the deadline, and never lasts longer than `max_hours`. The budget cap still applies.
   every_minutes: 15

@@ -30,8 +30,15 @@ def build(cfg: config.Config) -> dict:
                                 for p in cfg.off_days.periods]},
         "sheets": {"adminId": cfg.admin_sheet_id, "dataId": cfg.data_sheet_id},
         "budget": {"monthlyCap": cfg.monthly_cap},
+        "instagram": {"startDate": cfg.instagram_start.isoformat() if cfg.instagram_start else None},
+        # How often each platform is pulled: the step and its windows (the Instagram ones are keyed ig-08u).
+        # The Worker's timer, the budget and the collector all read these same windows.
+        "frequency": dict(cfg.frequency),
         "schedule": {
+            # The pool of hourly windows (the crons must cover every one of them) and the ones in use.
             "profileRuns": [{"name": w.name, "start": hhmm(w.start), "end": hhmm(w.end)} for w in cfg.profile_windows],
+            "windows": {platform: [{"name": w.name, "start": hhmm(w.start), "end": hhmm(w.end)}
+                                   for w in cfg.platform_windows(platform)] for platform in config.PLATFORMS},
             "refresh": {"name": cfg.refresh_window.name, "weekday": config.WEEKDAYS[cfg.refresh_window.weekday],
                         "start": hhmm(cfg.refresh_window.start), "end": hhmm(cfg.refresh_window.end)},
             "skipRecentMinutes": cfg.skip_recent_minutes,

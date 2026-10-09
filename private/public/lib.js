@@ -232,7 +232,11 @@ export function rowsToObjects(values) {
 
 // ---------- run_log and budget (same rules as collector/model.py) ----------
 
+// Full profiles runs per platform (same as PROFILE_RUN_TYPES / IG_PROFILE_RUN_TYPES in collector/model.py): a
+// TikTok run never makes an Instagram window skip, and the other way round; both count toward the same cap.
 const PROFILE_RUN_TYPES = new Set(["profiles", "force_refresh"]);
+export const IG_PROFILE_RUN_TYPES = new Set(["ig_profiles", "ig_force_refresh"]);
+export const PLATFORMS = ["tiktok", "instagram"];
 const DONE_STATUSES = new Set(["ok", "partial", "refused", "skipped"]);
 
 export function monthUsage(runLog, nowMs) {
@@ -246,11 +250,11 @@ export function monthUsage(runLog, nowMs) {
   return total;
 }
 
-/** Time (ms) of the last profiles run that started a Bright Data job, or null. */
-export function lastProfilesRun(runLog) {
+/** Time (ms) of the last profiles run (of these run types: TikTok's by default) that started a Bright Data job, or null. */
+export function lastProfilesRun(runLog, types = PROFILE_RUN_TYPES) {
   let last = null;
   for (const r of runLog) {
-    if (!PROFILE_RUN_TYPES.has(r.run_type) || truthy(r.dry_run)) continue;
+    if (!types.has(r.run_type) || truthy(r.dry_run)) continue;
     if (!String(r.snapshot_ids ?? "").trim()) continue;
     const t = parseTs(r.timestamp);
     if (t !== null && (last === null || t > last)) last = t;
@@ -266,8 +270,16 @@ export function doneWindows(runLog) {
   return done;
 }
 
-/** Scheduled profile windows still to come this calendar month that have not run yet. */
-export function remainingProfileRuns(cfg, nowMs, done) {
+/**
+ * The windows a platform really runs in (config.yaml frequency): a subset of the pool schedule.profileRuns.
+ * TikTok windows are keyed 08u, Instagram windows ig-08u (config.json already has the names that way).
+ */
+export function platformWindows(cfg, platform) {
+  return cfg.schedule.windows?.[platform] ?? (platform === "tiktok" ? cfg.schedule.profileRuns : []);
+}
+
+/** Scheduled profile windows of a platform still to come this calendar month that have not run yet. */
+export function remainingProfileRuns(cfg, nowMs, done, platform = "tiktok") {
   const today = localDay(nowMs);
   const now = localTime(nowMs);
   const month = today.slice(0, 7);
@@ -275,7 +287,7 @@ export function remainingProfileRuns(cfg, nowMs, done) {
   for (let day = today; day <= cfg.campaign.collectUntil; day = addDays(day, 1)) {
     if (day.slice(0, 7) !== month) break;
     if (day < cfg.campaign.start) continue;
-    for (const w of cfg.schedule.profileRuns) {
+    for (const w of platformWindows(cfg, platform)) {
       if (day === today && w.end <= now) continue;
       if (done.has(`${day}/${w.name}`)) continue;
       count++;
@@ -333,15 +345,16 @@ export function openWindows(cfg, nowMs, finale = null) {
   const day = localDay(nowMs);
   const time = localTime(nowMs);
   const inside = (w) => w.start <= time && time <= w.end;
-  // A live finale replaces the 2-hourly windows (runs every few minutes, even after campaign.end).
+  // A live finale replaces the normal windows (runs every few minutes, even after campaign.end), for both platforms.
   if (finale && finale.phase === "live") {
-    const open = [finaleWindowKey(nowMs, cfg.finale.everyMinutes)];
+    const key = finaleWindowKey(nowMs, cfg.finale.everyMinutes);
+    const open = [key, key.replace("/finale-", "/ig-finale-")];
     const r = cfg.schedule.refresh;
     if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
     return open;
   }
   if (day < cfg.campaign.start || day > cfg.campaign.collectUntil) return [];
-  const open = cfg.schedule.profileRuns.filter(inside).map((w) => `${day}/${w.name}`);
+  const open = PLATFORMS.flatMap((p) => platformWindows(cfg, p)).filter(inside).map((w) => `${day}/${w.name}`);
   const r = cfg.schedule.refresh;
   if (weekdayFmt.format(nowMs).toLowerCase() === r.weekday && inside(r)) open.push(`${day}/${r.name}`);
   return open;
@@ -363,18 +376,33 @@ export function dueWindows(cfg, runLog, nowMs, finale = null) {
   const open = openWindows(cfg, nowMs, finale);
   const due = open.filter(pending);
   const day = localDay(nowMs);
-  const evening = cfg.schedule.profileRuns.at(-1);
-  if (cfg.windowCheckDate === day && open.includes(`${day}/${evening.name}`) && done.has(`${day}/${evening.name}`)
+  const evening = platformWindows(cfg, "tiktok").at(-1);
+  if (evening && cfg.windowCheckDate === day && open.includes(`${day}/${evening.name}`) && done.has(`${day}/${evening.name}`)
       && pending(`${day}/window-check`)) {
     due.push(`${day}/window-check`);
   }
   return due;
 }
 
-export function budget(cfg, runLog, activeCount, nowMs) {
+/**
+ * The month's budget: records used (run_log, both platforms) and what the scheduled runs still to come
+ * will use. counts = { tiktok: accounts, instagram: accounts } (a plain number counts as TikTok only).
+ * Same numbers as Collector.reserve_by_platform in collector/runner.py.
+ */
+export function budget(cfg, runLog, counts, nowMs) {
   const used = monthUsage(runLog, nowMs);
-  const runs = remainingProfileRuns(cfg, nowMs, doneWindows(runLog));
-  return { used, cap: cfg.budget.monthlyCap, runsLeft: runs, reserved: runs * activeCount, projected: used + runs * activeCount };
+  const done = doneWindows(runLog);
+  const accounts = typeof counts === "number" ? { tiktok: counts, instagram: 0 } : counts;
+  const byPlatform = {};
+  let runsLeft = 0, reserved = 0;
+  for (const platform of PLATFORMS) {
+    const runs = remainingProfileRuns(cfg, nowMs, done, platform);
+    const n = accounts[platform] ?? 0;
+    byPlatform[platform] = { runsLeft: runs, accounts: n, reserved: runs * n };
+    runsLeft += runs;
+    reserved += runs * n;
+  }
+  return { used, cap: cfg.budget.monthlyCap, runsLeft, reserved, projected: used + reserved, byPlatform };
 }
 
 // ---------- per student statistics ----------

@@ -266,25 +266,41 @@ test("backup timer starts the collector only when a window is open and not done"
   assert.equal(r.action, "no window open");
   assert.equal(calls.filter((c) => c.url.includes("api.github.com")).length, 0);
 
-  // 18u window open, not done: dispatch "auto" (not a dry run) on main.
+  // A pool window that is in nobody's step (18u): nothing to do either.
+  assert.equal((await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"))).action, "no window open");
+
+  // 20u windows open (TikTok 20u and Instagram ig-20u), not done: dispatch "auto" (not a dry run) on main.
   sheets._runs = [{ status: "completed" }];
-  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:25:00+02:00"));
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:25:00+02:00"));
   assert.equal(r.action, "collector started");
-  assert.deepEqual(r.due, ["2026-10-01/18u"]);
+  assert.deepEqual(r.due, ["2026-10-01/20u", "2026-10-01/ig-20u"]);
   assert.equal(dispatches().length, 1);
   assert.deepEqual(JSON.parse(dispatches()[0].body), { ref: "main", inputs: { command: "auto", dry_run: "false", handles: "" } });
 
   // A collector run is already queued or running: don't pile up.
   sheets._runs = [{ status: "queued" }];
-  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:45:00+02:00"));
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:45:00+02:00"));
   assert.equal(r.action, "collector already running");
   assert.equal(dispatches().length, 1);
 
-  // Window done (also "skipped" right after Nu verversen): nothing to do.
-  sheets.run_log.push(["2026-10-01T16:30:00Z", "profiles", "2026-10-01/18u", false, 3, 0, 0, "skipped", "", ""]);
-  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T18:50:00+02:00"));
+  // TikTok's window done (also "skipped" right after Nu verversen), Instagram's not: the collector is still due.
+  sheets._runs = [{ status: "completed" }];
+  sheets.run_log.push(["2026-10-01T16:30:00Z", "profiles", "2026-10-01/20u", false, 3, 0, 0, "skipped", "", ""]);
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:50:00+02:00"));
+  assert.equal(r.action, "collector started");
+  assert.deepEqual(r.due, ["2026-10-01/ig-20u"]);
+  assert.equal(dispatches().length, 2);
+
+  // Both done: nothing to do.
+  sheets.run_log.push(["2026-10-01T16:40:00Z", "ig_profiles", "2026-10-01/ig-20u", false, 3, 3, 0, "ok", "sd", ""]);
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-01T20:55:00+02:00"));
   assert.equal(r.action, "windows already done");
-  assert.equal(dispatches().length, 1);
+  assert.equal(dispatches().length, 2);
+
+  // 12:25 is an Instagram-only window (TikTok runs 08u and 20u).
+  r = await runSchedule(ENV, strictThisFetch, at("2026-10-02T12:25:00+02:00"));
+  assert.equal(r.action, "collector started");
+  assert.deepEqual(r.due, ["2026-10-02/ig-12u"]);
 });
 
 // ---------- finale (manual, from Beheer) ----------
@@ -352,10 +368,11 @@ test("timer: during a finale it starts a run every 15 minutes, also outside the 
   sheets._runs = [{ status: "completed" }];
   const r = await runSchedule(ENV, strictThisFetch, start + 65 * 60e3); // 15:05 Amsterdam: odd hour
   assert.equal(r.action, "collector started");
-  assert.deepEqual(r.due, ["2026-10-26/finale-1500"]);
+  assert.deepEqual(r.due, ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]); // both platforms
   sheets.run_log.push(["2026-10-26T14:06:00Z", "profiles", "2026-10-26/finale-1500", false, 3, 3, 0, "ok", "sd", ""]);
+  sheets.run_log.push(["2026-10-26T14:07:00Z", "ig_profiles", "2026-10-26/ig-finale-1500", false, 3, 3, 0, "ok", "sd", ""]);
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 70 * 60e3)).action, "windows already done");
-  // After the deadline (17:05 Amsterdam, an odd hour): back to the 2-hourly windows, none open now.
+  // After the deadline (17:05 Amsterdam, an odd hour): back to the normal windows, none open now.
   assert.equal((await runSchedule(ENV, strictThisFetch, start + 185 * 60e3)).action, "no window open");
 });
 
@@ -545,6 +562,43 @@ test("(de)activating a student that only has Instagram goes by the Instagram han
   assert.equal(res.status, 200);
   assert.equal(sheets.accounts[4][2], "ja");
   assert.match(sheets.activity_log.at(-1)[3], /Finn Instagram @finn\.ig, rij 5/);
+});
+
+test("Nu verversen: TikTok and Instagram each have their own cooldown; refused only when every platform is recent", async () => {
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts[1].push("anna.ig");   // Anna has an Instagram account
+  sheets._runs = [{ status: "completed" }];
+  const dispatches = () => calls.filter((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.force}/dispatches`)).length;
+  // TikTok was refreshed 10 minutes ago, Instagram never: the refresh goes ahead (the collector skips what is recent).
+  sheets.run_log.push([sheets._recent, "force_refresh", "y", false, 3, 3, 0, "ok", "sd_2", ""]);
+  let res = await req("/api/refresh", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.match((await res.json()).message, /TikTok en Instagram/);
+  assert.equal(dispatches(), 1);
+  // A partial Instagram check does not count as a refresh; a real Instagram run does.
+  sheets.run_log.push([sheets._recent, "ig_today_check", "y", false, 1, 1, 0, "ok", "sd_3", ""]);
+  assert.equal((await req("/api/refresh", { body: {} })).status, 200);
+  sheets.run_log.push([sheets._recent, "ig_force_refresh", "y", false, 1, 1, 0, "ok", "sd_4", ""]);
+  res = await req("/api/refresh", { body: {} });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /De laatste profielrun was 10 min geleden\. Verversen kan weer over 20 min\./);
+  assert.equal(dispatches(), 2);
+});
+
+test("/api/data: the budget counts both platforms, with their runs and last runs", async () => {
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts[1].push("anna.ig");
+  sheets.accounts[3].push("chris.ig");
+  sheets.run_log.push([sheets._recent, "ig_profiles", "2026-10-01/ig-20u", false, 2, 2, 0, "ok", "sd_5", ""]);
+  sheets.run_log.push([sheets._recent, "profiles", "2026-10-01/20u", false, 3, 3, 0, "ok", "sd_6", ""]);
+  const d = await (await req("/api/data")).json();
+  assert.equal(d.budget.byPlatform.tiktok.accounts, 2);      // anna_1 and chris
+  assert.equal(d.budget.byPlatform.instagram.accounts, 2);
+  assert.equal(d.budget.reserved, d.budget.byPlatform.tiktok.reserved + d.budget.byPlatform.instagram.reserved);
+  assert.equal(d.budget.used, 3 + 2);                         // this month: a TikTok and an Instagram run, one cap
+  assert.equal(d.lastInstagramRun, Date.parse(sheets._recent));
+  assert.deepEqual(d.config.frequency, CONFIG.frequency);
+  assert.deepEqual(d.config.schedule.windows.instagram.map((x) => x.name).slice(0, 2), ["ig-00u", "ig-04u"]);
 });
 
 test("Controleer nu: a student with two accounts is done when either posted; otherwise both are checked", async () => {

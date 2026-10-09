@@ -1,5 +1,8 @@
-"""Run types: profiles (every 2 hours), the Vandaag check (part of the accounts, on demand), weekly
-posts refresh, one-time window check, and the scheduler."""
+"""Run types: TikTok profiles and Instagram profiles (each on its own schedule, see config.yaml
+frequency), the Vandaag check (part of the accounts, on demand), weekly TikTok posts refresh, one-time
+window check, and the scheduler. Instagram runs have run types of their own (ig_profiles,
+ig_force_refresh, ig_today_check) and windows of their own (ig-08u), so the platforms never make each
+other's windows skip, while both count toward the same monthly cap."""
 
 from __future__ import annotations
 
@@ -8,10 +11,10 @@ import logging
 import os
 from dataclasses import dataclass, field
 
-from . import model
+from . import instagram, model
 from .brightdata import BrightData
-from .config import UTC, Config
-from .handles import account_groups, parse_accounts, profile_url
+from .config import PLATFORMS, UTC, Config
+from .handles import account_groups, instagram_url, parse_accounts, parse_instagram_accounts, profile_url
 from .sheets import Spreadsheet
 
 log = logging.getLogger(__name__)
@@ -171,8 +174,9 @@ class Collector:
     def run_force_refresh(self, window: str) -> RunResult:
         return self.run_guarded(RunResult("force_refresh", window, self.dry_run), self._force_refresh)
 
-    def minutes_since_profiles(self) -> float | None:
-        last = model.last_profiles_run(self.admin.read("run_log"))
+    def minutes_since_profiles(self, types: set[str] = model.PROFILE_RUN_TYPES) -> float | None:
+        """Minutes since the last real profiles run of these run types (TikTok's by default)."""
+        last = model.last_profiles_run(self.admin.read("run_log"), types)
         return None if last is None else (self.now_utc - last).total_seconds() / 60
 
     def _force_refresh(self, res: RunResult) -> None:
@@ -321,13 +325,180 @@ class Collector:
             res.notes.append(f"@{handle} failed: {reason}")
         res.status = "partial" if failed else "ok"
 
+    # ---------- Instagram profiles ----------
+
+    IG_TABS = ("ig_handles", "ig_history", "ig_posts", "ig_baseline", "ig_outliers")
+
+    def ig_accounts(self) -> tuple[list[str], list[str]]:
+        """(active Instagram handles in sheet order, issues): one account per student."""
+        accounts, issues = parse_instagram_accounts(self.admin.read("accounts"))
+        return [a["handle"] for a in accounts], issues
+
+    def run_ig_profiles(self, window: str) -> RunResult:
+        return self.run_guarded(RunResult("ig_profiles", window, self.dry_run), self._ig_profiles)
+
+    def run_scheduled_ig_profiles(self, window: str) -> RunResult:
+        return self.run_guarded(RunResult("ig_profiles", window, self.dry_run), self._scheduled_ig_profiles)
+
+    def run_ig_force_refresh(self, window: str) -> RunResult:
+        return self.run_guarded(RunResult("ig_force_refresh", window, self.dry_run), self._ig_force_refresh)
+
+    def run_ig_today_check(self, window: str, handles: list[str]) -> RunResult:
+        """The Instagram part of "Controleer nu": only the given accounts. Own run type, so it never counts
+        as a full Instagram run."""
+        res = RunResult("ig_today_check", window, self.dry_run)
+        return self.run_guarded(res, lambda r: self._ig_today_check(r, handles))
+
+    def _scheduled_ig_profiles(self, res: RunResult) -> None:
+        """Scheduled Instagram run; skipped (window done, 0 records) right after a real Instagram run, e.g.
+        "Nu verversen". Finale windows (ig-finale-...) never skip. TikTok runs don't count here."""
+        minutes = None if "finale-" in res.window else self.minutes_since_profiles(model.IG_PROFILE_RUN_TYPES)
+        if minutes is not None and minutes < self.cfg.skip_recent_minutes:
+            res.status = "skipped"
+            res.notes.append(f"SKIPPED: last Instagram run was {minutes:.0f} min ago "
+                             f"(scheduled runs skip within {self.cfg.skip_recent_minutes} min)")
+            return
+        self._ig_profiles(res)
+
+    def _ig_force_refresh(self, res: RunResult) -> None:
+        minutes = self.minutes_since_profiles(model.IG_PROFILE_RUN_TYPES)
+        if minutes is not None and minutes < self.cfg.force_min_minutes:
+            res.status = "refused"
+            res.notes.append(f"REFUSED: last Instagram run was {minutes:.0f} min ago "
+                             f"(minimum {self.cfg.force_min_minutes} min between runs)")
+            return
+        self._ig_profiles(res)
+
+    def _ig_today_check(self, res: RunResult, requested: list[str]) -> None:
+        active, _ = self.ig_accounts()
+        private = set()
+        if "ig_handles" in self.sheet_tabs(self.data):
+            private = {r["handle"] for r in self.data.read("ig_handles") if model.truthy(r.get("is_private"))}
+        targets = [h for h in dict.fromkeys(requested) if h in active and h not in private]
+        dropped = [h for h in requested if h not in targets]
+        if dropped:
+            res.notes.append("not checked (inactive, unknown or private): " + ", ".join("@" + h for h in dropped[:20]))
+        if not targets:
+            res.status = "skipped"
+            res.notes.append("no accounts to check")
+            return
+        _, reserve = self._reserve()
+        self._ig_profiles(res, only=targets, reserve=reserve)
+
+    def _ig_profiles(self, res: RunResult, only: list[str] | None = None, reserve: int = 0) -> None:
+        """Instagram profiles run for all active Instagram accounts, or (only=...) for some of them.
+        1 record per account. A partial run updates just the accounts it fetched."""
+        handles, issues = self.ig_accounts()
+        if only is None:
+            res.notes.extend(issues)
+        targets = handles if only is None else [h for h in only if h in handles]
+        res.expected = len(targets)
+        if not targets:
+            res.status = "skipped"
+            res.notes.append("no active Instagram handles in accounts")
+            return
+        if not self.budget_ok(res, reserve):
+            return
+        if self.dry_run:
+            res.status = "dry-run"
+            res.notes.append(f"would fetch {len(targets)} Instagram profile(s), 1 record each: "
+                             + ", ".join("@" + h for h in targets))
+            return
+        records = self.collect(res, self.cfg.instagram_dataset, [{"url": instagram_url(h)} for h in targets])
+        if records is None:
+            return
+
+        wanted = set(targets)
+        parsed, failed = {}, {}
+        for rec in records:
+            handle = instagram.record_handle(rec)
+            if handle not in wanted:
+                res.notes.append(f"ignored record for unexpected handle {handle!r}")
+                continue
+            if instagram.is_error(rec):
+                failed[handle] = instagram.error_reason(rec)
+                continue
+            parsed[handle] = instagram.parse_profile(rec, handle, self.cfg.instagram_campaign, self.now_utc)
+        for handle in wanted - parsed.keys() - failed.keys():
+            failed[handle] = "no record returned"
+        res.errors = len(failed)
+        self._save_instagram(res, handles, targets, parsed, failed, partial=only is not None)
+
+    def _save_instagram(self, res: RunResult, handles: list[str], targets: list[str], parsed: dict, failed: dict,
+                        partial: bool) -> None:
+        """Write one run's Instagram results to the public ig_* tabs (handles only, no names). Order: posts,
+        history, baseline, handles; if something fails halfway the next run only repeats a row."""
+        if not set(self.IG_TABS) <= self.sheet_tabs(self.data):  # created once, with fixed tab ids (site/config.js)
+            self.data.ensure_tabs({t: model.SCHEMA_DATA[t] for t in self.IG_TABS}, model.FIXED_SHEET_IDS)
+        campaign = self.cfg.instagram_campaign
+        old_posts = self.data.read("ig_posts")
+        known: dict[str, set[str]] = {}
+        for row in old_posts:
+            known.setdefault(str(row.get("handle")), set()).add(str(row.get("post_id")))
+        incoming = [post for p in parsed.values() for post in p["posts"]]
+        merged = instagram.upsert_posts(old_posts, incoming, self.stamp)
+        self.data.rewrite("ig_posts", merged)
+        counts = instagram.campaign_post_counts(merged, campaign)
+        snapshots = [p["snapshot"] for p in parsed.values()]
+        self.data.append("ig_history", [{**snap, "campaign_posts": counts.get(snap["handle"], 0)} for snap in snapshots])
+        baselines = instagram.new_baselines(self.data.read("ig_baseline"), snapshots, self.stamp)
+        self.data.append("ig_baseline", baselines)
+
+        old_handles = {r["handle"]: r for r in self.data.read("ig_handles")}
+        history = None
+        rows = []
+        for handle in handles:  # every active account keeps its row; only the fetched ones change
+            row = dict(old_handles.get(handle, {"handle": handle}))
+            before = model.status_kind(row.get("last_status"))
+            if handle in parsed:
+                snap = parsed[handle]["snapshot"]
+                row.update(is_private=snap["is_private"], followers=snap["followers"], last_scraped=self.stamp,
+                           last_status="privé" if snap["is_private"] else "ok")
+            elif handle in failed:
+                reason = failed[handle]
+                if "private" in reason.lower():
+                    row["is_private"] = True
+                row["last_status"] = f"fout: {reason[:80]}"
+            now_kind = model.status_kind(row.get("last_status"))
+            if now_kind and (now_kind != before or not str(row.get("status_since") or "").strip()):
+                since = self.stamp
+                if now_kind == before == "privé":  # column is new: look up when it went private
+                    history = self.data.read("ig_history") if history is None else history
+                    since = model.private_since(history, handle) or self.stamp
+                row["status_since"] = since
+            rows.append(row)
+        self.data.rewrite("ig_handles", rows)
+
+        private = [h for h, p in parsed.items() if p["snapshot"]["is_private"]]
+        full = [h for h, p in parsed.items() if instagram.window_full(p, known.get(h, set()))]
+        res.notes.append(f"{len(parsed)} Instagram profiles ok{f' of {len(targets)} checked' if partial else ''}, "
+                         f"{len(incoming)} campaign posts seen, {len(baselines)} new baseline(s)")
+        if private:
+            res.notes.append("PRIVATE accounts: " + ", ".join("@" + h for h in private))
+        if full:
+            res.notes.append(f"post list full ({instagram.ARRAY_CAP}) without overlap with stored posts, "
+                             "posts may be missing for: " + ", ".join("@" + h for h in full))
+        for handle, reason in sorted(failed.items()):
+            res.notes.append(f"@{handle} failed: {reason}")
+        res.status = "partial" if failed else "ok"
+
     # ---------- posts (weekly refresh and one-time window check) ----------
 
-    def _reserve(self) -> tuple[int, int]:
-        handles, _ = self.accounts()
+    def reserve_by_platform(self) -> dict[str, tuple[int, int, int]]:
+        """Per platform: (scheduled profile runs still to come this month, accounts, records they reserve)."""
+        counts = {"tiktok": len(self.accounts()[0]), "instagram": len(self.ig_accounts()[0])}
         done, _ = model.window_state(self.admin.read("run_log"))
-        runs = model.remaining_profile_runs(self.cfg, self.now_local, done)
-        return runs, runs * len(handles)
+        out = {}
+        for platform in PLATFORMS:
+            runs = model.remaining_profile_runs(self.cfg, self.now_local, done, platform)
+            out[platform] = (runs, counts[platform], runs * counts[platform])
+        return out
+
+    def _reserve(self) -> tuple[int, int]:
+        """(runs, records) still to come this month, both platforms together: kept free by refreshes and
+        checks so the main sources never run out of budget."""
+        parts = self.reserve_by_platform().values()
+        return sum(p[0] for p in parts), sum(p[2] for p in parts)
 
     def run_refresh(self, window: str) -> RunResult:
         return self.run_guarded(RunResult("posts_refresh", window, self.dry_run), self._refresh)
@@ -448,21 +619,27 @@ class Collector:
         finale = self.finale()
         ran = False
         if finale and finale["phase"] == "live":
-            # Finale: a run every few minutes instead of the 2-hourly windows (double-checked here,
+            # Finale: a run every few minutes instead of the normal windows (double-checked here,
             # whoever started this workflow). Budget cap and run-once-per-window still apply.
             key = model.finale_window_key(self.now_local, self.cfg.finale.every_minutes)
             ran |= self._maybe(key, self.run_scheduled_profiles)
+            ran |= self._maybe(key.replace("/finale-", "/ig-finale-"), self.run_scheduled_ig_profiles)
         elif not (camp.start <= today <= camp.collect_until):
             print(f"{self.now_local:%Y-%m-%d %H:%M} Amsterdam: outside collection period, nothing to do")
             return
         else:
-            for window in self.cfg.profile_windows:
+            # Each platform runs in the windows of its own frequency step; a platform set to "off" has none.
+            for window in self.cfg.platform_windows("tiktok"):
                 if window.contains(self.now_local):
                     ran |= self._maybe(window.key(today), self.run_scheduled_profiles)
+            for window in self.cfg.platform_windows("instagram"):
+                if window.contains(self.now_local):
+                    ran |= self._maybe(window.key(today), self.run_scheduled_ig_profiles)
         if self.cfg.refresh_window.contains(self.now_local):
             ran |= self._maybe(self.cfg.refresh_window.key(today), self.run_refresh)
-        if self.cfg.check_date == today:
-            evening = self.cfg.profile_windows[-1]
+        tiktok_windows = self.cfg.platform_windows("tiktok")
+        if self.cfg.check_date == today and tiktok_windows:
+            evening = tiktok_windows[-1]
             done, _ = model.window_state(self.admin.read("run_log"))
             if evening.contains(self.now_local) and evening.key(today) in done:
                 ran |= self._maybe(f"{today.isoformat()}/window-check", self.run_window_check)
@@ -503,10 +680,14 @@ class Collector:
         logged = model.month_usage(run_log, self.now_utc)
         used = self.month_used(write=False)  # read-only: status never books an adjustment
         handles, issues = self.accounts()
-        runs, reserve = self._reserve()
+        _, ig_issues = self.ig_accounts()
+        by = self.reserve_by_platform()
+        reserve = sum(p[2] for p in by.values())
+        names = {"tiktok": "TikTok", "instagram": "Instagram"}
         summary(f"Amsterdam time {self.now_local:%Y-%m-%d %H:%M}\n\n"
-                f"- active handles: {len(handles)}\n- records used this month: {used} / {self.cfg.monthly_cap}"
+                + "".join(f"- {names[p]}: {by[p][1]} active handles, pulled {self.cfg.frequency.get(p, 'off')}, "
+                          f"{by[p][0]} runs left this month (≈{by[p][2]} records)\n" for p in PLATFORMS)
+                + f"- records used this month: {used} / {self.cfg.monthly_cap}"
                 + (f" (run_log has {logged}; Bright Data bills {used})" if used != logged else "") + "\n"
-                f"- profile runs left this month: {runs} (≈{reserve} records)\n"
                 f"- projected month total without refreshes: {used + reserve}\n"
-                + "".join(f"- issue: {i}\n" for i in issues))
+                + "".join(f"- issue: {i}\n" for i in issues + ig_issues))

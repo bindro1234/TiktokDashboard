@@ -93,10 +93,12 @@ function api(req, body) {
   if (req.method === "GET" && req.url === "/api/data") {
     return [200, { me: "docent@school.nl", serverTime: NOW,
       config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
-        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals },
+        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
+        frequency: CFG.frequency, instagram: CFG.instagram },
       finale, finaleHasRun,
       accounts, handles, history, posts, runLog, activity,
-      budget: lib.budget(CFG, runLog, tracked.length, NOW), lastProfilesRun: lib.lastProfilesRun(runLog),
+      budget: lib.budget(CFG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
+      lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
       lastTodayCheck: null, tasks, outliers: [...outliers] }];
   }
   if (req.method === "GET" && req.url === "/api/post-history") return [200, { rows: postHistory }];
@@ -343,6 +345,14 @@ await page.evaluate(() => { location.hash = "beheer"; });
 await page.waitForSelector("#acc-body tr");
 const budgetText = await page.textContent("#bh-budget");
 if (!budgetText.includes(String(CFG.budget.monthlyCap).replace(/\B(?=(\d{3})+(?!\d))/g, "."))) fail("beheer: budget does not show the cap");
+// Two platforms: runs and accounts per platform, one cap; the schedule says how often each is pulled.
+const igAccounts = lib.parseAccounts(accountsSheet).filter((a) => a.instagramTracked).length;
+if (!/TikTok: nog \d+ geplande profielruns deze maand × 13 accounts/.test(budgetText)) fail(`beheer: no TikTok budget line: ${budgetText.slice(0, 200)}`);
+if (!new RegExp(`Instagram: nog \\d+ geplande profielruns deze maand × ${igAccounts} accounts`).test(budgetText)) fail(`beheer: no Instagram budget line: ${budgetText.slice(0, 300)}`);
+const scheduleText = await page.textContent("#bh-schedule");
+if (!/TikTok: 2× per dag, elke 12 uur: 08:00, 20:00/.test(scheduleText)) fail(`beheer: TikTok schedule wrong: ${scheduleText.slice(0, 200)}`);
+if (!/Instagram: 6× per dag, elke 4 uur: 00:00, 04:00, 08:00, 12:00, 16:00, 20:00/.test(scheduleText)) fail(`beheer: Instagram schedule wrong: ${scheduleText.slice(0, 300)}`);
+console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)}…"`);
 const issuesText = await page.textContent("#acc-issues");
 if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`beheer: problems list incomplete: ${issuesText}`);
 await page.fill('#add-form [name="handle"]', "https://www.tiktok.com/@Nieuw.Account");

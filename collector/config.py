@@ -12,6 +12,9 @@ import yaml
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 UTC = dt.timezone.utc
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+PLATFORMS = ("tiktok", "instagram")
+# The fixed pull frequencies (config.yaml frequency): "off" plus these, each a set of hourly windows.
+FREQUENCY_STEPS = ("daily", "12h", "6h", "4h", "2h")
 
 
 def _time(value: str) -> dt.time:
@@ -135,6 +138,47 @@ class Config:
     off_days: OffDays = OffDays()
     today_cooldown_minutes: int = 10
     signals: dict = field(default_factory=dict)
+    instagram_dataset: str = ""
+    instagram_start: dt.date | None = None   # first day an Instagram post counts
+    frequency: dict = field(default_factory=dict)        # platform -> step ("off", "12h", ...)
+    frequency_steps: dict = field(default_factory=dict)  # step -> window names from profile_windows
+
+    def platform_windows(self, platform: str, step: str | None = None) -> tuple[Window, ...]:
+        """The profile windows a platform really runs in: its frequency step's windows out of the pool
+        profile_windows, in clock order. Instagram windows are keyed ig-08u, so a TikTok window and an
+        Instagram window never count as each other's run. step=None uses the configured start value."""
+        step = step or self.frequency.get(platform, "off")
+        if step == "off":
+            return ()
+        names = set(self.frequency_steps[step])
+        chosen = [w for w in self.profile_windows if w.name in names]
+        if platform == "instagram":
+            return tuple(Window(f"ig-{w.name}", w.start, w.end) for w in chosen)
+        return tuple(chosen)
+
+    @property
+    def instagram_campaign(self) -> Campaign:
+        """The days an Instagram post counts: instagram.start_date up to and including campaign.end_date."""
+        return Campaign(start=self.instagram_start or self.campaign.start, end=self.campaign.end,
+                        collect_until=self.campaign.collect_until, tz=self.tz)
+
+
+def _frequency(raw: dict | None, pool: tuple[Window, ...]) -> tuple[dict, dict]:
+    """(platform -> step, step -> window names), checked: every step only names windows of the pool and
+    every platform has a known step, so a typo in config.yaml fails loudly instead of skipping runs."""
+    raw = raw or {}
+    steps = {str(k): tuple(str(n) for n in v) for k, v in (raw.get("steps") or {}).items()}
+    names = {w.name for w in pool}
+    for step, windows in steps.items():
+        if step not in FREQUENCY_STEPS:
+            raise ValueError(f"frequency.steps: unknown step {step!r} (use {', '.join(FREQUENCY_STEPS)})")
+        if not windows or set(windows) - names:
+            raise ValueError(f"frequency.steps.{step}: windows {sorted(set(windows) - names) or 'none'} are not in schedule.profile_runs")
+    freq = {platform: str(raw.get(platform, "off")) for platform in PLATFORMS}
+    for platform, step in freq.items():
+        if step != "off" and step not in steps:
+            raise ValueError(f"frequency.{platform}: {step!r} is not off or one of {', '.join(steps)}")
+    return freq, steps
 
 
 def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
@@ -144,6 +188,8 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
     sched = raw["schedule"]
     refresh = sched["posts_refresh"]
     check = raw.get("window_check") or {}
+    pool = tuple(Window(w["name"], _time(w["start"]), _time(w["end"])) for w in sched["profile_runs"])
+    frequency, frequency_steps = _frequency(raw.get("frequency"), pool)
     return Config(
         tz=tz,
         campaign=Campaign(
@@ -160,9 +206,7 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         timeout_minutes=int(raw["brightdata"].get("timeout_minutes", 30)),
         monthly_cap=int(raw["budget"]["monthly_cap"]),
         max_attempts_per_window=int(sched.get("max_attempts_per_window", 2)),
-        profile_windows=tuple(
-            Window(w["name"], _time(w["start"]), _time(w["end"])) for w in sched["profile_runs"]
-        ),
+        profile_windows=pool,
         refresh_window=Window(
             refresh["name"],
             _time(refresh["start"]),
@@ -183,4 +227,8 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         off_days=_off_days(camp.get("off_days")),
         today_cooldown_minutes=int((raw.get("today_check") or {}).get("cooldown_minutes", 10)),
         signals={**SIGNAL_DEFAULTS, **(raw.get("signals") or {})},
+        instagram_dataset=str(raw["brightdata"].get("instagram_profiles_dataset", "")),
+        instagram_start=_date((raw.get("instagram") or {}).get("start_date")),
+        frequency=frequency,
+        frequency_steps=frequency_steps,
     )

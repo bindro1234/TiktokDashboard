@@ -93,16 +93,36 @@ test("budget helpers agree with collector/model.py", () => {
   assert.equal(lib.monthUsage(log, Date.parse("2026-10-02T00:00:00Z")), 45);
   assert.equal(lib.lastProfilesRun(log), Date.parse("2026-10-01T05:00:00Z"));
   assert.deepEqual([...lib.doneWindows(log)], ["2026-10-01/06u"]);
-  // Same case as test_remaining_profile_runs: Friday 23 Oct 08:45, the 08u window already ran.
+  // Same cases as test_remaining_profile_runs: Friday 23 Oct 08:45, the 08u window already ran.
+  // TikTok every 12 hours (08u, 20u), Instagram every 4 hours (ig-00u ... ig-20u).
   const at = ams("2026-10-23T08:45:00+02:00");
-  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/08u"])), 91);
-  assert.equal(lib.remainingProfileRuns(CFG, at, new Set()), 92);
-  // Campaign until Friday 30 Oct: windows open that day, none on the 31st.
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/08u"])), 15);
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set()), 16);
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/08u"]), "instagram"), 46);
+  assert.equal(lib.remainingProfileRuns(CFG, at, new Set(["2026-10-23/ig-08u"]), "instagram"), 45);
+  // Both platforms: 12 Oct 08:10 (the 08u windows are still open) = 38 TikTok + 112 Instagram runs, as in Python.
+  const now = ams("2026-10-12T08:10:00+02:00");
+  const b = lib.budget(CFG, [], { tiktok: 4, instagram: 3 }, now);
+  assert.deepEqual([b.runsLeft, b.reserved, b.projected], [150, 38 * 4 + 112 * 3, 38 * 4 + 112 * 3]);
+  assert.deepEqual(b.byPlatform, { tiktok: { runsLeft: 38, accounts: 4, reserved: 152 }, instagram: { runsLeft: 112, accounts: 3, reserved: 336 } });
+  assert.deepEqual(lib.budget(CFG, [], 4, now).byPlatform.instagram, { runsLeft: 112, accounts: 0, reserved: 0 }); // a number = TikTok only
+  // Both platforms count toward one cap; each has its own "last run".
+  const both = [
+    { timestamp: "2026-10-01T05:00:00Z", dry_run: false, actual_records: 45, run_type: "profiles", snapshot_ids: "sd_1" },
+    { timestamp: "2026-10-01T09:00:00Z", dry_run: false, actual_records: 20, run_type: "ig_profiles", snapshot_ids: "sd_2" },
+    { timestamp: "2026-10-01T09:30:00Z", dry_run: false, actual_records: 3, run_type: "ig_today_check", snapshot_ids: "sd_3" },
+  ];
+  assert.equal(lib.monthUsage(both, Date.parse("2026-10-02T00:00:00Z")), 68);
+  assert.equal(lib.lastProfilesRun(both), Date.parse("2026-10-01T05:00:00Z"));
+  assert.equal(lib.lastProfilesRun(both, lib.IG_PROFILE_RUN_TYPES), Date.parse("2026-10-01T09:00:00Z")); // a partial check is no full run
+  // Campaign until Friday 30 Oct: windows open that day (20u for both platforms), none on the 31st.
   assert.equal(CFG.campaign.end, "2026-10-30");
   assert.equal(CFG.budget.monthlyCap, 23000);
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-30T22:10:00+01:00")), ["2026-10-30/22u"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-30T20:10:00+01:00")), ["2026-10-30/20u", "2026-10-30/ig-20u"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-30T22:10:00+01:00")), []);
   assert.deepEqual(lib.openWindows(CFG, ams("2026-10-31T00:10:00+01:00")), []);
 });
+
 
 test("studentStats: missed days, streaks, engagement and best video", () => {
   const p = (id, iso, views, likes = 0) => ({ video_id: id, created_at: iso, views, likes, comments: 1, shares: 0, hashtags: "glu fyp" });
@@ -169,32 +189,40 @@ test("toCsv: Excel NL separator, decimal comma, formula protection", () => {
 
 const log = (window, status, dry = false) => ({ window, status, dry_run: dry, timestamp: "2026-10-01T00:00:00Z" });
 
-test("openWindows follows Amsterdam time in summer and winter", () => {
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T06:45:00+02:00")), ["2026-10-01/06u"]);
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T07:05:00+02:00")), []);           // odd hour: between windows
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-25T18:45:00+01:00")), ["2026-10-25/18u"]); // winter time
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-26T14:30:00+01:00")), ["2026-10-26/14u"]);
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T00:05:00+02:00")), ["2026-10-01/00u"]);
-  // Friday 08:45: the 08u profile window and the weekly refresh are both open.
-  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-02T08:45:00+02:00")), ["2026-10-02/08u", "2026-10-02/weekrefresh"]);
+test("openWindows follows Amsterdam time in summer and winter, per platform", () => {
+  // TikTok: 08u and 20u. Instagram: ig-00u, 04u, 08u, 12u, 16u, 20u.
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T08:45:00+02:00")), ["2026-10-01/08u", "2026-10-01/ig-08u"]);
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T09:05:00+02:00")), []);           // odd hour: between windows
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T10:45:00+02:00")), []);           // a pool window, but in nobody's step
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-25T20:45:00+01:00")), ["2026-10-25/20u", "2026-10-25/ig-20u"]); // winter time
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-26T12:30:00+01:00")), ["2026-10-26/ig-12u"]);  // only Instagram
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T00:05:00+02:00")), ["2026-10-01/ig-00u"]);
+  // A platform set to off has no windows.
+  const noIg = { ...CFG, schedule: { ...CFG.schedule, windows: { ...CFG.schedule.windows, instagram: [] } } };
+  assert.deepEqual(lib.openWindows(noIg, ams("2026-10-01T08:45:00+02:00")), ["2026-10-01/08u"]);
+  // Friday 08:45: both 08u profile windows and the weekly refresh are open.
+  assert.deepEqual(lib.openWindows(CFG, ams("2026-10-02T08:45:00+02:00")), ["2026-10-02/08u", "2026-10-02/ig-08u", "2026-10-02/weekrefresh"]);
   assert.deepEqual(lib.openWindows(CFG, ams("2026-10-01T09:45:00+02:00")), []);           // Thursday, no refresh
   assert.deepEqual(lib.openWindows(CFG, ams("2026-09-27T08:00:00+02:00")), []);  // before the campaign
   assert.deepEqual(lib.openWindows(CFG, ams("2026-10-31T08:00:00+01:00")), []);  // after collect_until
 });
 
-test("dueWindows skips done windows, stops after max failures, adds the one-time check", () => {
-  const at = ams("2026-10-01T18:25:00+02:00");
-  assert.deepEqual(lib.dueWindows(CFG, [], at), ["2026-10-01/18u"]);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/18u", "skipped")], at), []);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/18u", "ok", true)], at), ["2026-10-01/18u"]); // dry run
-  const fails = Array(CFG.schedule.maxAttemptsPerWindow).fill(log("2026-10-01/18u", "failed"));
-  assert.deepEqual(lib.dueWindows(CFG, fails, at), []);
-  // The one-time check runs in the last window of its date, after that window's profiles run.
-  const last = CFG.schedule.profileRuns.at(-1).name;
-  const check = ams(`${CFG.windowCheckDate}T22:45:00+02:00`);
+test("dueWindows skips done windows per platform, stops after max failures, adds the one-time check", () => {
+  const at = ams("2026-10-01T20:25:00+02:00");
+  assert.deepEqual(lib.dueWindows(CFG, [], at), ["2026-10-01/20u", "2026-10-01/ig-20u"]);
+  // The platforms are independent: a TikTok window done says nothing about Instagram's.
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/20u", "skipped")], at), ["2026-10-01/ig-20u"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/ig-20u", "ok")], at), ["2026-10-01/20u"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/20u", "ok"), log("2026-10-01/ig-20u", "ok")], at), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-01/20u", "ok", true)], at), ["2026-10-01/20u", "2026-10-01/ig-20u"]); // dry run
+  const fails = Array(CFG.schedule.maxAttemptsPerWindow).fill(log("2026-10-01/20u", "failed"));
+  assert.deepEqual(lib.dueWindows(CFG, fails, at), ["2026-10-01/ig-20u"]);
+  // The one-time check runs in the last TikTok window of its date, after that window's profiles run.
+  const last = lib.platformWindows(CFG, "tiktok").at(-1).name;
+  const check = ams(`${CFG.windowCheckDate}T20:45:00+02:00`);
   const eve = `${CFG.windowCheckDate}/${last}`;
-  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok")], check), [`${CFG.windowCheckDate}/window-check`]);
-  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok"), log(`${CFG.windowCheckDate}/window-check`, "ok")], check), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok"), log(`${eve.replace("/", "/ig-")}`, "ok")], check), [`${CFG.windowCheckDate}/window-check`]);
+  assert.deepEqual(lib.dueWindows(CFG, [log(eve, "ok"), log(`${eve.replace("/", "/ig-")}`, "ok"), log(`${CFG.windowCheckDate}/window-check`, "ok")], check), []);
 });
 
 test("the Cloudflare cron in wrangler.toml hits every window at least 3 times, also across the DST change", () => {
@@ -218,12 +246,24 @@ test("the Cloudflare cron in wrangler.toml hits every window at least 3 times, a
   });
   // UTC days around the local day: the 00u window starts the evening before in UTC.
   const firings = (day) => [-1, 0, 1].flatMap((d) => firingsOn(lib.addDays(day, d)));
+  // Every window of the pool must be covered, whichever frequency step a platform uses (each step is a
+  // subset of the pool): check with a config in which both platforms use all of it ("2h").
+  const pool = CFG.schedule.profileRuns;
+  const all = { ...CFG, schedule: { ...CFG.schedule, windows: {
+    tiktok: pool, instagram: pool.map((w) => ({ ...w, name: `ig-${w.name}` })) } } };
   // Summer time, the day the clocks go back (25 Oct), winter time.
   for (const day of ["2026-10-01", "2026-10-25", "2026-10-26"]) {
-    for (const w of CFG.schedule.profileRuns) {
-      const hits = firings(day).filter((t) => lib.openWindows(CFG, t).includes(`${day}/${w.name}`)).length;
-      assert.ok(hits >= 3, `${day} ${w.name}: ${hits} hits`);
+    for (const w of pool) {
+      for (const name of [w.name, `ig-${w.name}`]) {
+        const hits = firings(day).filter((t) => lib.openWindows(all, t).includes(`${day}/${name}`)).length;
+        assert.ok(hits >= 3, `${day} ${name}: ${hits} hits`);
+      }
     }
+  }
+  // The steps in use are subsets of that pool.
+  const names = new Set(pool.map((w) => w.name));
+  for (const platform of lib.PLATFORMS) {
+    for (const w of lib.platformWindows(CFG, platform)) assert.ok(names.has(w.name.replace(/^ig-/, "")), w.name);
   }
   const r = CFG.schedule.refresh;
   for (const day of ["2026-10-02", "2026-10-30"]) { // first and last Friday of the collection
@@ -249,13 +289,14 @@ test("finaleState: live, ended (Eindstand), stopped early, cancelled, hard maxim
   assert.equal(lib.finaleState([], Date.now(), 8), null);
 });
 
-test("finale windows replace the 2-hourly ones while live; keys match the collector", () => {
+test("finale windows replace the normal ones while live, for both platforms; keys match the collector", () => {
   const live = lib.finaleState([FIN], Date.parse("2026-10-26T14:05:00Z"), 8);
   const at = Date.parse("2026-10-26T14:05:00Z"); // 15:05 Amsterdam (winter time)
   assert.equal(lib.finaleWindowKey(Date.parse("2026-10-26T15:29:00Z"), 15), "2026-10-26/finale-1615");
-  assert.deepEqual(lib.openWindows(CFG, at, live), ["2026-10-26/finale-1500"]);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1500", "ok")], at, live), []);
-  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1445", "ok")], at, live), ["2026-10-26/finale-1500"]);
+  assert.deepEqual(lib.openWindows(CFG, at, live), ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1500", "ok")], at, live), ["2026-10-26/ig-finale-1500"]);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1500", "ok"), log("2026-10-26/ig-finale-1500", "ok")], at, live), []);
+  assert.deepEqual(lib.dueWindows(CFG, [log("2026-10-26/finale-1445", "ok")], at, live), ["2026-10-26/finale-1500", "2026-10-26/ig-finale-1500"]);
   assert.equal(lib.amsMs("2026-10-26", "16:00"), Date.parse("2026-10-26T15:00:00Z"));
   assert.equal(lib.amsMs("2026-10-01", "16:00"), Date.parse("2026-10-01T14:00:00Z"));
   assert.equal(lib.finaleRuns(0, 2 * 3600e3, 15), 8);
