@@ -190,11 +190,20 @@
         <h2>Leerling toevoegen</h2>
         <form id="add-form" class="add-form" autocomplete="off">
           <label>Naam <input name="name" required maxlength="80"></label>
-          <label>TikTok-handle <input name="handle" required placeholder="@naam of tiktok.com/@naam"></label>
+          <label>TikTok-handle <input name="handle" placeholder="@naam of tiktok.com/@naam"></label>
+          <label>Instagram-handle <input name="instagram" placeholder="@naam of instagram.com/naam"></label>
           <label class="check"><input type="checkbox" name="active" checked> Actief</label>
           <button type="submit" class="btn primary">Toevoegen</button>
         </form>
+        <p class="hint">Vul minstens één van de twee handles in. Een leerling heeft één Instagram-account, los van de TikTok-handle.</p>
         <p class="status" id="add-preview" aria-live="polite"></p>
+      </div>
+
+      <div class="card" id="ig-card">
+        <h2>Leerlingen zonder Instagram <span class="meta" id="ig-count"></span></h2>
+        <p class="hint">Actieve leerlingen die nog geen (geldige) Instagram-handle hebben. Vul hem hier in; hij mag in elke vorm: <code>@naam</code>, <code>naam</code> of een link naar het profiel.</p>
+        <p class="status" id="ig-msg" role="status"></p>
+        <ul class="today-list" id="ig-missing"></ul>
       </div>
 
       <div class="card">
@@ -206,7 +215,7 @@
         <p class="status" id="acc-msg" role="status"></p>
         <div class="table-wrap">
           <table class="board small">
-            <thead><tr><th class="num">Rij</th><th>Naam</th><th>Handle</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th class="num">Rij</th><th>Naam</th><th>TikTok</th><th>Instagram</th><th>Status</th><th></th></tr></thead>
             <tbody id="acc-body"></tbody>
           </table>
         </div>

@@ -13,6 +13,7 @@ const fmt = (n) => (n == null ? "–" : nf.format(n));
 const signed = (n) => (n == null ? "–" : (n > 0 ? "+" : n < 0 ? "−" : "±") + nf.format(Math.abs(n)));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const dayLabel = (d) => dateFmt.format(Date.parse(d + "T00:00:00Z"));
+const instagram = (h) => `https://www.instagram.com/${encodeURIComponent(h)}/`;
 const tiktok = (h, id) => `https://www.tiktok.com/@${encodeURIComponent(h)}${id ? `/video/${encodeURIComponent(id)}` : ""}`;
 const $ = (id) => document.getElementById(id);
 
@@ -28,6 +29,8 @@ const state = {
   taskEdit: null,        // Beheer: dagopdracht being edited (row)
   todayRun: null,        // Vandaag: { startedAt, count } while a "Controleer nu" run is on its way
   addFor: null,          // Beheer: account row with the "+ account" form open
+  igFor: null,           // Beheer: accounts row whose Instagram-handle form is open
+  igDraft: new Map(),    // Beheer: Instagram handles being typed in the "zonder Instagram" list (row -> text)
 };
 const hourFmt = new Intl.DateTimeFormat("nl-NL", { timeZone: lib.TZ, hour: "2-digit", minute: "2-digit" });
 const longDate = new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long" });
@@ -107,6 +110,9 @@ function build(raw) {
       ...main, name: g.name, handle: g.key, handles: accounts.map((a) => a.handle), accounts, multi,
       ...(multi ? numbers(lib.mergeSeries(accounts.map((a) => a.series)), accounts.flatMap((a) => a.posts)) : {}),
       isPrivate: accounts.some((a) => a.isPrivate), isOutlier: accounts.some((a) => a.isOutlier),
+      // The student's one Instagram account (tracked), the first row it is typed on, and what that cell holds now.
+      instagram: g.instagram, instagramRow: g.instagramRow, instagramIssue: g.instagramIssue,
+      igCurrent: main.instagram, igRaw: main.instagramRaw,
     };
     s.warnings = warnings(s, cfg, now);
     return s;
@@ -405,6 +411,7 @@ function renderStudent(m, handle) {
     <div class="detail-head">
       <h2>${nameCell(s)}</h2>
       ${s.handles.map((h) => `<a href="${tiktok(h)}" target="_blank" rel="noopener">@${esc(h)} op TikTok ↗</a>`).join("")}
+      ${s.instagram ? `<a href="${instagram(s.instagram)}" target="_blank" rel="noopener">@${esc(s.instagram)} op Instagram ↗</a>` : ""}
       ${badges(s.warnings)}
     </div>
     ${s.multi ? `<div class="controls"><label class="acc-select">Cijfers van <select id="st-account">
@@ -548,13 +555,31 @@ function renderAdmin(m) {
       title="Tweede TikTok-account van deze leerling toevoegen; de weergaven tellen samen">+ account</button>` : "";
     const scale = a.tracked ? `<button type="button" class="btn small" data-outlier="${esc(a.handle)}" data-on="${!out}"
       title="${out ? "Weer meetellen in de schaal van de grafieken" : "Uit de schaal van de grafieken halen (plaats en cijfers blijven gelijk)"}">${out ? "In schaal" : "Buiten schaal"}</button>` : "";
-    const btn = !a.handle ? "" : a.active
-      ? `<button type="button" class="btn small" data-row="${a.row}" data-handle="${esc(a.handle)}" data-active="false">Deactiveren</button>`
-      : a.active === false ? `<button type="button" class="btn small" data-row="${a.row}" data-handle="${esc(a.handle)}" data-active="true">Activeren</button>` : "";
+    // A row is identified by its TikTok handle, or (a student with only Instagram) by its Instagram handle.
+    const key = a.handle ? `data-handle="${esc(a.handle)}"` : a.instagram ? `data-instagram="${esc(a.instagram)}"` : "";
+    const btn = !key ? "" : a.active
+      ? `<button type="button" class="btn small" data-row="${a.row}" ${key} data-active="false">Deactiveren</button>`
+      : a.active === false ? `<button type="button" class="btn small" data-row="${a.row}" ${key} data-active="true">Activeren</button>` : "";
+    // Instagram: one account per student, typed on the student's first row (not on a second TikTok account).
+    const igBtn = !a.mainRaw && (a.handle || a.instagram) ? `<button type="button" class="btn small" data-ig-edit="${a.row}"
+      title="${a.instagramRaw ? "Instagram-handle van deze leerling wijzigen of verwijderen" : "Instagram-handle van deze leerling toevoegen"}">${a.instagramRaw ? "Wijzig" : "+ Instagram"}</button>` : "";
+    const igShown = a.instagramTracked ? `<a href="${instagram(a.instagram)}" target="_blank" rel="noopener">@${esc(a.instagram)}</a>`
+      : a.instagramIssue ? `<span class="badge bad" title="${esc(a.instagramIssue)}">${esc(a.instagramRaw)}</span>`
+      : a.instagram ? `<span class="meta">@${esc(a.instagram)}</span>` : igBtn ? "" : "–";
+    const igCell = `${igShown} ${igBtn}`;
     return `<tr class="${a.active === false ? "inactive" : ""}${a.issue ? " issue-row" : ""}">
       <td class="num">${a.row}</td><td>${a.name ? esc(a.name) : `<mark class="unknown">onbekend</mark>`}</td>
-      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || "–"}</td><td>${status}</td><td class="buttons-cell">${btn} ${scale} ${add}</td></tr>
-      ${state.addFor === a.handle ? `<tr class="add-row"><td></td><td colspan="4">
+      <td class="handle">${a.handle ? "@" + esc(a.handle) : esc(a.rawHandle) || (a.instagram ? `<span class="meta">alleen Instagram</span>` : "–")}</td>
+      <td class="handle ig">${igCell}</td><td class="st">${status}</td><td class="buttons-cell">${btn} ${scale} ${add}</td></tr>
+      ${state.igFor === a.row ? `<tr class="add-row"><td></td><td colspan="5">
+        <form class="add-form" data-ig-form="${a.row}" data-was="${esc(a.instagram || "")}" autocomplete="off">
+          <label>Instagram-handle van ${a.name ? esc(a.name) : "deze leerling"} <input name="instagram" value="${esc(a.instagramRaw)}" placeholder="@naam of instagram.com/naam"></label>
+          <button type="submit" class="btn primary">Opslaan</button>
+          ${a.instagramRaw ? `<button type="button" class="btn" data-ig-clear="${a.row}">Verwijderen</button>` : ""}
+          <button type="button" class="btn" data-ig-cancel>Annuleren</button>
+        </form>
+        <p class="hint">Eén Instagram-account per leerling, los van de TikTok-handle. Mag in elke vorm: <code>@naam</code>, <code>naam</code> of een link naar het profiel. Leeg laten en opslaan (of Verwijderen) haalt hem weg; de rij blijft staan.</p></td></tr>` : ""}
+      ${state.addFor === a.handle ? `<tr class="add-row"><td></td><td colspan="5">
         <form class="add-form" data-add-form="${esc(a.handle)}" autocomplete="off">
           <label>Tweede TikTok-account van ${a.name ? esc(a.name) : "deze leerling"} <input name="handle" required placeholder="@naam of tiktok.com/@naam"></label>
           <button type="submit" class="btn primary">Toevoegen</button>
@@ -562,7 +587,8 @@ function renderAdmin(m) {
         </form>
         <p class="hint">Wordt apart opgehaald (1 record per run extra) en telt overal samen met @${esc(a.handle)}: weergaven, posts, reeks en
           kalender. Op de openbare site staan de twee handles dan samen in één rij (zonder naam).</p></td></tr>` : ""}`;
-  }).join("") || `<tr><td colspan="5">Geen rijen.</td></tr>`;
+  }).join("") || `<tr><td colspan="6">Geen rijen.</td></tr>`;
+  renderInstagramMissing(m);
   renderTasks(m);
 
   const issues = raw.accounts.filter((a) => a.issue);
@@ -570,6 +596,7 @@ function renderAdmin(m) {
   $("acc-issues").innerHTML = [
     ...issues.map((a) => `<li>Rij ${a.row} (${a.name ? esc(a.name) : "geen naam"}): <strong>${esc(a.rawHandle || "–")}</strong> — ${esc(a.issue)}. Wordt niet gevolgd.</li>`),
     ...unknown.map((a) => `<li>Rij ${a.row}: @${esc(a.handle)} heeft geen naam (<mark class="unknown">onbekend</mark>).</li>`),
+    ...raw.accounts.filter((a) => a.instagramIssue).map((a) => `<li>Rij ${a.row} (${a.name ? esc(a.name) : "geen naam"}): Instagram <strong>${esc(a.instagramRaw)}</strong> — ${esc(a.instagramIssue)}. Wordt niet gevolgd.</li>`),
     ...raw.accounts.filter((a) => a.groupIssue).map((a) => `<li>Rij ${a.row}: @${esc(a.handle)} — ${esc(a.groupIssue)} (kolom <code>main_account</code>).</li>`),
   ].join("") || `<li>Geen problemen gevonden.</li>`;
 
@@ -591,6 +618,41 @@ function renderAdmin(m) {
     const t = lib.parseTs(a.timestamp);
     return `<tr><td>${t ? stampFmt.format(t) : esc(a.timestamp)}</td><td>${esc(a.email)}</td><td>${esc(a.action)}</td><td>${esc(a.details)}</td></tr>`;
   }).join("") || `<tr><td colspan="4">Nog geen activiteit.</td></tr>`;
+}
+
+// ---------- Leerlingen zonder Instagram (Beheer) ----------
+
+// Active students without a (valid) Instagram handle, each with a small form to fill it in.
+function renderInstagramMissing(m) {
+  const box = $("ig-missing");
+  const focused = document.activeElement?.closest?.("form[data-ig-quick]")?.dataset.igQuick;
+  const missing = m.students.filter((s) => !s.instagram).sort(byName);
+  $("ig-count").textContent = `(${missing.length} van ${m.students.length})`;
+  box.innerHTML = missing.map((s) => {
+    const row = s.instagramRow;
+    const draft = state.igDraft.has(row) ? state.igDraft.get(row) : s.igRaw || "";
+    return `<li><form class="add-form" data-ig-quick="${row}" data-was="${esc(s.igCurrent || "")}" autocomplete="off">
+      <span class="ig-who">${nameCell(s)} <span class="meta">${esc(handlesText(s))}</span></span>
+      <input name="instagram" value="${esc(draft)}" placeholder="@naam of instagram.com/naam" aria-label="Instagram-handle van ${esc(s.name || "onbekend")}">
+      <button type="submit" class="btn small primary">Opslaan</button>
+      ${s.instagramIssue ? `<span class="badge bad" title="${esc(s.instagramIssue)}">${esc(s.instagramIssue)}</span>` : ""}
+    </form></li>`;
+  }).join("") || `<li class="meta">Alle actieve leerlingen hebben een Instagram-account.</li>`;
+  if (focused) box.querySelector(`form[data-ig-quick="${focused}"] input`)?.focus();
+}
+
+async function saveInstagram(row, was, handle, button, msgId) {
+  if (button) button.disabled = true;
+  try {
+    const res = await api("/api/accounts/instagram", { row, was, handle });
+    state.igFor = null;
+    state.igDraft.delete(row);
+    flash(res.message, true, msgId);
+    await load();
+  } catch (err) {
+    flash(err.message, false, msgId);
+    if (button) button.disabled = false;
+  }
 }
 
 // ---------- Dagopdrachten (Beheer) ----------
@@ -1274,10 +1336,11 @@ $("acc-body").addEventListener("click", async (ev) => {
   const btn = ev.target.closest("button[data-row]");
   if (!btn) return;
   const active = btn.dataset.active === "true";
-  if (!active && !confirm(`@${btn.dataset.handle} op inactief zetten? Het account wordt dan niet meer opgehaald. De rij blijft staan en kan altijd weer aan.`)) return;
+  const label = btn.dataset.handle ? `@${btn.dataset.handle}` : `Instagram @${btn.dataset.instagram}`;
+  if (!active && !confirm(`${label} op inactief zetten? Het account wordt dan niet meer opgehaald. De rij blijft staan en kan altijd weer aan.`)) return;
   btn.disabled = true;
   try {
-    const res = await api("/api/accounts/active", { row: Number(btn.dataset.row), handle: btn.dataset.handle, active });
+    const res = await api("/api/accounts/active", { row: Number(btn.dataset.row), handle: btn.dataset.handle, instagram: btn.dataset.instagram, active });
     flash(res.message, true, "acc-msg");
     await load();
   } catch (err) {
@@ -1286,21 +1349,61 @@ $("acc-body").addEventListener("click", async (ev) => {
   }
 });
 
+// Instagram handle forms: in the accounts table (change/clear) and in the "zonder Instagram" list (quick fill-in).
+$("acc-body").addEventListener("click", (ev) => {
+  const edit = ev.target.closest("button[data-ig-edit]");
+  const cancel = ev.target.closest("button[data-ig-cancel]");
+  const clear = ev.target.closest("button[data-ig-clear]");
+  if (clear) {
+    const f = clear.closest("form");
+    saveInstagram(Number(clear.dataset.igClear), f.dataset.was, "", clear, "acc-msg");
+  } else if (edit || cancel) {
+    state.igFor = edit && state.igFor !== Number(edit.dataset.igEdit) ? Number(edit.dataset.igEdit) : null;
+    renderAdmin(model);
+    if (state.igFor) $("acc-body").querySelector("[data-ig-form] input").focus();
+  }
+});
+$("acc-body").addEventListener("submit", (ev) => {
+  const f = ev.target.closest("form[data-ig-form]");
+  if (!f) return;
+  ev.preventDefault();
+  saveInstagram(Number(f.dataset.igForm), f.dataset.was, f.querySelector("[name=instagram]").value, f.querySelector("button[type=submit]"), "acc-msg");
+});
+$("ig-missing").addEventListener("input", (ev) => {
+  const f = ev.target.closest("form[data-ig-quick]");
+  if (f) state.igDraft.set(Number(f.dataset.igQuick), ev.target.value);
+});
+$("ig-missing").addEventListener("submit", (ev) => {
+  const f = ev.target.closest("form[data-ig-quick]");
+  if (!f) return;
+  ev.preventDefault();
+  saveInstagram(Number(f.dataset.igQuick), f.dataset.was, f.querySelector("[name=instagram]").value, f.querySelector("button[type=submit]"), "ig-msg");
+});
+
 const form = $("add-form");
 const field = (n) => form.querySelector(`[name="${n}"]`);
-field("handle").addEventListener("input", () => {
-  const v = field("handle").value;
-  const { handle, reason } = lib.normalizeHandle(v);
+function previewHandles() {
+  const parts = [];
+  let bad = false;
+  for (const [name, label, normalize] of [["handle", "TikTok", lib.normalizeHandle], ["instagram", "Instagram", lib.normalizeInstagramHandle]]) {
+    const v = field(name).value;
+    if (!v.trim()) continue;
+    const { handle, reason } = normalize(v);
+    if (handle) parts.push(`${label} @${handle}`);
+    else { bad = true; parts.push(`${label} kan niet: ${reason}`); }
+  }
   const p = $("add-preview");
-  p.className = "status" + (v && !handle ? " err" : "");
-  p.textContent = !v ? "" : handle ? `Wordt opgeslagen als @${handle}` : `Kan niet: ${reason}`;
-});
+  p.className = "status" + (bad ? " err" : "");
+  p.textContent = !parts.length ? "" : bad ? parts.join(" · ") : `Wordt opgeslagen als ${parts.join(" + ")}`;
+}
+field("handle").addEventListener("input", previewHandles);
+field("instagram").addEventListener("input", previewHandles);
 form.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const btn = form.querySelector("button[type=submit]");
   btn.disabled = true;
   try {
-    const res = await api("/api/accounts", { name: field("name").value, handle: field("handle").value, active: field("active").checked });
+    const res = await api("/api/accounts", { name: field("name").value, handle: field("handle").value, instagram: field("instagram").value, active: field("active").checked });
     form.reset();
     flash(res.message, true);
     await load();

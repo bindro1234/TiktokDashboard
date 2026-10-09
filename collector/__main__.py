@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from . import config, model
+from . import config, handles, model
 from .brightdata import BrightData
 from .runner import Collector, summary
 from .sheets import Spreadsheet, session_from_env
@@ -14,6 +14,11 @@ from .sheets import Spreadsheet, session_from_env
 
 def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
     """Create tabs and headers in both spreadsheets. Safe to run again."""
+    # The Instagram column was typed by hand as "Insta ": rename it before ensure_tabs, which would
+    # otherwise add a second, empty instagram_handle column next to it.
+    if "accounts" in admin.tabs():
+        for change in admin.rename_header("accounts", {handles.INSTAGRAM_LEGACY_COLUMN: handles.INSTAGRAM_COLUMN}):
+            summary(f"accounts header renamed: {change}")
     tabs = admin.ensure_tabs(model.SCHEMA_ADMIN)
     data_tabs = data.ensure_tabs(model.SCHEMA_DATA, model.FIXED_SHEET_IDS)
     # The website needs the gid of each public tab (site/config.js); tab ids are not secret.
