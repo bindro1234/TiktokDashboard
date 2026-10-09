@@ -425,10 +425,12 @@ const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram
 if (!/2\/2/.test(pimToday.text) || !/op Instagram/.test(pimToday.text) || !pimToday.href?.startsWith("https://www.instagram.com/")) fail(`vandaag: Instagram-only student wrong (${JSON.stringify(pimToday)})`);
 if (!/Instagram/.test(await page.textContent("#td-checked"))) fail("vandaag: last checked has no Instagram time");
 if (!(await page.textContent("#view-vandaag")).includes("Stories worden niet meegeteld.")) fail("vandaag: no note about stories");
-page.once("dialog", (d) => d.accept());
+let confirmText = "";
+page.once("dialog", (d) => { confirmText = d.message(); d.accept(); });
 await page.click("#td-check");
 await page.waitForFunction(() => /5–7 minuten|gestart/.test(document.getElementById("td-msg").textContent));
 if (!posted.some((p) => p.url === "/api/today/check")) fail("vandaag: Controleer nu did not post");
+if (!/\(\d+ TikTok, 1 Instagram\)/.test(confirmText) || !/5–10 minuten/.test(confirmText)) fail(`vandaag: the confirmation does not name both platforms (${confirmText})`);
 
 // Opvallend: flags with their numbers.
 await page.evaluate(() => { location.hash = "opvallend"; });

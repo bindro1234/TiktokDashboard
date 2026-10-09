@@ -1349,9 +1349,13 @@ for (const id of ["tag-out", "vid-out"]) {
 }
 $("td-check").addEventListener("click", async () => {
   const st = todayOf(model);
-  const n = lib.todayTargets(st).length;
-  if (!confirm(`Nu ${n} account${n === 1 ? "" : "s"} controleren die vandaag nog niet ${st.task ? "klaar zijn" : "gepost hebben"}? `
-    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer 5–7 minuten voordat de nieuwe cijfers er staan.`)) return;
+  const targets = lib.todayTargets(st);
+  const n = targets.length;
+  const split = lib.targetSplit(targets);
+  const both = split.tiktok > 0 && split.instagram > 0;
+  const platforms = both ? ` (${split.tiktok} TikTok, ${split.instagram} Instagram)` : split.instagram ? " (Instagram)" : "";
+  if (!confirm(`Nu ${n} account${n === 1 ? "" : "s"}${platforms} controleren die vandaag nog niet ${st.task ? "klaar zijn" : "gepost hebben"}? `
+    + `Kost ${n} record${n === 1 ? "" : "s"}. Het duurt ongeveer ${both ? "5–10" : "5–7"} minuten voordat de nieuwe cijfers er staan.`)) return;
   $("td-check").disabled = true;
   try {
     const res = await api("/api/today/check", {});
