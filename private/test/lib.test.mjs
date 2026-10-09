@@ -547,3 +547,69 @@ test("todayStatus: an Instagram post counts; Controleer nu fetches the public ac
   assert.deepEqual(lib.targetSplit(targets), { tiktok: 1, instagram: 3 });
   assert.deepEqual(lib.targetSplit([]), { tiktok: 0, instagram: 0 });
 });
+
+test("normalizeTag / parseTagList: one hashtag in any form; a list typed by a teacher", () => {
+  assert.equal(lib.normalizeTag("#GLU "), "glu");
+  assert.equal(lib.normalizeTag("##av"), "av");
+  assert.equal(lib.normalizeTag("grafisch_lyceum2"), "grafisch_lyceum2");
+  assert.equal(lib.normalizeTag("fotografie"), "fotografie");
+  for (const bad of ["", "#", "twee woorden", "a-b", "glu!", "x".repeat(61), null]) assert.equal(lib.normalizeTag(bad), null, String(bad));
+  assert.deepEqual(lib.parseTagList("glu, #AV  grafischlyceumutrecht;av"), { tags: ["glu", "av", "grafischlyceumutrecht"], invalid: [] });
+  assert.deepEqual(lib.parseTagList("glu nieuw-tag #ok"), { tags: ["glu", "ok"], invalid: ["nieuw-tag"] });
+  assert.deepEqual(lib.parseTagList(["#a", "b"]), { tags: ["a", "b"], invalid: [] });
+  assert.deepEqual(lib.parseTagList(""), { tags: [], invalid: [] });
+});
+
+test("schoolHashtags: the list saved on Beheer, or the start value from config.yaml", () => {
+  const start = ["glu", "av"];
+  assert.deepEqual(lib.schoolHashtags(lib.parseSettings([]), start), start);
+  assert.deepEqual(lib.schoolHashtags(lib.parseSettings([{ key: "other", value: "x", _row: 2 }]), start), start);
+  const saved = lib.parseSettings([{ key: "school_hashtags", value: "glu #Nieuw", _row: 2 }, { key: "", value: "x" }]);
+  assert.deepEqual(lib.schoolHashtags(saved, start), ["glu", "nieuw"]);
+  assert.equal(saved.get("school_hashtags").row, 2);
+  // A list that was cleared on purpose stays empty (no fallback); the last row of a key wins.
+  assert.deepEqual(lib.schoolHashtags(lib.parseSettings([{ key: "school_hashtags", value: "" }]), start), []);
+  assert.deepEqual(lib.schoolHashtags(lib.parseSettings([{ key: "school_hashtags", value: "a" }, { key: "school_hashtags", value: "b" }]), start), ["b"]);
+  assert.deepEqual(lib.schoolHashtags(lib.parseSettings([]), undefined), []);
+});
+
+test("tagUsage: who uses a hashtag (x van y posts, last used, newest post), who does not; the Instagram start day", () => {
+  const post = (iso, hashtags) => ({ created_at: iso, hashtags });
+  const students = [
+    { id: "anna", posts: [post("2026-10-08T09:00:00Z", "fotografie"), post("2026-10-07T09:00:00Z", "glu fotografie"), post("2026-10-09T09:00:00Z", "glu")] },
+    { id: "bram", posts: [post("2026-10-08T09:00:00Z", "av"), post("2026-10-09T09:00:00Z", "glu av")] },
+    { id: "cas", posts: [post("2026-10-08T09:00:00Z", "fotografie")] },
+    { id: "dee", posts: [], note: "privé" },
+    { id: "eli", posts: [post("2026-10-06T21:30:00Z", "glu")] },              // 23:30 on 6 Oct Amsterdam: before the start day
+  ];
+  const usage = lib.tagUsage(students, "glu", "2026-10-07");
+  assert.deepEqual(usage.uses.map((u) => [u.id, u.used, u.total, u.onLast, new Date(u.last).toISOString()]),
+    [["anna", 2, 3, true, "2026-10-09T09:00:00.000Z"], ["bram", 1, 2, true, "2026-10-09T09:00:00.000Z"]]);
+  assert.deepEqual(usage.notUse.map((n) => [n.id, n.total, n.note]), [["cas", 1, null], ["dee", 0, "privé"], ["eli", 0, null]]);
+  // The newest post decides "ontbreekt op laatste post", not the order of the rows.
+  const av = lib.tagUsage(students, "av", "2026-10-07");
+  assert.deepEqual(av.uses.map((u) => [u.id, u.used, u.total, u.onLast]), [["bram", 2, 2, true]]);
+  const fotografie = lib.tagUsage(students, "fotografie", "2026-10-07");
+  assert.deepEqual(fotografie.uses.map((u) => [u.id, u.used, u.total, u.onLast]), [["anna", 2, 3, false], ["cas", 1, 1, true]]);
+  assert.equal(fotografie.uses[0].lastPost.created_at, "2026-10-08T09:00:00Z");
+  // The filter: uses it but not on the newest post, or has posted without ever using it.
+  const missing = lib.missingOnLast(fotografie);
+  assert.deepEqual(missing.uses.map((u) => u.id), ["anna"]);
+  assert.deepEqual(missing.notUse.map((n) => n.id), ["bram"]);
+  // Without a start day every post counts; a post without a date never does.
+  assert.equal(lib.tagUsage(students, "glu", null).uses.find((u) => u.id === "eli").used, 1);
+  assert.equal(lib.tagUsage([{ id: "x", posts: [post("", "glu")] }], "glu", null).uses.length, 0);
+});
+
+test("tagTable: most used hashtags over all students (Instagram, from the start day)", () => {
+  const post = (iso, hashtags) => ({ created_at: iso, hashtags });
+  const rows = lib.tagTable([
+    { id: "a", posts: [post("2026-10-07T09:00:00Z", "glu fotografie GLU"), post("2026-10-08T09:00:00Z", "glu")] },
+    { id: "b", posts: [post("2026-10-09T09:00:00Z", "glu av"), post("2026-10-01T09:00:00Z", "oud")] },
+    { id: "c", posts: [] },
+  ], "2026-10-07");
+  const by = Object.fromEntries(rows.map((r) => [r.tag, r]));
+  assert.deepEqual(Object.keys(by).sort(), ["av", "fotografie", "glu"]);               // "oud" is from before the start day
+  assert.deepEqual([by.glu.posts, by.glu.students, new Date(by.glu.last).toISOString()], [3, 2, "2026-10-09T09:00:00.000Z"]);
+  assert.deepEqual([by.fotografie.posts, by.fotografie.students, by.av.posts], [1, 1, 1]);   // a hashtag twice in one post counts once
+});

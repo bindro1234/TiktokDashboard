@@ -33,6 +33,7 @@ Bright Data (TikTok- en Instagram-scraper)  →  GitHub Actions (collector/)  �
 | privé | `profile_window` | per account: hoeveel video's het profiel teruggaf en de oudste datum daarvan (voor de weekrefresh) |
 | privé | `activity_log` | wie (e-mail) wat deed op de beheerpagina en wanneer: geopend (1× per dag), nu verversen, leerling toegevoegd/(de)geactiveerd, finale gestart/gewijzigd/gestopt, export. Wordt vanzelf aangemaakt |
 | privé | `finale` | per finale: start, wie, deadline, status (`active`, `stopped` = vroeg gestopt, `cancelled` = geannuleerd), wanneer gestopt en door wie. De laatste rij telt |
+| privé | `settings` | instellingen die op Beheer worden gewijzigd, als `key` / `value` (+ wanneer en door wie): nu `school_hashtags` (de schoolhashtags, zie *Hashtags*); later ook de ophaalfrequentie. Wordt vanzelf aangemaakt bij de eerste wijziging |
 | privé | `dagopdrachten` | per dagopdracht: `date`, `min_posts`, `label`, `active` (verwijderen = `nee`, rijen blijven staan), wanneer en door wie gewijzigd. Wordt vanzelf aangemaakt op Beheer |
 | openbaar | `handles` | actieve handles, privé ja/nee, laatste status, en `status_since`: sinds wanneer die status (ok / privé / niet gevonden) geldt, en `group`: de handle van het hoofdaccount (bij één account de eigen handle; zie *Twee accounts*) |
 | openbaar | `outliers` | *buiten schaal*: `handle`, `buiten_schaal` (ja/nee), `updated_at`. Alleen handles. Heeft een vaste `gid` (702500001), zodat de site hem zonder extra stap vindt (de `ig_*`-tabbladen hebben ook vaste gids, 702500002 t/m 702500006) |
@@ -216,10 +217,10 @@ Een aparte website voor docenten, op Cloudflare (gratis), achter **Cloudflare Ac
 | **Vandaag** | wie vandaag nog niet gepost heeft en wie wel (op TikTok of Instagram, met tijd, platform en link naar de post), plus *laatst gecontroleerd* per platform, en de knop **Controleer nu** (zie hieronder) |
 | **Leerlingen** | kalender per campagnedag (Nederlandse tijd): gepost / gemist / vrij / nog niet, met reeks, gemiste dagen en **opdrachten niet gehaald** (zie *Vrije dagen* en *Dagopdrachten* hieronder). Klik voor details: gemiste dagen, huidige en langste reeks, dagopdrachten, gem. weergaven per post, **mediaan per video** (de gewone video: één virale video trekt het gemiddelde omhoog, de mediaan nauwelijks), beste video (link), engagement = (likes + reacties + gedeeld) / weergaven, hashtags, **weergaven per video over tijd** (snelste stijger gemarkeerd) en alle posts (TikTok), de **Instagram-posts** en de Instagram-volgers (zie *TikTok en Instagram samen*) |
 | **Stijgers** | de video's met de meeste nieuwe weergaven in de laatste 2, 6 of 24 uur, met naam. Met *zonder buiten schaal* |
-| **Hashtags** | meest gebruikt en meeste weergaven, met wie ze gebruikt. Met *zonder buiten schaal* |
+| **Hashtags** | zoekveld **Wie gebruikt een hashtag?**, schoolhashtags als knoppen en daaronder de tabel *Meest gebruikt*; alleen Instagram (zie *Hashtags (Instagram)*) |
 | **Opvallend** | video's en accounts om even naar te kijken (zie hieronder) |
 | **Presentatie** | de presentatiemodus, met voornamen erbij (alleen hier); ook met pauze, aftelklok en Eindstand |
-| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, leerling toevoegen (met optionele Instagram-handle), **Instagram-handles** toevoegen of wijzigen en de lijst *Leerlingen zonder Instagram*, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
+| **Beheer** | **Finale** (zie hieronder), *Nu verversen* (zelfde 30-minutengrens), **Dagopdrachten**, **Schoolhashtags**, leerling toevoegen (met optionele Instagram-handle), **Instagram-handles** toevoegen of wijzigen en de lijst *Leerlingen zonder Instagram*, **+ account** (tweede account bij een leerling), leerlingen (de)activeren (nooit verwijderen: `active` wordt `nee`), **buiten schaal** per leerling, budget t.o.v. de limiet, schema, laatste runs en fouten, ongeldige/dubbele handles, activiteitenlog |
 | **Export** | CSV voor de beoordeling (Excel NL of standaard), één rij per leerling, ook met `opdrachten_niet_gehaald`, `mediaan_weergaven_per_video` en de Instagram-kolommen (zie *TikTok en Instagram samen*) |
 
 Limiet en schema staan alleen in `config.yaml`; de beheerpagina toont ze (ze worden bij elke deploy meegenomen).
@@ -257,6 +258,20 @@ Op de privé-site tellen TikTok en Instagram **samen** voor wie gepost heeft. De
 - **Export** heeft er vijf kolommen bij: `tiktok_posts`, `instagram_handle`, `instagram_posts`, `instagram_volgers` en `instagram_volgers_sinds_start`. `posts`, `dagen_met_post`, `gemiste_dagen`, `huidige_reeks`, `langste_reeks`, `laatste_post`, `hashtags` en `opdrachten_niet_gehaald` tellen beide platforms; de overige cijfers zijn TikTok.
 - De openbare site, de grafieken, de ranglijsten en de presentatie blijven in deze stap TikTok; Instagram komt daar bij de twee ranglijsten.
 
+### Hashtags (Instagram)
+
+Het tabblad **Hashtags** laat zien wie welke hashtag gebruikt, alleen op **Instagram** en alleen posts vanaf `instagram.start_date` (7 okt). Er is geen apart tabblad bijgekomen; de oude TikTok-lijst (met weergaven en *zonder buiten schaal*) is hier vervangen. De openbare site houdt haar eigen, TikTok-only Hashtags-tabblad.
+
+- **Zoekveld bovenaan.** Typ een hashtag (met of zonder `#`, hoofdletters maken niet uit; alleen het eerste woord telt). Daaronder twee lijsten:
+  - **Gebruiken #naam**: per leerling *x van y posts* (x = posts mét de hashtag, y = alle Instagram-posts sinds de start), *laatst gebruikt* (dag) met een link naar die post, en de markering **ontbreekt op laatste post** als de nieuwste post van de leerling de hashtag niet heeft. Sortering: meeste posts met de hashtag eerst.
+  - **Gebruiken #naam niet**: leerlingen met posts maar zonder de hashtag eerst (*0 van y posts*), daarna wie nog niet gepost heeft, onderaan wie niets te zien is: *geen Instagram-handle*, *ongeldige Instagram-handle*, *nog niet opgehaald*, *privé* of *niet gevonden*. Dat voorkomt dat iemand ten onrechte als "gebruikt het niet" wordt gezien.
+  - Het vinkje **Ontbreekt op laatste post** laat in beide lijsten alleen zien wie het op de nieuwste post mist: wie de hashtag eerder wel gebruikte maar niet op de laatste post, en wie wel gepost heeft maar hem nooit gebruikte.
+  - Gebruikt niemand wat je typt (bijv. `gl`), dan staat er *Bedoel je:* met de hashtags die zo beginnen.
+- **Schoolhashtags** staan als knoppen onder het zoekveld; een klik vult het zoekveld. Startwaarde: `glu`, `grafischlyceumutrecht` en `av` (`hashtags.school` in `config.yaml`). Op **Beheer → Schoolhashtags** pas je de lijst aan (zonder `#`, gescheiden door spaties of komma's; maximaal 12; met een voorbeeld hoe het straks staat). Opslaan werkt direct, zonder deploy: de lijst staat in de privétab `settings` (rij `school_hashtags`), elke wijziging komt in het activiteitenlog (*schoolhashtags gewijzigd: oud → nieuw*), en een lijst die is veranderd terwijl je hem bewerkte wordt geweigerd. *Standaardlijst* zet de startwaarde uit `config.yaml` in het veld (nog niet opgeslagen). Een leeg opgeslagen veld betekent: geen knoppen; verwijder de rij `school_hashtags` in `settings` om terug te gaan naar `config.yaml`.
+- **Tabel Meest gebruikt** (Instagram): per hashtag het aantal posts, het aantal leerlingen en wanneer hij het laatst is gebruikt; sorteerbaar op meeste posts of meeste leerlingen. Een klik op een hashtag vult het zoekveld.
+- **Alleen hashtags in de beschrijving (caption)** van een post zijn te zien, niet hashtags in reacties. Dat staat ook op de pagina. Een hashtag die twee keer in één post staat telt één keer.
+- Per leerling staan de hashtags van beide platforms samen op de leerlingpagina.
+
 ### Dagopdrachten
 
 Op **Beheer → Dagopdrachten**: een dag waarop elke leerling minimaal een aantal posts moet plaatsen (2 of meer), met een optionele omschrijving. Toevoegen, wijzigen en verwijderen kan zonder deploy; het staat in de privétab `dagopdrachten` en elke wijziging komt in het activiteitenlog.
@@ -272,7 +287,7 @@ Heeft één account bijv. 2,3 miljoen weergaven en de rest minder dan 100.000, d
 
 - **Grafieken** (openbaar *Grafiek* en *Groei*, de grafiek in de presentatie): de y-as schaalt zonder dat account. Het staat als grijs **▲** bovenaan met de handle en het echte getal. Ook de balkjes van *Stijgers* (presentatie) en *Video's* schalen zonder het account; dat van het account loopt grijs door tot het eind.
 - **Plaats, podium en tabellen veranderen niet**: het account staat gewoon op zijn echte plaats met zijn echte cijfers.
-- Op de beheerpagina kun je bij *Stijgers* en *Hashtags* het account weglaten met **zonder buiten schaal** (staat standaard aan zodra er een account gemarkeerd is).
+- Op de beheerpagina kun je bij *Stijgers* het account weglaten met **zonder buiten schaal** (staat standaard aan zodra er een account gemarkeerd is).
 - Opgeslagen in de openbare tab `outliers` (alleen handles), zodat de openbare site, de beheerpagina en de presentatie het allemaal volgen. Weer aanzetten: dezelfde knop (*In schaal*).
 
 ### Opvallend (geen oordeel)

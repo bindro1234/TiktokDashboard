@@ -685,3 +685,50 @@ test("Controleer nu: the Instagram accounts count in the budget check", async ()
   assert.match((await res.json()).error, /Past niet in het budget.*\+ 4 voor deze controle/);
   assert.equal(calls.some((c) => c.url.endsWith("/dispatches")), false);
 });
+
+test("school hashtags: the start value from config.yaml until a list is saved; saving creates the settings tab and one row, logged", async () => {
+  let d = await (await req("/api/data")).json();
+  assert.deepEqual(d.settings.schoolHashtags, ["glu", "grafischlyceumutrecht", "av"]);
+  assert.deepEqual(d.settings.schoolHashtagsDefault, ["glu", "grafischlyceumutrecht", "av"]);
+  const post = (body) => req("/api/settings/hashtags", { body });
+  let res = await post({ tags: "#GLU, av  schoolproject", was: "glu grafischlyceumutrecht av" });
+  assert.equal(res.status, 200, await res.clone().text());
+  assert.deepEqual((await res.json()).tags, ["glu", "av", "schoolproject"]);
+  assert.deepEqual(sheets.settings[0], ["key", "value", "updated_at", "updated_by"]);
+  assert.deepEqual([sheets.settings[1][0], sheets.settings[1][1], sheets.settings[1][3]], ["school_hashtags", "glu av schoolproject", "docent@school.nl"]);
+  assert.ok(sheets.activity_log.some((r) => r[2] === "schoolhashtags gewijzigd" && r[3] === "#glu #grafischlyceumutrecht #av → #glu #av #schoolproject"));
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.settings.schoolHashtags, ["glu", "av", "schoolproject"]);
+  assert.deepEqual(d.settings.schoolHashtagsDefault, ["glu", "grafischlyceumutrecht", "av"]);   // the start value stays available
+  // A second save updates the same row (no doubles), and saving the same list again writes nothing.
+  const logged = sheets.activity_log.length;
+  res = await post({ tags: "glu", was: "glu av schoolproject" });
+  assert.equal(res.status, 200);
+  assert.equal(sheets.settings.length, 2);
+  assert.equal(sheets.settings[1][1], "glu");
+  assert.equal(sheets.activity_log.length, logged + 1);
+  res = await post({ tags: "#glu", was: "glu" });
+  assert.match((await res.json()).message, /ongewijzigd/);
+  assert.equal(sheets.activity_log.length, logged + 1);
+  // The list can be emptied on purpose: then there are no presets (the start value is not used again).
+  res = await post({ tags: "  ", was: "glu" });
+  assert.equal(res.status, 200);
+  assert.deepEqual((await (await req("/api/data")).json()).settings.schoolHashtags, []);
+});
+
+test("school hashtags: refuses invalid entries, too many, a stale list and a missing CSRF header", async () => {
+  const post = (body, opts = {}) => req("/api/settings/hashtags", { body, ...opts });
+  let res = await post({ tags: "glu nieuw-tag #ok twee!" });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Geen geldige hashtag: "nieuw-tag", "twee!"/);
+  res = await post({ tags: Array.from({ length: 13 }, (_, i) => `tag${i}`).join(" ") });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Maximaal 12/);
+  res = await post({ tags: "glu", was: "iets anders" });
+  assert.equal(res.status, 409);
+  assert.match((await res.json()).error, /intussen veranderd/);
+  res = await post({ tags: "glu" }, { headers: { "x-requested-with": "" } });
+  assert.equal(res.status, 403);
+  assert.equal(sheets.settings, undefined);                        // nothing was written, not even the tab
+  assert.equal((sheets.activity_log || []).some((r) => r[2] === "schoolhashtags gewijzigd"), false);
+});

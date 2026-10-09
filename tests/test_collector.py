@@ -492,6 +492,18 @@ class OffDayTests(unittest.TestCase):
             config._off_days({"periods": [{"name": "x", "from": "2026-10-23", "to": "2026-10-19"}]})
         self.assertEqual(config._off_days(None), config.OffDays())
 
+    def test_school_hashtags_start_value(self):
+        from collector import worker_config
+        self.assertEqual(CFG.school_hashtags, ("glu", "grafischlyceumutrecht", "av"))
+        self.assertEqual(worker_config.build(CFG)["hashtags"], {"school": ["glu", "grafischlyceumutrecht", "av"]})
+        # Written however a teacher likes: '#', capitals, doubles; checked like the Beheer form does.
+        self.assertEqual(config._hashtags(["#GLU", " av ", "glu"]), ("glu", "av"))
+        self.assertEqual(config._hashtags(None), ())
+        with self.assertRaises(ValueError):
+            config._hashtags(["twee woorden"])
+        with self.assertRaises(ValueError):
+            config._hashtags([f"tag{i}" for i in range(config.MAX_SCHOOL_HASHTAGS + 1)])
+
 
 class FakeSheet:
     """In-memory stand-in for Spreadsheet."""

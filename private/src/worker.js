@@ -23,6 +23,8 @@ const TASKS_HEADER = ["date", "min_posts", "label", "active", "updated_at", "upd
 const OUTLIERS_TAB = "outliers"; // public sheet: handles only
 const IG_TABS = ["ig_handles", "ig_history", "ig_posts", "ig_baseline"]; // public sheet: Instagram, handles only
 const OUTLIERS_HEADER = ["handle", "buiten_schaal", "updated_at"];
+const SETTINGS_TAB = "settings"; // private sheet: key/value settings changed on Beheer (school hashtags, later the pull frequency)
+const SETTINGS_HEADER = ["key", "value", "updated_at", "updated_by"];
 const MAX_TASK_POSTS = 20;
 
 const SECURITY_HEADERS = {
@@ -140,6 +142,7 @@ export async function handle(request, env, ctx, fetchImpl = fetch) {
       case "POST /api/finale/stop": return json(await api.finaleStop(await request.json()));
       case "POST /api/outliers": return json(await api.setOutlier(await request.json()));
       case "POST /api/tasks": return json(await api.saveTask(await request.json()));
+      case "POST /api/settings/hashtags": return json(await api.saveSchoolHashtags(await request.json()));
       case "POST /api/today/check": return json(await api.todayCheck());
       default: return json({ error: "Onbekende route" }, 404);
     }
@@ -179,7 +182,7 @@ class Api {
 
   async data() {
     const [admin, data] = await Promise.all([
-      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB, TASKS_TAB]),
+      this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB, TASKS_TAB, SETTINGS_TAB]),
       this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB, ...IG_TABS]),
     ]);
     const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
@@ -230,6 +233,8 @@ class Api {
       lastInstagramRun: lib.lastProfilesRun(runLog, lib.IG_PROFILE_RUN_TYPES),
       lastTodayCheck: lib.lastTodayCheck(runLog, activity),
       tasks: lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])),
+      settings: { schoolHashtags: lib.schoolHashtags(lib.parseSettings(lib.rowsToObjects(admin[SETTINGS_TAB])), CONFIG.hashtags?.school),
+        schoolHashtagsDefault: [...(CONFIG.hashtags?.school || [])] },
       outliers: [...lib.parseOutliers(lib.rowsToObjects(data[OUTLIERS_TAB]))],
     };
   }
@@ -600,6 +605,35 @@ class Api {
     await this.sheets.update(this.admin, TASKS_TAB, `A${target.row}:F${target.row}`, [cells]);
     await this.log("dagopdracht gewijzigd", `${target.date}: ${target.min} → ${date}: ${min} posts${label ? ` (${label})` : ""}`);
     return { ok: true, message: `Dagopdracht aangepast: ${short(date)}, minimaal ${min} posts.` };
+  }
+
+  // ---------- settings (private sheet, key/value) ----------
+
+  // The school hashtags on the Hashtags tab. `tags` is the text as typed; `was` the list the page showed
+  // (refused when someone else changed it meanwhile). One row (key school_hashtags) that is updated in place.
+  async saveSchoolHashtags(body) {
+    const { tags, invalid } = lib.parseTagList(body?.tags);
+    if (invalid.length) {
+      throw new HttpError(400, `Geen geldige hashtag: ${invalid.slice(0, 3).map((x) => `"${x.slice(0, 30)}"`).join(", ")}. Gebruik letters, cijfers en _ , zonder spaties of andere tekens.`);
+    }
+    if (tags.length > lib.MAX_SCHOOL_HASHTAGS) throw new HttpError(400, `Maximaal ${lib.MAX_SCHOOL_HASHTAGS} schoolhashtags.`);
+    const { [SETTINGS_TAB]: values } = await this.sheets.readTabs(this.admin, [SETTINGS_TAB]);   // a missing tab reads as empty
+    const settings = lib.parseSettings(lib.rowsToObjects(values));
+    const current = lib.schoolHashtags(settings, CONFIG.hashtags?.school);
+    if (body?.was !== undefined && lib.parseTagList(body.was).tags.join(" ") !== current.join(" ")) {
+      throw new HttpError(409, "De lijst is intussen veranderd. Laad de pagina opnieuw.");
+    }
+    const text = (list) => (list.length ? list.map((t) => "#" + t).join(" ") : "(leeg)");
+    if (tags.join(" ") === current.join(" ") && settings.has(lib.SCHOOL_HASHTAGS_KEY)) {
+      return { ok: true, tags, message: `Schoolhashtags ongewijzigd: ${text(tags)}.` };
+    }
+    await this.sheets.ensureTab(this.admin, SETTINGS_TAB, SETTINGS_HEADER);   // only when something is really written
+    const cells = [lib.SCHOOL_HASHTAGS_KEY, tags.join(" "), nowIso(), this.email];
+    const saved = settings.get(lib.SCHOOL_HASHTAGS_KEY);
+    if (saved?.row) await this.sheets.update(this.admin, SETTINGS_TAB, `A${saved.row}:D${saved.row}`, [cells]);
+    else await this.sheets.append(this.admin, SETTINGS_TAB, [cells]);
+    await this.log("schoolhashtags gewijzigd", `${text(current)} → ${text(tags)}`);
+    return { ok: true, tags, message: `Schoolhashtags opgeslagen: ${text(tags)}.` };
   }
 
   // ---------- Vandaag: "Controleer nu" ----------

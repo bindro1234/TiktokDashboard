@@ -87,21 +87,31 @@
     </section>
 
     <section id="view-hashtags" class="view" hidden>
+      <div class="card">
+        <h2 style="margin-top:0">Wie gebruikt een hashtag?</h2>
+        <div class="controls">
+          <input type="search" id="tag-search" placeholder="Hashtag, bijv. glu" aria-label="Hashtag zoeken" autocomplete="off" autocapitalize="off" spellcheck="false">
+          <label class="check"><input type="checkbox" id="tag-missing"> Ontbreekt op laatste post</label>
+        </div>
+        <div class="chips" id="tag-presets" role="group" aria-label="Schoolhashtags"></div>
+        <p class="hint" id="tag-note"></p>
+        <div id="tag-result"></div>
+      </div>
+      <h2>Meest gebruikt</h2>
       <div class="controls">
         <div class="seg" role="group" aria-label="Sorteren op" id="tag-sort">
-          <button type="button" data-v="posts">Meest gebruikt</button>
-          <button type="button" data-v="views">Meeste weergaven</button>
+          <button type="button" data-v="posts">Meeste posts</button>
+          <button type="button" data-v="students">Meeste leerlingen</button>
         </div>
-        <label class="check" id="tag-out-wrap" hidden><input type="checkbox" id="tag-out"> Zonder buiten schaal</label>
         <span class="meta" id="tags-meta"></span>
       </div>
       <div class="table-wrap">
         <table class="board">
-          <thead><tr><th class="num">#</th><th>Hashtag</th><th class="num">Posts</th><th class="num">Leerlingen</th><th class="num">Weergaven</th><th class="num opt">Gem. per post</th></tr></thead>
+          <thead><tr><th class="num">#</th><th>Hashtag</th><th class="num">Posts</th><th class="num">Leerlingen</th><th class="opt">Laatst gebruikt</th></tr></thead>
           <tbody id="tags-body"></tbody>
         </table>
       </div>
-      <p class="hint">Klik op een hashtag om te zien wie hem gebruikt.</p>
+      <p class="hint">Klik op een hashtag om hem hierboven te zoeken.</p>
     </section>
 
     <section id="view-stijgers" class="view" hidden>
@@ -186,6 +196,18 @@
           <button type="button" class="btn" id="task-cancel" hidden>Annuleren</button>
         </form>
         <p class="status" id="task-msg" role="status"></p>
+      </div>
+
+      <div class="card">
+        <h2>Schoolhashtags</h2>
+        <p>De knoppen bovenaan het tabblad <strong>Hashtags</strong>. Zonder <code>#</code>, gescheiden door spaties of komma's. Een wijziging werkt direct (geen deploy) en komt in het activiteitenlog.</p>
+        <form id="sh-form" class="add-form" autocomplete="off">
+          <label>Schoolhashtags <input name="tags" id="sh-input" placeholder="glu grafischlyceumutrecht av" autocapitalize="off" spellcheck="false"></label>
+          <button type="submit" class="btn primary">Opslaan</button>
+          <button type="button" class="btn" id="sh-default">Standaardlijst</button>
+        </form>
+        <div class="chips" id="sh-preview" aria-label="Zo staan ze straks op het tabblad Hashtags"></div>
+        <p class="status" id="sh-msg" role="status"></p>
       </div>
 
       <div class="card">

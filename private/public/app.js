@@ -25,7 +25,7 @@ const $ = (id) => document.getElementById(id);
 const state = {
   raw: null, view: "overzicht", detail: null,
   sort: { key: "rank", dir: 1 }, search: "", onlyWarn: false,
-  tagSort: "posts", tagOpen: null, accSearch: "", format: "nl",
+  tagSort: "posts", tagQuery: "", tagMissing: false, shDraft: null, accSearch: "", format: "nl",
   videoRange: 24, postHistory: null, finaleCardKey: null,
   warnOpen: null,        // Overzicht: handle whose warning details are shown
   open: new Set(),       // students with two accounts whose per-account rows are shown (Overzicht, Leerlingen)
@@ -173,7 +173,7 @@ function build(raw) {
   // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account), and so does
   // "instagram:<handle>" (the Instagram account's own row).
   const byHandle = new Map(students.flatMap((s) => [...s.handles.map((h) => [h, s]), ...(s.ig ? [[s.ig.key, s]] : []), [s.handle, s]]));
-  return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tags: lib.hashtagStats(posts), tasks, outliers, series: history,
+  return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tasks, outliers, settings: raw.settings || { schoolHashtags: [], schoolHashtagsDefault: [] }, series: history,
     taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle };
 }
 
@@ -591,25 +591,83 @@ function outlierToggle(m, id) {
   wrap.title = `Buiten schaal: ${[...m.outliers].map((h) => "@" + h).join(", ")}`;
 }
 
+// The students as the Hashtags tab sees them: their Instagram posts, and why nothing can be seen when that is so.
+function tagStudents(m) {
+  return m.students.map((s) => {
+    const ig = s.ig;
+    const note = !s.instagram ? (s.instagramIssue ? "ongeldige Instagram-handle" : "geen Instagram-handle")
+      : !ig.info ? "nog niet opgehaald"
+      : ig.isPrivate ? "privé"
+      : String(ig.info.last_status ?? "").startsWith("fout") ? "niet gevonden" : null;
+    return { id: s.handle, s, posts: ig ? ig.posts : [], note };
+  });
+}
+
+// The first word of what was typed, as a hashtag ("#GLU " -> "glu"), or null.
+const queryTag = (text) => lib.normalizeTag(String(text ?? "").trim().split(/[\s,;]+/)[0]);
+const postsText = (n) => `${n} post${n === 1 ? "" : "s"}`;
+
 function renderHashtags(m) {
+  const start = m.cfg.instagram?.startDate || m.cfg.campaign.start;
+  const rows = tagStudents(m);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const tag = queryTag(state.tagQuery);
+  const school = m.settings.schoolHashtags;
+  const input = $("tag-search");
+  if (input.value !== state.tagQuery) input.value = state.tagQuery;
+  $("tag-missing").checked = state.tagMissing;
+  $("tag-presets").innerHTML = school.length
+    ? `<span class="meta">Schoolhashtags:</span> ${school.map((t) => `<button type="button" class="chip preset" data-preset="${esc(t)}" aria-pressed="${t === tag}">#${esc(t)}</button>`).join("")}`
+    : `<span class="meta">Geen schoolhashtags ingesteld. Voeg ze toe op <a href="#beheer">Beheer</a>.</span>`;
+  $("tag-note").textContent = `Alleen Instagram, en alleen posts vanaf ${dayLabel(start)}. Alleen hashtags in de beschrijving (caption) van een post zijn te zien, niet hashtags in reacties.`;
+
+  const table = lib.tagTable(rows, start);
+  const name = (r) => `<a href="#leerlingen/${encodeURIComponent(r.s.handle)}">${nameCell(r.s)}</a>${r.s.ig ? ` <span class="meta">@${esc(r.s.ig.handle)}</span>` : ""}`;
+  const result = $("tag-result");
+  if (!tag) {
+    result.innerHTML = state.tagQuery.trim()
+      ? `<p class="hint">“${esc(state.tagQuery.trim())}” is geen hashtag (letters, cijfers en _, geen spaties).</p>`
+      : `<p class="hint">Typ een hashtag of kies een schoolhashtag om te zien wie hem gebruikt en wie niet.</p>`;
+  } else {
+    const all = lib.tagUsage(rows, tag, start);
+    const shown = state.tagMissing ? lib.missingOnLast(all) : all;
+    const uses = [...shown.uses].sort((a, b) => b.used - a.used || byName(byId.get(a.id).s, byId.get(b.id).s));
+    // Students with posts but without the hashtag first (the ones to talk to), then without posts, then those nothing can be seen of.
+    const seen = (n) => (n.total ? 0 : n.note ? 2 : 1);
+    const notUse = [...shown.notUse].sort((a, b) => seen(a) - seen(b) || byName(byId.get(a.id).s, byId.get(b.id).s));
+    const filterNote = state.tagMissing ? ` <span class="meta">· ontbreekt op laatste post</span>` : "";
+    const useItem = (u) => {
+      const r = byId.get(u.id);
+      return `<li>${name(r)} <strong>${u.used} van ${postsText(u.total)}</strong>
+        <span class="meta">· laatst gebruikt ${esc(dayLabel(lib.localDay(u.last)))}</span> <a href="${esc(instagramPost(u.lastPost))}" target="_blank" rel="noopener">open ↗</a>${u.onLast ? ""
+        : ` <span class="badge warn" title="De nieuwste Instagram-post van deze leerling heeft #${esc(tag)} niet">ontbreekt op laatste post</span>`}</li>`;
+    };
+    const notItem = (n) => {
+      const r = byId.get(n.id);
+      return `<li>${name(r)} ${n.total ? `<span class="meta">0 van ${postsText(n.total)}</span>` : ""}${n.note ? ` <span class="badge info">${esc(n.note)}</span>`
+        : n.total ? "" : ` <span class="meta">nog geen posts sinds ${esc(dayLabel(start))}</span>`}</li>`;
+    };
+    // Nobody uses it: maybe a typo; offer the hashtags that start with what was typed.
+    const similar = all.uses.length ? [] : table.filter((t) => t.tag.startsWith(tag)).sort((a, b) => b.posts - a.posts).slice(0, 6);
+    result.innerHTML = `${similar.length ? `<p class="hint">Niemand gebruikt #${esc(tag)}. Bedoel je: ${similar.map((t) => `<button type="button" class="chip preset" data-preset="${esc(t.tag)}">#${esc(t.tag)}<span class="chip-n">${t.posts}×</span></button>`).join(" ")}</p>` : ""}
+      <div class="grid2">
+        <div class="card"><h3 style="margin-top:0">Gebruiken #${esc(tag)} <span class="meta">(${uses.length})</span>${filterNote}</h3>
+          <ul class="today-list" id="tag-uses">${uses.map(useItem).join("") || `<li class="meta">Niemand.</li>`}</ul></div>
+        <div class="card"><h3 style="margin-top:0">Gebruiken #${esc(tag)} niet <span class="meta">(${notUse.length})</span>${filterNote}</h3>
+          <ul class="today-list" id="tag-notuse">${notUse.map(notItem).join("") || `<li class="meta">Niemand.</li>`}</ul></div>
+      </div>`;
+  }
+
   for (const b of $("tag-sort").querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.v === state.tagSort));
-  outlierToggle(m, "tag-out");
   const by = state.tagSort;
-  const tags = hidingOutliers(m) ? lib.hashtagStats(new Map([...m.posts].filter(([h]) => !m.byHandle.get(h)?.isOutlier))) : m.tags;
-  const rows = [...tags].sort((a, b) => b[by] - a[by] || (by === "posts" ? b.views - a.views : b.posts - a.posts) || a.tag.localeCompare(b.tag));
-  $("tags-meta").textContent = `${rows.length} verschillende hashtags`;
-  $("tags-body").innerHTML = rows.map((t, i) => {
-    const open = state.tagOpen === t.tag;
-    const users = [...t.accounts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-    return `<tr class="link" tabindex="0" data-tag="${esc(t.tag)}" aria-expanded="${open}">
-        <td class="num">${i + 1}</td><td class="handle">#${esc(t.tag)}</td>
-        <td class="num${by === "posts" ? " strong" : ""}">${fmt(t.posts)}</td><td class="num">${fmt(t.accounts.size)}</td>
-        <td class="num${by === "views" ? " strong" : ""}">${fmt(t.views)}</td><td class="num opt">${fmt(Math.round(t.views / t.posts))}</td>
-      </tr>${open ? `<tr><td></td><td colspan="5"><div class="chips">${users.map(([h, n]) => {
-        const s = m.byHandle.get(h);
-        return `<a class="chip" href="#leerlingen/${encodeURIComponent(h)}">${s && s.name ? esc(s.name) + " · " : ""}@${esc(h)}<span class="chip-n">${n}×</span></a>`;
-      }).join("")}</div></td></tr>` : ""}`;
-  }).join("") || `<tr><td colspan="6">Nog geen hashtags gevonden.</td></tr>`;
+  const sorted = [...table].sort((a, b) => b[by] - a[by] || (by === "posts" ? b.students - a.students : b.posts - a.posts) || a.tag.localeCompare(b.tag));
+  const igPostCount = rows.reduce((n, r) => n + lib.hashtagPosts(r.posts, start).length, 0);
+  $("tags-meta").textContent = `${sorted.length} verschillende hashtags in ${fmt(igPostCount)} Instagram-posts`;
+  $("tags-body").innerHTML = sorted.map((t, i) => `<tr class="link" tabindex="0" data-tag="${esc(t.tag)}" aria-selected="${t.tag === tag}">
+      <td class="num">${i + 1}</td><td class="handle">#${esc(t.tag)}</td>
+      <td class="num${by === "posts" ? " strong" : ""}">${fmt(t.posts)}</td><td class="num${by === "students" ? " strong" : ""}">${fmt(t.students)}</td>
+      <td class="opt">${esc(dayLabel(lib.localDay(t.last)))}</td></tr>`).join("")
+    || `<tr><td colspan="5">Nog geen hashtags gevonden${m.igFetched ? "" : " (Instagram is nog niet opgehaald)"}.</td></tr>`;
 }
 
 // ---------- Beheer ----------
@@ -698,6 +756,7 @@ function renderAdmin(m) {
   }).join("") || `<tr><td colspan="6">Geen rijen.</td></tr>`;
   renderInstagramMissing(m);
   renderTasks(m);
+  renderSchoolHashtags(m);
 
   const issues = raw.accounts.filter((a) => a.issue);
   const unknown = raw.accounts.filter((a) => a.tracked && !a.name);
@@ -726,6 +785,19 @@ function renderAdmin(m) {
     const t = lib.parseTs(a.timestamp);
     return `<tr><td>${t ? stampFmt.format(t) : esc(a.timestamp)}</td><td>${esc(a.email)}</td><td>${esc(a.action)}</td><td>${esc(a.details)}</td></tr>`;
   }).join("") || `<tr><td colspan="4">Nog geen activiteit.</td></tr>`;
+}
+
+// ---------- Schoolhashtags (Beheer) ----------
+
+// The list as saved (or the start value from config.yaml), the field with what is being typed, and how it will look.
+function renderSchoolHashtags(m) {
+  const input = $("sh-input");
+  if (document.activeElement !== input) input.value = state.shDraft ?? m.settings.schoolHashtags.join(" ");
+  const { tags, invalid } = lib.parseTagList(input.value);
+  const bad = invalid.map((t) => `<span class="badge bad" title="Geen geldige hashtag: alleen letters, cijfers en _">${esc(t)} ✗</span>`).join("")
+    + (tags.length > lib.MAX_SCHOOL_HASHTAGS ? `<span class="badge bad">maximaal ${lib.MAX_SCHOOL_HASHTAGS}</span>` : "");
+  $("sh-preview").innerHTML = (tags.map((t) => `<span class="chip">#${esc(t)}</span>`).join("") + bad)
+    || `<span class="meta">Geen schoolhashtags: er komen geen knoppen op het tabblad Hashtags.</span>`;
 }
 
 // ---------- Leerlingen zonder Instagram (Beheer) ----------
@@ -1344,9 +1416,7 @@ $("ov-body").addEventListener("click", (ev) => {
   state.warnOpen = state.warnOpen === b.dataset.warn ? null : b.dataset.warn;
   renderOverview(model);
 });
-for (const id of ["tag-out", "vid-out"]) {
-  $(id).addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
-}
+$("vid-out").addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
 $("td-check").addEventListener("click", async () => {
   const st = todayOf(model);
   const targets = lib.todayTargets(st);
@@ -1390,7 +1460,7 @@ for (const [id, attr, go] of [
   ["ov-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["ll-content", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["vid-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
-  ["tags-body", "data-tag", (t) => { state.tagOpen = state.tagOpen === t ? null : t; renderHashtags(model); }],
+  ["tags-body", "data-tag", (t) => { searchTag(t); }],
 ]) {
   $(id).addEventListener("click", (ev) => openRow(ev, attr, go));
   $(id).addEventListener("keydown", (ev) => openRow(ev, attr, go));
@@ -1399,6 +1469,39 @@ $("ov-search").addEventListener("input", (e) => { state.search = e.target.value;
 $("ov-warn").addEventListener("change", (e) => { state.onlyWarn = e.target.checked; renderOverview(model); });
 $("acc-search").addEventListener("input", (e) => { state.accSearch = e.target.value; renderAdmin(model); });
 $("vid-range").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.videoRange = Number(b.dataset.v); renderRisers(model); } });
+// Hashtags: fill the search box (a preset, a "bedoel je" suggestion or a row of the table) and show the result.
+function searchTag(tag) {
+  state.tagQuery = tag;
+  renderHashtags(model);
+  $("tag-search").closest(".card").scrollIntoView({ block: "start", behavior: "smooth" });
+}
+$("sh-input").addEventListener("input", (e) => { state.shDraft = e.target.value; renderSchoolHashtags(model); });
+$("sh-default").addEventListener("click", () => {
+  state.shDraft = state.raw.settings.schoolHashtagsDefault.join(" ");
+  $("sh-input").value = state.shDraft;
+  renderSchoolHashtags(model);
+});
+$("sh-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const button = ev.submitter;
+  if (button) button.disabled = true;
+  try {
+    const res = await api("/api/settings/hashtags", { tags: $("sh-input").value, was: state.raw.settings.schoolHashtags.join(" ") });
+    state.shDraft = null;
+    flash(res.message, true, "sh-msg");
+    await load();
+  } catch (err) {
+    flash(err.message, false, "sh-msg");
+  } finally {
+    if (button) button.disabled = false;
+  }
+});
+$("tag-search").addEventListener("input", (e) => { state.tagQuery = e.target.value; renderHashtags(model); });
+$("tag-missing").addEventListener("change", (e) => { state.tagMissing = e.target.checked; renderHashtags(model); });
+$("view-hashtags").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-preset]");
+  if (b) searchTag(b.dataset.preset);
+});
 $("tag-sort").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.tagSort = b.dataset.v; renderHashtags(model); } });
 $("exp-format").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.format = b.dataset.v; renderExport(model); } });
 $("exp-download").addEventListener("click", () => model && download(model));

@@ -74,13 +74,15 @@ tracked.forEach((h, i) => {
 const igPosts = [], igHistory = [];
 const igPost = (handle, iso, type = "reel", tags = "glu fotografie") => igPosts.push({ post_id: String(3000000000000000000n + BigInt(igPosts.length)), handle,
   created_at: iso, post_type: type, hashtags: tags, url: `https://www.instagram.com/${type === "reel" ? "reel" : "p"}/X${igPosts.length}/`, first_seen: iso, last_seen: iso });
-for (const day of ["2026-09-30", "2026-10-01", "2026-10-02"]) igPost("anna.gram", `${day}T09:15:00Z`);
+// Hashtags: Anna uses #glu on 30 Sep and 1 Oct but not on her newest post; Chris used #av first and #glu on his newest;
+// Pim uses #glu on all but his newest post (#av only). Nobody else has an Instagram post.
+[["2026-09-30", "glu fotografie"], ["2026-10-01", "glu"], ["2026-10-02", "fotografie"]].forEach(([day, tags]) => igPost("anna.gram", `${day}T09:15:00Z`, "reel", tags));
 const chrisMissed = lib.studentStats(posts.filter((p) => p.handle === "test_03"), CFG, NOW, []).missedList;
-const chrisRescued = chrisMissed.slice(0, 2);
-for (const day of chrisRescued) igPost("chris.ig", `${day}T12:00:00Z`, "photo");
+const chrisRescued = chrisMissed.filter((d) => d >= IG_START).slice(0, 2);   // days Instagram counts (from IG_START)
+chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo", i === 0 ? "av" : "glu"));
 for (const day of ["2026-09-30", "2026-10-02"]) igPost("pim.only", `${day}T14:00:00Z`, "carousel");
 igPost("pim.only", "2026-10-05T08:00:00Z"); igPost("pim.only", "2026-10-05T18:00:00Z");
-igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo"); // today: reaches the dagopdracht (2)
+igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo", "av"); // today: reaches the dagopdracht (2)
 igTracked.forEach((h, i) => {
   for (const day of ["2026-09-30", "2026-10-07"]) {
     igHistory.push({ timestamp: `${day}T05:00:00Z`, handle: h, followers: 100 + i * 10 + (day === "2026-10-07" ? 7 : 0), following: 50, posts_count: 20,
@@ -106,7 +108,11 @@ const runLog = [
 ];
 const activity = [{ timestamp: "2026-10-07T08:00:00Z", email: "docent@school.nl", action: "geopend", details: "" }];
 
+// The students' Instagram posts as the Hashtags tab gets them (one entry per student).
+const students_for_tags = () => [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].map((g) => ({
+  id: g.key, posts: g.instagram ? lib.instagramPosts(igPosts.filter((p) => p.handle === g.instagram)) : [] }));
 const posted = [];
+let schoolTags = [...CFG.hashtags.school];   // the school hashtags as saved on Beheer
 let todayStarted = null;
 let finale = null;       // { start, end, phase } like the Worker returns
 let finaleHasRun = false;
@@ -124,6 +130,7 @@ function api(req, body) {
         forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
         frequency: CFG.frequency, instagram: igConfig },
       finale, finaleHasRun,
+      settings: { schoolHashtags: schoolTags, schoolHashtagsDefault: [...CFG.hashtags.school] },
       accounts, handles, history, posts, igHandles, igHistory, igPosts, igBaseline, runLog, activity,
       budget: lib.budget(CFG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
       lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
@@ -156,6 +163,13 @@ function api(req, body) {
       const row = accountsSheet.find((r) => r._row === body.row);
       row.active = body.active ? "ja" : "nee";
       return [200, { ok: true, message: "ok" }];
+    }
+    if (req.url === "/api/settings/hashtags") {
+      const { tags, invalid } = lib.parseTagList(body.tags);
+      if (invalid.length) return [400, { error: `Geen geldige hashtag: "${invalid[0]}". Gebruik letters, cijfers en _ .` }];
+      if (body.was !== schoolTags.join(" ")) return [409, { error: "De lijst is intussen veranderd. Laad de pagina opnieuw." }];
+      schoolTags = tags;
+      return [200, { ok: true, tags, message: `Schoolhashtags opgeslagen: ${tags.map((t) => "#" + t).join(" ")}.` }];
     }
     if (req.url === "/api/log") return [200, { ok: true }];
     if (req.url === "/api/outliers") {
@@ -216,8 +230,8 @@ async function open(viewport, path = "") {
   const page = await browser.newPage({ viewport, acceptDownloads: true });
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
-  // A 409 from the fake API is an expected answer (refresh cooldown), not a page error.
-  page.on("console", (m) => m.type() === "error" && !/status of 409/.test(m.text()) && page.errors.push(m.text()));
+  // A 409 or 400 from the fake API is an expected answer (refresh cooldown, a refused form entry), not a page error.
+  page.on("console", (m) => m.type() === "error" && !/status of (409|400)/.test(m.text()) && page.errors.push(m.text()));
   if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(page);
   await page.goto(base + path);
   return page;
@@ -440,13 +454,74 @@ console.log(`opvallend: ${await page.textContent("#sig-meta")}`);
 for (const w of ["Likes per weergave", "Geen reacties of shares"]) if (!sig.includes(w)) fail(`opvallend: no "${w}" flag`);
 if (/bot/i.test(sig)) fail("opvallend: says 'bot'");
 
+// Hashtags: search, school presets, who uses it and who does not, "ontbreekt op laatste post", the most-used table.
 await page.evaluate(() => { location.hash = "hashtags"; });
 await page.waitForSelector("#tags-body tr[data-tag]");
-if (!(await page.isChecked("#tag-out"))) fail("hashtags: 'zonder buiten schaal' not on by default");
-await page.click("#tags-body tr[data-tag]");
-const tagUsers = await page.$$eval("#tags-body .chip", (c) => c.length);
-console.log(`hashtags: ${await page.$$eval("#tags-body tr[data-tag]", (r) => r.length)} tags, first used by ${tagUsers}`);
-if (!tagUsers) fail("hashtags: clicking a tag shows no students");
+const presets = await page.$$eval("#tag-presets button[data-preset]", (b) => b.map((x) => x.dataset.preset));
+if (presets.join() !== "glu,grafischlyceumutrecht,av") fail(`hashtags: school presets ${presets.join()}`);
+const tagNote = await page.textContent("#tag-note");
+if (!/caption/.test(tagNote) || !/reacties/.test(tagNote) || !/Instagram/.test(tagNote)) fail(`hashtags: no note that only caption hashtags are visible (${tagNote})`);
+if (!/Typ een hashtag/.test(await page.textContent("#tag-result"))) fail("hashtags: no hint before anything is typed");
+const rowsText = async (sel) => page.$$eval(`${sel} li`, (li) => li.map((x) => x.textContent.replace(/\s+/g, " ").trim()));
+// A school hashtag with one click: the search box is filled and both lists appear.
+await page.click('#tag-presets button[data-preset="glu"]');
+if ((await page.inputValue("#tag-search")) !== "glu") fail("hashtags: a preset does not fill the search box");
+let uses = await rowsText("#tag-uses"), notUse = await rowsText("#tag-notuse");
+const annaU = uses.find((t) => t.startsWith("Anna")), pimU = uses.find((t) => t.startsWith("Pim"));
+if (uses.length !== 3 || !annaU || !pimU || !uses.some((t) => t.startsWith("Chris"))) fail(`hashtags: #glu users wrong (${uses.join(" | ")})`);
+if (!/2 van 3 posts/.test(annaU) || !/laatst gebruikt do 1 okt/.test(annaU) || !/ontbreekt op laatste post/.test(annaU)) fail(`hashtags: Anna's line wrong (${annaU})`);
+if (!/5 van 6 posts/.test(pimU) || !/ontbreekt op laatste post/.test(pimU)) fail(`hashtags: Pim's line wrong (${pimU})`);
+const chrisU = uses.find((t) => t.startsWith("Chris"));
+if (!/1 van 2 posts/.test(chrisU) || /ontbreekt op laatste post/.test(chrisU)) fail(`hashtags: Chris's line wrong (${chrisU})`);
+if (!(await page.$('#tag-uses a[href^="https://www.instagram.com/"]'))) fail("hashtags: no link to the post");
+if (notUse.length !== students - 3) fail(`hashtags: ${notUse.length} students not using #glu, expected ${students - 3}`);
+const notes = notUse.join(" | ");
+for (const w of ["geen Instagram-handle", "privé", "ongeldige Instagram-handle"]) if (!notes.includes(w)) fail(`hashtags: students without a visible Instagram have no "${w}" note`);
+if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-hashtags-glu-1280px.png`, fullPage: true });
+// Filter: only who misses it on the newest post. Everyone with posts uses #glu, so the other list is empty.
+await page.check("#tag-missing");
+uses = await rowsText("#tag-uses"); notUse = await rowsText("#tag-notuse");
+if (uses.map((t) => t.split(" ")[0]).sort().join() !== "Anna,Pim" || notUse.join() !== "Niemand.") fail(`hashtags: filter on #glu wrong (${uses.join(" | ")} / ${notUse.join(" | ")})`);
+// #av: Chris used it on his first post (not the newest), Pim on his newest, Anna never.
+await page.fill("#tag-search", "#AV ");
+uses = await rowsText("#tag-uses"); notUse = await rowsText("#tag-notuse");
+if (uses.length !== 1 || !uses[0].startsWith("Chris") || notUse.join() !== (notUse.length === 1 ? notUse[0] : "") || !notUse[0].startsWith("Anna") || !/0 van 3 posts/.test(notUse[0])) fail(`hashtags: #av with the filter wrong (${uses.join(" | ")} / ${notUse.join(" | ")})`);
+await page.uncheck("#tag-missing");
+uses = await rowsText("#tag-uses");
+if (uses.map((t) => t.split(" ")[0]).sort().join() !== "Chris,Pim") fail(`hashtags: #av users wrong (${uses.join(" | ")})`);
+// Typing a part of a hashtag nobody uses offers the ones that start with it; a click searches it.
+await page.fill("#tag-search", "gl");
+if (!/Niemand gebruikt #gl\. Bedoel je: #glu/.test((await page.textContent("#tag-result")).replace(/\s+/g, " "))) fail("hashtags: no 'bedoel je' for a part of a hashtag");
+await page.click('#tag-result button[data-preset="glu"]');
+if ((await page.inputValue("#tag-search")) !== "glu" || (await rowsText("#tag-uses")).length !== 3) fail("hashtags: the suggestion does not search");
+await page.fill("#tag-search", "glu!");
+if (!/is geen hashtag/.test(await page.textContent("#tag-result"))) fail("hashtags: nothing said about something that is no hashtag");
+// The most-used table is Instagram only (no TikTok hashtags, no views) and a click fills the search box.
+const igTable = lib.tagTable(students_for_tags(), IG_START);
+const tableRows = await page.$$eval("#tags-body tr[data-tag]", (r) => r.map((x) => [x.dataset.tag, ...[...x.children].slice(2, 4).map((c) => Number(c.textContent.replace(/\D/g, "")))]));
+const gluRow = tableRows.find((r) => r[0] === "glu"), gluExp = igTable.find((t) => t.tag === "glu");
+if (!gluRow || gluRow[1] !== gluExp.posts || gluRow[2] !== gluExp.students) fail(`hashtags: table row for #glu ${gluRow} vs ${gluExp.posts}/${gluExp.students}`);
+if (tableRows.length !== igTable.length || tableRows[0][0] !== "glu") fail(`hashtags: table has ${tableRows.length} rows, first ${tableRows[0]}`);
+if (tableRows.some((r) => ["fyp", "viral", "schoolproject", "tiktoknl", "sport"].includes(r[0]))) fail("hashtags: a TikTok hashtag is in the Instagram table");
+if (await page.$("#tag-out, #tags-body td.num:nth-child(5)")) fail("hashtags: views or the buiten-schaal switch are still on the tab");
+await page.click('#tag-sort button[data-v="students"]');
+if ((await page.getAttribute('#tag-sort button[data-v="students"]', "aria-pressed")) !== "true") fail("hashtags: sort by students not pressed");
+await page.click('#tags-body tr[data-tag="fotografie"]');
+if ((await page.inputValue("#tag-search")) !== "fotografie" || !(await page.textContent("#tag-uses")).includes("Anna")) fail("hashtags: a click in the table does not fill the search box");
+// Who has posted without it comes first, those nothing can be seen of (no Instagram, private, not found) last.
+const notFoto = await rowsText("#tag-notuse");
+if (!notFoto[0].startsWith("Chris") || !/0 van 2 posts/.test(notFoto[0]) || !/geen Instagram-handle/.test(notFoto.at(-1))) fail(`hashtags: order of the "gebruiken niet" list (${notFoto.join(" | ")})`);
+{
+  // The same at phone size: the lists stack, nothing pushes the page sideways.
+  const hp = await open({ width: 390, height: 844 }, "#hashtags");
+  await hp.waitForSelector("#tag-presets button");
+  await hp.click('#tag-presets button[data-preset="glu"]');
+  await hp.check("#tag-missing");
+  if (!(await noHScroll(hp))) fail("390px: Hashtags with a search scrolls sideways");
+  if (process.env.SHOTS) await hp.screenshot({ path: `${process.env.SHOTS}/private-hashtags-glu-390px.png`, fullPage: true });
+  await hp.close();
+}
+console.log(`hashtags: ${tableRows.length} Instagram hashtags, #glu used by 3 of ${students} students`);
 
 await page.evaluate(() => { location.hash = "beheer"; });
 await page.waitForSelector("#acc-body tr");
@@ -462,6 +537,30 @@ if (!/Instagram: 6× per dag, elke 4 uur: 00:00, 04:00, 08:00, 12:00, 16:00, 20:
 console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)}…"`);
 const issuesText = await page.textContent("#acc-issues");
 if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`beheer: problems list incomplete: ${issuesText}`);
+// Schoolhashtags: the saved list, a live preview, a refused entry, a save, "Standaardlijst" and the new presets on the Hashtags tab.
+{
+  const saves = () => posted.filter((x) => x.url === "/api/settings/hashtags");
+  if ((await page.inputValue("#sh-input")) !== "glu grafischlyceumutrecht av") fail(`beheer: school hashtags field shows "${await page.inputValue("#sh-input")}"`);
+  await page.fill("#sh-input", "GLU #av, nieuw-tag");
+  const preview = await page.textContent("#sh-preview");
+  if (!preview.includes("#glu") || !preview.includes("#av") || !preview.includes("nieuw-tag ✗")) fail(`beheer: school hashtags preview wrong (${preview})`);
+  await page.click('#sh-form button[type="submit"]');
+  await page.waitForFunction(() => /Geen geldige hashtag/.test(document.getElementById("sh-msg").textContent));
+  await page.fill("#sh-input", "GLU #av, schoolproject");
+  await page.click('#sh-form button[type="submit"]');
+  await page.waitForFunction(() => /Schoolhashtags opgeslagen: #glu #av #schoolproject/.test(document.getElementById("sh-msg").textContent));
+  const last = saves().at(-1);
+  if (saves().length !== 2 || last.body.tags !== "GLU #av, schoolproject" || last.body.was !== "glu grafischlyceumutrecht av") fail(`beheer: school hashtags did not post right (${JSON.stringify(last && last.body)})`);
+  await page.waitForFunction(() => document.getElementById("sh-input").value === "glu av schoolproject");
+  await page.click("#sh-default");
+  if ((await page.inputValue("#sh-input")) !== "glu grafischlyceumutrecht av" || saves().length !== 2) fail("beheer: Standaardlijst does not fill the field without saving");
+  await page.evaluate(() => { location.hash = "hashtags"; });
+  await page.waitForSelector("#tag-presets button");
+  const nowPresets = await page.$$eval("#tag-presets button[data-preset]", (b) => b.map((x) => x.dataset.preset));
+  if (nowPresets.join() !== "glu,av,schoolproject") fail(`beheer: the saved school hashtags are not the presets (${nowPresets.join()})`);
+  await page.evaluate(() => { location.hash = "beheer"; });
+  await page.waitForSelector("#acc-body tr");
+}
 await page.fill('#add-form [name="handle"]', "https://www.tiktok.com/@Nieuw.Account");
 const preview = await page.textContent("#add-preview");
 if (!preview.includes("@nieuw.account")) fail(`beheer: handle preview wrong: ${preview}`);
