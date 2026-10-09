@@ -171,6 +171,8 @@ python -m unittest
 
 Op **elke pull request** draait de workflow **Python tests** (`python -m unittest`); *Collect TikTok stats* draait dezelfde tests vóór elke echte run.
 
+De unit tests schrijven nooit naar de samenvatting van de Collect-workflow (`tests/__init__.py` haalt `GITHUB_STEP_SUMMARY` weg voordat een test draait). Daar staat dus alleen het echte resultaat van de run, niet de nepregels van de tests.
+
 ## Presentatiemodus (voor de docent)
 
 Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**, of ga naar **`https://bindro1234.github.io/TiktokDashboard/?present`**
