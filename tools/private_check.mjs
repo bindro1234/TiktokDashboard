@@ -253,10 +253,12 @@ const stickingOut = (page) => page.evaluate(() => [...document.querySelectorAll(
   .filter((e) => !e.closest(".table-wrap") && e.getBoundingClientRect().right > innerWidth + 1 && e.getBoundingClientRect().width > 0)
   .slice(0, 6).map((e) => `${e.tagName.toLowerCase()}${e.id ? "#" + e.id : ""}${typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).join(".") : ""} (right edge ${Math.round(e.getBoundingClientRect().right)}px, "${e.textContent.trim().replace(/\s+/g, " ").slice(0, 50)}"; in ${e.parentElement.id || e.parentElement.tagName.toLowerCase()})`).join(", "));
 
-// Wide fonts for the phone sweeps: DejaVu Sans is the usual fallback on Linux runners (about 12% wider than Inter or
-// Arial), a monospace font is wider still and always exists. The stress must really be wider than the default, or the
-// sweep would pass without testing anything.
-const FONTS = [["DejaVu Sans", "DejaVu Sans", 1.04], ["monospace", '"DejaVu Sans Mono", "Liberation Mono", monospace', 1.15]];
+// Wide fonts for the phone sweeps: DejaVu Sans is the fallback font on GitHub's Linux runners (their default sans; about 7%
+// wider than Inter and 13% wider than Liberation Sans), a monospace font is wider still. A stress font only counts when it
+// is really that wide: the sample text below is 438px in DejaVu Sans and 497px in DejaVu Sans Mono at 15px (Liberation Mono
+// 495px), so a machine without the font fails here instead of passing without testing anything. Absolute widths, not
+// "wider than the default": on the runner the default already is DejaVu Sans.
+const FONTS = [["DejaVu Sans", "DejaVu Sans", 430], ["monospace", '"DejaVu Sans Mono", "Liberation Mono", monospace', 485]];
 const textWidth = (page) => page.evaluate(() => {
   const span = document.createElement("span");
   span.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;font-size:15px";
@@ -266,17 +268,15 @@ const textWidth = (page) => page.evaluate(() => {
   span.remove();
   return width;
 });
-let defaultTextWidth = null;
 const sweeps = [[{ width: 1280, height: 900 }, null], [{ width: 390, height: 844 }, null],
   ...FONTS.map((font) => [{ width: 390, height: 844 }, font])];
 for (const [viewport, font] of sweeps) {
   const tag = `${viewport.width}px${font ? `, ${font[0]}` : ""}`;
   const page = await open(viewport, "#overzicht", font ? font[1] : process.env.CHECK_FONT);
   await page.waitForSelector("#ov-body tr[data-handle]");
-  if (!font && viewport.width === 390 && !process.env.CHECK_FONT) defaultTextWidth = await textWidth(page);
   if (font && !process.env.CHECK_FONT) {
-    const ratio = (await textWidth(page)) / defaultTextWidth;
-    if (!(ratio >= font[2])) fail(`${tag}: the stress font did not apply (text only ${ratio.toFixed(2)}x as wide as the default, wanted at least ${font[2]}x): is the font installed?`);
+    const width = await textWidth(page);
+    if (!(width >= font[2])) fail(`${tag}: the stress font did not apply (the sample text is ${Math.round(width)}px wide at 15px, wanted at least ${font[2]}px): is the font installed?`);
   }
   for (const view of ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"]) {
     await page.evaluate((v) => { location.hash = v; }, view);
