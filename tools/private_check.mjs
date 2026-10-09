@@ -582,7 +582,11 @@ console.log(`vandaag: nog niet/gepost/privé = ${todayCounts.join("/")}, knop: "
 if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${cost})`);
 // "Controleer nu" fetches both platforms: the cost names them (Chris is the only one not done with a public Instagram account).
 if (!/^(\d+) accounts, \1 records \((\d+) TikTok, 1 Instagram\)$/.test(cost)) fail(`vandaag: cost does not split TikTok and Instagram (${cost})`);
-if (!(await page.textContent("#view-vandaag")).includes("TikTok- én Instagram-accounts")) fail("vandaag: the hint does not say that Instagram is fetched too");
+// Under "Controleer nu": one short line (what counts, stories, how long), not two paragraphs; the cost line above names the platforms.
+{
+  const hints = await page.$$eval("#view-vandaag .card:first-child p.hint", (p) => p.map((x) => x.textContent.replace(/\s+/g, " ").trim()));
+  if (hints.length !== 1 || hints[0].length > 160 || !hints[0].includes("Stories worden niet meegeteld.") || !/5–7 minuten per platform/.test(hints[0])) fail(`vandaag: the explanation under Controleer nu (${hints.length} paragraphs: ${hints.join(" | ")})`);
+}
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
 // No Instagram handle and nothing on TikTok today: "niet te controleren", in a group of their own with a link to the handle form,
 // not under "nog niet gepost". Together the four lists hold every student once.
