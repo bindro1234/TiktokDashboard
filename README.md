@@ -169,6 +169,8 @@ python -m collector ig-profiles --dry-run
 python -m unittest
 ```
 
+Op **elke pull request** draait de workflow **Python tests** (`python -m unittest`); *Collect TikTok stats* draait dezelfde tests vóór elke echte run.
+
 ## Presentatiemodus (voor de docent)
 
 Voor de beamer aan het begin van de les: klik op de site op **▶ Presentatie**, of ga naar **`https://bindro1234.github.io/TiktokDashboard/?present`**
@@ -370,13 +372,24 @@ Repo → **Settings → Secrets and variables → Actions → New repository sec
 2. Probeer met een adres dat níét op de lijst staat: dat krijgt geen code.
 3. Kijk op **Beheer** bij *Activiteit*: daar staat je bezoek.
 
+**9. Versiecontrole: `/version` zonder login (één keer)**
+
+Na elke uitrol controleert de workflow of de live Worker echt de nieuwe versie draait; anders wordt de uitrol rood. Daarvoor beantwoordt de Worker één adres zonder login: `/version`. Daar staat alleen het commitnummer (een lange code, `{"commit":"…"}`), geen gegevens uit de sheets. Omdat Cloudflare Access voor de hele Worker staat, moet je dat ene adres één keer vrijgeven:
+1. Cloudflare → **Zero Trust → Access → Applications → Add an application → Self-hosted**.
+2. Naam: `tiktok-beheer versie`. Bij *Application domain*: `tiktok-beheer.<jouw-subdomein>.workers.dev` en bij *Path*: `version`.
+3. Policy: naam `iedereen`, *Action* **Bypass**, bij *Include* **Everyone**. Opslaan.
+4. De rest van de Worker blijft achter de e-maillijst: Access gebruikt voor elk adres de meest specifieke applicatie.
+5. Testen: **Actions → Check live Worker → Run workflow**, vul het adres in en laat *commit* leeg. Groen = vrijgegeven. Rood met *Cloudflare Access stops the request to /version* = de regel staat er nog niet goed. (Zonder deze stap blijft de uitrol zelf werken, maar de laatste stap, *Check that the live Worker runs this commit*, wordt rood.)
+
+Elk antwoord van de Worker, ook *Geen toegang*, heeft de header `x-deploy-commit`. Ingelogd zie je die in de ontwikkelaarstools van je browser (tab *Network*).
+
 ### Hoe het werkt
 
 - `private/src/worker.js`: de Worker. Elk verzoek, ook voor de pagina zelf, gaat eerst door de Access-controle (`private/src/access.js`). Schrijven kan alleen met een geldige herkomst en een eigen header (tegen CSRF).
 - Leerling toevoegen gebruikt dezelfde handle-regels als de collector (`tests/handle_cases.json` test beide). Dubbele handles worden geweigerd.
 - *Nu verversen* start de workflow **Nu verversen** via de GitHub-API, maar alleen als de laatste profielrun minstens 30 minuten geleden is en er geen verversing loopt. De collector controleert dat daarna nog een keer.
 - De **reservetimer** (`scheduled` in `private/src/worker.js`) leest alleen `run_log` en start de collector als een tijdvak openstaat en nog niet gedraaid heeft; zie *Schema*.
-- `private/build.sh` zet de instellingen uit `config.yaml` klaar en kopieert de presentatiemodus van `site/`. Tests: `node --test "private/test/*.test.mjs"` en `node tools/private_check.mjs` (met nepnamen). De browsercheck draait de telefoonweergave (390 px) ook in een brede lettertype (DejaVu Sans en een monospace-font), omdat GitHub's runners een breder reservelettertype gebruiken dan een gewone computer; met `CHECK_FONT="DejaVu Sans" node tools/private_check.mjs` draait de hele check in dat lettertype. Tekst die iemand plakt (links, handles) breekt overal af, zodat een lange link de pagina nooit zijwaarts laat scrollen; tabellen scrollen binnen hun eigen kader.
+- `private/build.sh` zet de instellingen uit `config.yaml` klaar, schrijft het commitnummer van deze build naar `private/src/version.json` (voor `/version` en de header `x-deploy-commit`) en kopieert de presentatiemodus van `site/`. De workflow **Check live Worker** (`tools/verify_live.mjs`) vraagt de live Worker naar zijn commit; de uitrol doet dat zelf na het uitrollen en de geheimen, met de commit die het net uitrolde. Tests: `node --test "private/test/*.test.mjs"` en `node tools/private_check.mjs` (met nepnamen). De browsercheck draait de telefoonweergave (390 px) ook in een brede lettertype (DejaVu Sans en een monospace-font), omdat GitHub's runners een breder reservelettertype gebruiken dan een gewone computer; met `CHECK_FONT="DejaVu Sans" node tools/private_check.mjs` draait de hele check in dat lettertype. Tekst die iemand plakt (links, handles) breekt overal af, zodat een lange link de pagina nooit zijwaarts laat scrollen; tabellen scrollen binnen hun eigen kader.
 
 ## Eenmalige installatie
 
