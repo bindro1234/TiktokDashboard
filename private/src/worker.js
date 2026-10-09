@@ -5,6 +5,7 @@
 // Never deletes rows: removing a student sets active=nee.
 
 import CONFIG from "./config.json" with { type: "json" };
+import VERSION from "./version.json" with { type: "json" }; // the commit this Worker was built from (private/build.sh)
 import { AccessError, verifyAccess } from "./access.js";
 import { Sheets } from "./google.js";
 import * as lib from "../public/lib.js";
@@ -28,6 +29,9 @@ const SETTINGS_HEADER = ["key", "value", "updated_at", "updated_by"];
 const MAX_TASK_POSTS = 20;
 
 const SECURITY_HEADERS = {
+  // The commit this Worker was built from, on every response (also "Geen toegang"). The deploy job reads it back
+  // from /version to check that the live Worker is the one it just deployed.
+  "x-deploy-commit": VERSION.commit,
   "cache-control": "no-store",
   "x-frame-options": "DENY",
   "x-content-type-options": "nosniff",
@@ -113,6 +117,11 @@ export async function runSchedule(env, fetchImpl = fetch, nowMs = Date.now()) {
 
 export async function handle(request, env, ctx, fetchImpl = fetch) {
   const url = new URL(request.url);
+  // The one path that answers without a login (Access has a Bypass rule for exactly this path, see README):
+  // only the commit, nothing from the sheets.
+  if (url.pathname === "/version" && (request.method === "GET" || request.method === "HEAD")) {
+    return json({ commit: VERSION.commit });
+  }
   let user;
   try {
     user = await verifyAccess(request, { teamDomain: env.ACCESS_TEAM_DOMAIN, aud: env.ACCESS_AUD }, fetchImpl);

@@ -9,10 +9,12 @@ on:
   push:
     branches: [main]
     paths: ["private/**", "site/**", "config.yaml", "collector/config.py", "collector/worker_config.py",
-            "tests/handle_cases.json", "tools/private_check.mjs", ".github/workflows/private-deploy.yml"]
+            "tests/handle_cases.json", "tools/private_check.mjs", "tools/verify_live.mjs",
+            ".github/workflows/private-deploy.yml"]
   pull_request:
     paths: ["private/**", "site/**", "config.yaml", "collector/config.py", "collector/worker_config.py",
-            "tests/handle_cases.json", "tools/private_check.mjs", ".github/workflows/private-deploy.yml"]
+            "tests/handle_cases.json", "tools/private_check.mjs", "tools/verify_live.mjs",
+            ".github/workflows/private-deploy.yml"]
   workflow_dispatch:
 
 permissions:
@@ -73,12 +75,18 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
       - name: Deploy Worker
+        id: worker
         if: steps.cf.outputs.ready == 'true'
+        shell: bash
         working-directory: private
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx --yes wrangler@4 deploy
+        run: |
+          npx --yes wrangler@4 deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          # The address wrangler prints under "Deployed ... triggers", for the check at the end.
+          url="$(grep -Eo 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -n 1 || true)"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
       - name: Set Worker secrets
         if: steps.cf.outputs.ready == 'true'
         working-directory: private
@@ -103,3 +111,15 @@ jobs:
           ' "$file"
           npx --yes wrangler@4 secret bulk "$file"
           rm -f "$file"
+      - name: Check that the live Worker runs this commit
+        if: steps.cf.outputs.ready == 'true'
+        env:
+          URL: ${{ steps.worker.outputs.url }}
+        run: |
+          # /version answers without a login (Access has a Bypass rule for that one path, see README) and
+          # reports the commit the Worker was built from. A deploy that did not go live fails here.
+          if [ -z "$URL" ]; then
+            echo "::error::Could not read the Worker address from the wrangler output."
+            exit 1
+          fi
+          node tools/verify_live.mjs "$URL" "$GITHUB_SHA"

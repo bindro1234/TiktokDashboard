@@ -6,6 +6,7 @@ import { handle, runSchedule } from "../src/worker.js";
 import { resetCertCache } from "../src/access.js";
 import { resetTokenCache } from "../src/google.js";
 import CONFIG from "../src/config.json" with { type: "json" };
+import VERSION from "../src/version.json" with { type: "json" };
 import * as lib from "../public/lib.js";
 
 const TEAM = "https://example-team.cloudflareaccess.com";
@@ -155,6 +156,28 @@ test("a valid token gets the page with security headers", async () => {
   assert.match(await res.text(), /page/);
   assert.equal(res.headers.get("x-frame-options"), "DENY");
   assert.equal(res.headers.get("cache-control"), "no-store");
+});
+
+// ---------- commit stamp (deploy check) ----------
+
+test("/version answers without a login with only the commit; every other response also carries it", async () => {
+  assert.match(VERSION.commit, /^([0-9a-f]{40}|dev)$/);
+  for (const method of ["GET", "HEAD"]) {
+    const res = await req("/version", { jwt: null, method });
+    assert.equal(res.status, 200, method);
+    assert.equal(res.headers.get("x-deploy-commit"), VERSION.commit);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    if (method === "GET") assert.deepEqual(await res.json(), { commit: VERSION.commit });
+  }
+  // Nothing else opens up: other paths, other methods and sub-paths still need a login.
+  for (const [path, method] of [["/", "GET"], ["/api/data", "GET"], ["/version/", "GET"], ["/version/x", "GET"], ["/version", "POST"]]) {
+    const res = await req(path, { jwt: null, method });
+    assert.equal(res.status, 403, `${method} ${path}`);
+    assert.equal(res.headers.get("x-deploy-commit"), VERSION.commit, `${method} ${path} carries the commit`);
+  }
+  // Logged in: pages and API carry it too.
+  assert.equal((await req("/")).headers.get("x-deploy-commit"), VERSION.commit);
+  assert.equal((await req("/api/runs")).headers.get("x-deploy-commit"), VERSION.commit);
 });
 
 // Workers' global fetch throws "Illegal invocation" when called with any `this` other than
