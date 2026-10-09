@@ -19,7 +19,7 @@ const executablePath = process.env.CHROMIUM_PATH || undefined;
 const names = ["Anna", "Bram", "Chris", "Dewi", "Eva", "Finn", "Gijs", "Hana", "Ilse", "Joris", "Kim", ""];
 const accountsSheet = [
   ...names.map((n, i) => ({ _row: i + 2, student_name: n, tiktok_handle: `@test_${String(i + 1).padStart(2, "0")}`, active: "ja" })),
-  { _row: 14, student_name: "Lot", tiktok_handle: "https://vm.tiktok.com/abc", active: "ja" },
+  { _row: 14, student_name: "Lot", tiktok_handle: "https://vm.tiktok.com/ZNRxLeerlingPlaktEenHeleLangeLinkMetCijfers1234567890/", active: "ja" },
   { _row: 15, student_name: "Mo", tiktok_handle: "test_16", active: "nee" },
   // Anna has a second account (brand + ads): counted together everywhere.
   { _row: 16, student_name: "Anna", tiktok_handle: "test_13", active: "ja", main_account: "test_01" },
@@ -226,32 +226,84 @@ let failed = false;
 const fail = (msg) => { failed = true; console.log(`FAIL ${msg}`); };
 const browser = await chromium.launch({ executablePath });
 
-async function open(viewport, path = "") {
+async function open(viewport, path = "", font = process.env.CHECK_FONT) {
   const page = await browser.newPage({ viewport, acceptDownloads: true });
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
   // A 409 or 400 from the fake API is an expected answer (refresh cooldown, a refused form entry), not a page error.
   page.on("console", (m) => m.type() === "error" && !/status of (409|400)/.test(m.text()) && page.errors.push(m.text()));
   if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(page);
+  // Every text in a given font: CHECK_FONT="DejaVu Sans" for the whole run, or a font per page (see FONTS below). GitHub's
+  // runners fall back to a wider font than a developer machine, and the layout must not depend on which font there is.
+  if (font) {
+    await page.addInitScript((font) => {
+      document.addEventListener("DOMContentLoaded", () => {
+        const style = document.createElement("style");
+        style.textContent = `*, *::before, *::after { font-family: ${font} !important; }`;
+        document.head.appendChild(style);
+      });
+    }, font);
+  }
   await page.goto(base + path);
   return page;
 }
 const noHScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
+// The elements that stick out past the viewport (outside the tables, which scroll inside their own box): for the failure message.
+const stickingOut = (page) => page.evaluate(() => [...document.querySelectorAll("body *")]
+  .filter((e) => !e.closest(".table-wrap") && e.getBoundingClientRect().right > innerWidth + 1 && e.getBoundingClientRect().width > 0)
+  .slice(0, 6).map((e) => `${e.tagName.toLowerCase()}${e.id ? "#" + e.id : ""}${typeof e.className === "string" && e.className ? "." + e.className.trim().split(/\s+/).join(".") : ""} (right edge ${Math.round(e.getBoundingClientRect().right)}px, "${e.textContent.trim().replace(/\s+/g, " ").slice(0, 50)}"; in ${e.parentElement.id || e.parentElement.tagName.toLowerCase()})`).join(", "));
 
-for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
-  const tag = `${viewport.width}px`;
-  const page = await open(viewport, "#overzicht");
+// Wide fonts for the phone sweeps: DejaVu Sans is the usual fallback on Linux runners (about 12% wider than Inter or
+// Arial), a monospace font is wider still and always exists. The stress must really be wider than the default, or the
+// sweep would pass without testing anything.
+const FONTS = [["DejaVu Sans", "DejaVu Sans", 1.04], ["monospace", '"DejaVu Sans Mono", "Liberation Mono", monospace', 1.15]];
+const textWidth = (page) => page.evaluate(() => {
+  const span = document.createElement("span");
+  span.style.cssText = "position:absolute;visibility:hidden;white-space:nowrap;font-size:15px";
+  span.textContent = "Instagram-handle van deze leerling toevoegen en opslaan";
+  document.body.appendChild(span);
+  const width = span.getBoundingClientRect().width;
+  span.remove();
+  return width;
+});
+let defaultTextWidth = null;
+const sweeps = [[{ width: 1280, height: 900 }, null], [{ width: 390, height: 844 }, null],
+  ...FONTS.map((font) => [{ width: 390, height: 844 }, font])];
+for (const [viewport, font] of sweeps) {
+  const tag = `${viewport.width}px${font ? `, ${font[0]}` : ""}`;
+  const page = await open(viewport, "#overzicht", font ? font[1] : process.env.CHECK_FONT);
   await page.waitForSelector("#ov-body tr[data-handle]");
+  if (!font && viewport.width === 390 && !process.env.CHECK_FONT) defaultTextWidth = await textWidth(page);
+  if (font && !process.env.CHECK_FONT) {
+    const ratio = (await textWidth(page)) / defaultTextWidth;
+    if (!(ratio >= font[2])) fail(`${tag}: the stress font did not apply (text only ${ratio.toFixed(2)}x as wide as the default, wanted at least ${font[2]}x): is the font installed?`);
+  }
   for (const view of ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"]) {
     await page.evaluate((v) => { location.hash = v; }, view);
     await page.waitForTimeout(250);
     if (!(await page.isVisible(`#view-${view}`))) fail(`${tag}: tab ${view} not shown`);
-    if (!(await noHScroll(page))) fail(`${tag}: tab ${view} scrolls sideways`);
+    if (!(await noHScroll(page))) fail(`${tag}: tab ${view} scrolls sideways (scrollWidth ${await page.evaluate(() => document.documentElement.scrollWidth)}px; sticking out: ${await stickingOut(page) || "nothing outside the tables"})`);
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-${view}-${tag}.png`, fullPage: true });
   }
   if (page.errors.length) fail(`${tag}: browser errors: ${page.errors.join(" | ")}`);
   console.log(`${tag}: all tabs open, no sideways scroll`);
   await page.close();
+}
+
+// Text pasted into the forms on Beheer (a long link, a sentence) shows up in previews and messages: in a wide font at phone size
+// none of that may push the page sideways.
+{
+  const longLink = "https://www.instagram.com/leerling_met_een_hele_lange_naam_die_niet_past/reel/Cxyz1234567890abcdefghijklmnop/?igsh=MWRsbHVicXRyZWF0Z2VuZA%3D%3D";
+  for (const [name, css] of [["DejaVu Sans", "DejaVu Sans"], ["monospace", '"DejaVu Sans Mono", "Liberation Mono", monospace']]) {
+    const bp = await open({ width: 390, height: 844 }, "#beheer", css);
+    await bp.waitForSelector("#acc-body tr");
+    await bp.fill("#sh-input", `glu ${longLink} ${longLink.toUpperCase()}`);
+    await bp.fill('#add-form [name="handle"]', longLink.replace("instagram", "tiktok"));
+    await bp.fill('#add-form [name="instagram"]', longLink + "/zzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+    await bp.waitForTimeout(150);
+    if (!(await noHScroll(bp))) fail(`390px, ${name}: pasted links on Beheer scroll the page sideways (sticking out: ${await stickingOut(bp)})`);
+    await bp.close();
+  }
 }
 
 // Student pages at phone size (the Instagram table and tiles must not push the page sideways), also the sub-rows of Overzicht.
