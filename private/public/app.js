@@ -12,6 +12,8 @@ const shortDate = new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", day: "nume
 const fmt = (n) => (n == null ? "–" : nf.format(n));
 const signed = (n) => (n == null ? "–" : (n > 0 ? "+" : n < 0 ? "−" : "±") + nf.format(Math.abs(n)));
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const PLATFORM_NL = { tiktok: "TikTok", instagram: "Instagram" };
+const FREQ_NL = { off: "uit", daily: "1× per dag", "12h": "elke 12 uur", "6h": "elke 6 uur", "4h": "elke 4 uur", "2h": "elke 2 uur" };
 const dayLabel = (d) => dateFmt.format(Date.parse(d + "T00:00:00Z"));
 const instagram = (h) => `https://www.instagram.com/${encodeURIComponent(h)}/`;
 const tiktok = (h, id) => `https://www.tiktok.com/@${encodeURIComponent(h)}${id ? `/video/${encodeURIComponent(id)}` : ""}`;
@@ -517,7 +519,9 @@ function renderAdmin(m) {
   const b = raw.budget;
   const cfg = m.cfg;
   $("bh-cool-min").textContent = cfg.forceMinMinutes;
-  $("bh-last").textContent = raw.lastProfilesRun ? stampFmt.format(raw.lastProfilesRun) : "nog geen";
+  const lastRun = (t) => (t ? stampFmt.format(t) : "nog geen");
+  $("bh-last").textContent = raw.budget.byPlatform.instagram.accounts
+    ? `TikTok ${lastRun(raw.lastProfilesRun)} · Instagram ${lastRun(raw.lastInstagramRun)}` : lastRun(raw.lastProfilesRun);
   const usedPct = Math.min(100, (b.used / b.cap) * 100);
   const resPct = Math.min(100 - usedPct, (b.reserved / b.cap) * 100);
   $("bh-budget").innerHTML = `
@@ -525,17 +529,20 @@ function renderAdmin(m) {
     <div class="bar" role="img" aria-label="Budget: ${fmt(b.used)} gebruikt, ${fmt(b.reserved)} nodig voor resterende profielruns, limiet ${fmt(b.cap)}">
       <span class="used" style="width:${usedPct}%"></span><span class="reserved" style="width:${resPct}%"></span>
     </div>
-    <p class="meta">Nog ${b.runsLeft} geplande profielruns deze maand × ${m.students.length} accounts ≈ ${fmt(b.reserved)} records.
-      Verwacht totaal zonder weekrefreshes: <strong>${fmt(b.projected)}</strong> (${pct.format(b.projected / b.cap)} van de limiet).</p>
-    <p class="meta">Weekrefresh: max. ${cfg.refreshNumOfPosts} posts per account (reserveert tot ${fmt(cfg.refreshNumOfPosts * m.students.length)} records vooraf).</p>`;
+    <p class="meta">${["tiktok", "instagram"].map((pl) => `${PLATFORM_NL[pl]}: nog ${b.byPlatform[pl].runsLeft} geplande profielruns deze maand × ${b.byPlatform[pl].accounts} accounts ≈ ${fmt(b.byPlatform[pl].reserved)} records`).join("<br>")}<br>
+      Verwacht totaal zonder weekrefreshes: <strong>${fmt(b.projected)}</strong> (${pct.format(b.projected / b.cap)} van de limiet). Beide platforms tellen mee voor dezelfde limiet.</p>
+    <p class="meta">Weekrefresh (TikTok): max. ${cfg.refreshNumOfPosts} posts per account (reserveert tot ${fmt(cfg.refreshNumOfPosts * b.byPlatform.tiktok.accounts)} records vooraf).</p>`;
   const s = cfg.schedule;
-  const hours = s.profileRuns.map((w) => w.start);
+  const platformLine = (pl) => {
+    const w = s.windows[pl];
+    return `<li>${PLATFORM_NL[pl]}: ${w.length ? `<strong>${w.length}× per dag</strong>, ${FREQ_NL[cfg.frequency[pl]] || cfg.frequency[pl]}: ${w.map((x) => x.start).join(", ")}
+      (elk tijdvak ${w[0].start}–${w[0].end}, enz.; 1 run per tijdvak)` : "<strong>uit</strong>: geen geplande runs"}</li>`;
+  };
   $("bh-schedule").innerHTML = `<ul class="issues">
-    <li>Profielen: <strong>${s.profileRuns.length}× per dag</strong>, elke 2 uur, dag en nacht: ${hours.join(", ")}
-      (elk tijdvak ${s.profileRuns[0].start}–${s.profileRuns[0].end}, enz.; 1 run per tijdvak)</li>
+    ${platformLine("tiktok")}${platformLine("instagram")}
     <li>Finale: elke ${cfg.finale.everyMinutes} minuten tot de deadline, maximaal ${cfg.finale.maxHours} uur (starten hierboven)</li>
     <li>Weekrefresh: ${esc(WEEKDAYS_NL[s.refresh.weekday] || s.refresh.weekday)} ${s.refresh.start}–${s.refresh.end}</li>
-    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun was</li>
+    <li>Geplande run overgeslagen als er &lt; ${s.skipRecentMinutes} min eerder al een profielrun van dat platform was</li>
     <li>Campagne: ${cfg.campaign.start} t/m ${cfg.campaign.end}; ophalen tot ${cfg.campaign.collectUntil}</li></ul>`;
 
   // All account rows (active and inactive).
@@ -722,21 +729,24 @@ function inputValues(ms) {
   return { date: lib.localDay(ms), time: lib.localTime(ms) };
 }
 
+// Accounts that are fetched on every finale run: TikTok and Instagram, one record each.
+const finaleAccounts = () => state.raw.budget.byPlatform.tiktok.accounts + state.raw.budget.byPlatform.instagram.accounts;
+
 function finaleEstimate(m, endMs) {
   const cfg = m.cfg.finale;
   const runs = lib.finaleRuns(Date.now(), endMs, cfg.everyMinutes);
-  return { runs, records: runs * m.students.length };
+  return { runs, accounts: finaleAccounts(), records: runs * finaleAccounts() };
 }
 
 function renderFinaleCard(m) {
   const f = state.raw.finale;
   const phase = f ? (Date.now() >= f.end ? "ended" : "live") : "none";
-  const key = `${phase}|${f ? f.end : ""}|${m.students.length}`;
+  const key = `${phase}|${f ? f.end : ""}|${finaleAccounts()}`;
   if (key === state.finaleCardKey) return tickFinale();
   state.finaleCardKey = key;
   const cfg = m.cfg.finale;
-  const perHour = (60 / cfg.everyMinutes) * m.students.length;
-  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${m.students.length} actieve accounts), bovenop de gewone 2-uurlijkse runs die dan vervallen.`;
+  const perHour = (60 / cfg.everyMinutes) * finaleAccounts();
+  const cost = `Kost ≈ <strong>${fmt(perHour)} records per uur</strong> (${60 / cfg.everyMinutes} runs × ${finaleAccounts()} actieve accounts, TikTok en Instagram), in plaats van de gewone runs die dan vervallen.`;
   // Dutch day names and 24-hour selects (the browser's own date/time inputs follow its language: "02:00 AM").
   const deadlineForm = (label, defMs, id) => {
     const v = inputValues(defMs);
@@ -759,7 +769,7 @@ function renderFinaleCard(m) {
   const quarter = (ms) => Math.ceil(ms / (15 * 60e3)) * 15 * 60e3;
   let html = `<h2>Finale</h2>
     <p>Voor de laatste les. Tijdens de finale worden de profielen <strong>elke ${cfg.everyMinutes} minuten</strong> opgehaald
-      in plaats van elke 2 uur. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
+      in plaats van de gewone runs. De presentatie (openbaar en hier) toont een <strong>aftelklok</strong> en <strong>LIVE</strong>-labels.
       Na de deadline tonen de sites en de presentatie de <strong>Eindstand</strong>: het podium en de stand, bevroren op de laatste meting
       vóór de deadline. De finale stopt vanzelf bij de deadline en duurt nooit langer dan ${cfg.maxHours} uur. De budgetlimiet blijft gelden.</p>
     <p class="meta">${cost}</p>`;
@@ -787,7 +797,7 @@ function renderFinaleCard(m) {
       const t = lib.amsMs(form.querySelector("[name=date]").value, formTime(form));
       const est = finaleEstimate(m, t);
       $(`${id}-estimate`).textContent = Number.isFinite(t) && t > Date.now()
-        ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${m.students.length} accounts ≈ ${fmt(est.records)} records`
+        ? `Tot ${stampFmt.format(t)}: ${est.runs} runs × ${est.accounts} accounts ≈ ${fmt(est.records)} records`
           + ` (budget: ${fmt(state.raw.budget.used)} van ${fmt(state.raw.budget.cap)} gebruikt).`
         : "Kies een moment in de toekomst.";
     };
@@ -995,6 +1005,7 @@ function renderToday(m) {
     : st.task ? `<strong>Dagopdracht:</strong> minimaal ${st.task.min} posts${st.task.label ? ` (${esc(st.task.label)})` : ""}. Klaar = ${st.task.min} posts vandaag.`
     : st.offDay ? `Vrije dag (${esc(lib.offDayName(m.cfg, st.day))}): posten hoeft vandaag niet.` : "Klaar = vandaag minstens één post.";
   $("td-checked").textContent = m.latest ? hourFmt.format(m.latest) : "nog niet";
+  $("td-sched").textContent = ["tiktok", "instagram"].map((pl) => `${PLATFORM_NL[pl]} ${FREQ_NL[m.cfg.frequency[pl]] || m.cfg.frequency[pl]}`).join(", ");
   $("td-todo-title").textContent = st.task ? `Nog niet klaar (minder dan ${st.task.min} posts)` : "Nog niet gepost";
   $("td-done-title").textContent = st.task ? "Klaar" : "Gepost";
   $("td-todo-n").textContent = todo.length;

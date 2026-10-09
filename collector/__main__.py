@@ -33,11 +33,27 @@ def setup(admin: Spreadsheet, data: Spreadsheet, collector: Collector) -> None:
     print("Tabs ready in both spreadsheets.")
 
 
+def split_handles(text: str) -> tuple[list[str], list[str]]:
+    """The --handles list as (TikTok handles, Instagram handles). Entries are comma separated; the platform
+    is written in front (tiktok:name, instagram:name, ig:name), a bare name is a TikTok handle."""
+    tiktok, ig = [], []
+    for item in text.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        platform, _, rest = item.partition(":")
+        target = ig if platform.lower() in ("instagram", "ig") and rest else tiktok
+        name = rest if rest and platform.lower() in ("instagram", "ig", "tiktok") else item
+        target.append(name.strip().lstrip("@").lower())
+    return tiktok, ig
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="collector", description=__doc__)
-    parser.add_argument("command", choices=["auto", "profiles", "force", "refresh", "check", "today", "status", "setup"])
+    parser.add_argument("command", choices=["auto", "profiles", "ig-profiles", "force", "refresh", "check", "today", "status", "setup"])
     parser.add_argument("--dry-run", action="store_true", help="plan and log expected records, no scraping")
-    parser.add_argument("--handles", default="", help="check: comma separated handles (default: most videos); today: the handles to check")
+    parser.add_argument("--handles", default="", help="check: comma separated handles (default: most videos); today: the handles to check, "
+                        "with the platform in front for Instagram (instagram:name; a bare name is TikTok)")
     parser.add_argument("--config", default=str(config.ROOT / "config.yaml"))
     args = parser.parse_args(argv)
 
@@ -56,16 +72,23 @@ def main(argv: list[str] | None = None) -> int:
         col.auto()
     elif args.command == "profiles":
         col.run_profiles(manual)
+    elif args.command == "ig-profiles":
+        col.run_ig_profiles(f"{col.now_local:%Y-%m-%d}/ig-manual-{col.now_local:%H%M}")
     elif args.command == "force":
+        # "Nu verversen": both platforms, each with its own cooldown and its own run_log row.
         col.run_force_refresh(f"{col.now_local:%Y-%m-%d}/force-{col.now_local:%H%M}")
+        col.run_ig_force_refresh(f"{col.now_local:%Y-%m-%d}/ig-force-{col.now_local:%H%M}")
     elif args.command == "refresh":
         col.run_refresh(manual)
     elif args.command == "check":
         chosen = [h.strip().lstrip("@").lower() for h in args.handles.split(",") if h.strip()]
         col.run_window_check(manual, chosen or None)
     elif args.command == "today":
-        chosen = [h.strip().lstrip("@").lower() for h in args.handles.split(",") if h.strip()]
-        col.run_today_check(f"{col.now_local:%Y-%m-%d}/today-{col.now_local:%H%M}", chosen)
+        tiktok, ig = split_handles(args.handles)
+        if tiktok or not ig:
+            col.run_today_check(f"{col.now_local:%Y-%m-%d}/today-{col.now_local:%H%M}", tiktok)
+        if ig:
+            col.run_ig_today_check(f"{col.now_local:%Y-%m-%d}/ig-today-{col.now_local:%H%M}", ig)
     elif args.command == "status":
         col.status()
     return 0

@@ -68,7 +68,7 @@
       <div class="card">
         <h2 id="td-title">Vandaag</h2>
         <p id="td-info"></p>
-        <p class="meta">Laatst gecontroleerd: <strong id="td-checked"></strong> (de laatste ophaalrun). Geplande runs elke 2 uur.</p>
+        <p class="meta">Laatst gecontroleerd: <strong id="td-checked"></strong> (de laatste ophaalrun). Geplande runs: <span id="td-sched"></span>.</p>
         <p class="buttons"><button type="button" class="btn primary" id="td-check">🔎 Controleer nu</button> <span class="meta" id="td-cost"></span></p>
         <p class="hint">Haalt nu alleen de profielen op van wie vandaag nog niet (genoeg) gepost heeft: 1 record per account, dus goedkoper naarmate de lijst korter wordt. Een controle duurt ongeveer <strong>5–7 minuten</strong> voordat de cijfers hier staan; de pagina ververst vanzelf als de run klaar is.</p>
         <p class="status" id="td-msg" role="status"></p>
@@ -151,7 +151,7 @@
       <div class="grid2">
         <div class="card">
           <h2>Nu verversen</h2>
-          <p>Haalt nu alle actieve profielen op (1 record per account). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun.</p>
+          <p>Haalt nu alle actieve profielen op, TikTok en Instagram (1 record per account). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun van dat platform.</p>
           <p><button type="button" class="btn primary" id="bh-refresh">↻ Nu verversen</button></p>
           <p class="status" id="bh-refresh-msg" role="status"></p>
           <p class="meta">Laatste profielrun: <strong id="bh-last"></strong></p>
@@ -163,7 +163,7 @@
           <div id="bh-budget"></div>
           <h3>Schema</h3>
           <div id="bh-schedule"></div>
-          <p class="hint">Limiet en schema staan alleen in <code>config.yaml</code> in de repository.</p>
+          <p class="hint">Limiet, schema en frequentie per platform staan in <code>config.yaml</code> in de repository.</p>
         </div>
       </div>
 

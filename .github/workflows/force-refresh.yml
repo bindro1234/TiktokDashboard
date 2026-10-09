@@ -1,8 +1,8 @@
 name: Nu verversen
 
-# Extra profiles run on demand, for all active accounts. Only people with write
+# Extra profiles run on demand, for all active accounts of both platforms (TikTok and Instagram, each its own run). Only people with write
 # access to this repo can start it. Respects the monthly budget cap and is refused
-# (and logged in run_log) when the last real profiles run was less than
+# (and logged in run_log) when the last real profiles run of that platform was less than
 # force_refresh.min_minutes_between (config.yaml) ago, so a double tap costs nothing.
 on:
   workflow_dispatch:

@@ -7,7 +7,7 @@ name: Collect TikTok stats
 # workflow with command=auto via workflow_dispatch when a window is open and not done.
 on:
   schedule:
-    # Every hour: profile windows are every 2 hours on even Amsterdam hours, which are odd
+    # Every hour: the profile windows (TikTok and Instagram, each a subset of the even Amsterdam hours) are odd
     # or even UTC hours depending on summer/winter time; also covers the Friday refresh.
     # Firings outside an open window only check the time and exit.
     - cron: "10,30,50 * * * *"
@@ -18,14 +18,14 @@ on:
       command:
         description: "What to run"
         type: choice
-        options: [auto, profiles, refresh, check, today, status, setup]
+        options: [auto, profiles, ig-profiles, refresh, check, today, status, setup]
         default: status
       dry_run:
         description: "Dry run (no scraping, only log expected records)"
         type: boolean
         default: true
       handles:
-        description: "check: comma separated handles (empty = accounts with most videos); today: the handles to check (Vandaag tab)"
+        description: "check: comma separated handles (empty = accounts with most videos); today: the handles to check (Vandaag tab; Instagram as instagram:name)"
         type: string
         default: ""
 
