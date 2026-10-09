@@ -451,3 +451,93 @@ test("two accounts: a post on either counts for the streak, Vandaag and Controle
   assert.deepEqual(st.rows.map((r) => [r.handle, r.done, r.private]), [["anna", true, false], ["bo", false, false], ["cy", false, true]]);
   assert.deepEqual(lib.todayTargets(st), ["bo"]);         // bo's private account and cy can't be checked
 });
+
+test("groupAccounts: a student with only Instagram is a group of its own, keyed instagram:<handle>", () => {
+  const out = lib.parseAccounts([
+    { _row: 2, student_name: "Anna", tiktok_handle: "anna", active: "ja", instagram_handle: "anna.ig" },
+    { _row: 3, student_name: "Fay", tiktok_handle: "", active: "ja", instagram_handle: "@Fay.Only" },
+    { _row: 4, student_name: "Gus", tiktok_handle: "", active: "nee", instagram_handle: "gus.ig" },   // inactive: no group
+    { _row: 5, student_name: "Hal", tiktok_handle: "", active: "ja", instagram_handle: "" },          // nothing to follow
+  ]);
+  const groups = lib.groupAccounts(out);
+  assert.deepEqual([...groups.keys()], ["anna", "instagram:fay.only"]);
+  const fay = groups.get("instagram:fay.only");
+  assert.deepEqual([fay.name, fay.accounts.length, fay.instagram, fay.instagramRow, fay.instagramIssue], ["Fay", 0, "fay.only", 3, null]);
+  assert.equal(lib.instagramKey("fay.only"), "instagram:fay.only");
+});
+
+test("instagramPosts marks ig_posts rows as Instagram posts and skips rows without an id", () => {
+  const rows = lib.instagramPosts([{ post_id: "17", handle: "a", created_at: "2026-10-07T10:00:00Z" }, { post_id: " ", handle: "a" }]);
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0].platform, rows[0].video_id, rows[0].handle], ["instagram", "17", "a"]);
+  assert.equal(lib.isInstagramPost(rows[0]), true);
+  assert.equal(lib.isInstagramPost({ video_id: "1" }), false);
+});
+
+test("studentStats: a post on either platform makes the day; views and likes stay TikTok only", () => {
+  const tt = (id, iso, views) => ({ video_id: id, handle: "a", created_at: iso, views, likes: 10, comments: 1, shares: 0, hashtags: "glu" });
+  const ig = (id, iso) => ({ post_id: id, handle: "a.ig", created_at: iso, platform: "instagram", hashtags: "fotografie glu" });
+  const posts = [
+    tt("1", "2026-09-28T08:00:00Z", 100),
+    ig("i1", "2026-09-29T08:00:00Z"),           // Tuesday: only Instagram
+    tt("2", "2026-09-30T08:00:00Z", 300),
+    ig("i2", "2026-09-30T09:00:00Z"),           // Wednesday: both platforms
+    ig("i3", "2026-10-01T08:00:00Z"),
+  ];
+  const now = ams("2026-10-02T12:00:00+02:00");
+  const both = lib.studentStats(posts, CFG, now);
+  const tiktokOnly = lib.studentStats(posts.filter((p) => !lib.isInstagramPost(p)), CFG, now);
+  assert.deepEqual([both.posts, both.tiktokPosts, both.instagramPosts], [5, 2, 3]);
+  assert.deepEqual(both.byDay.get("2026-09-30"), { tiktok: 1, instagram: 1 });
+  assert.deepEqual(both.byDay.get("2026-09-29"), { tiktok: 0, instagram: 1 });
+  // TikTok alone misses 29 Sep and 1 Oct; with Instagram nothing is missed and the streak runs from 28 Sep.
+  assert.deepEqual(tiktokOnly.missedList, ["2026-09-29", "2026-10-01"]);
+  assert.deepEqual(both.missedList, []);
+  assert.deepEqual([both.streak, both.longest, both.daysPosted], [4, 4, 4]);
+  // Numbers that need TikTok data ignore Instagram posts.
+  assert.deepEqual([both.views, both.likes, both.avgViews, both.medianViews], [400, 20, 200, 200]);
+  assert.equal(both.best.id, "2");
+  assert.equal(both.engagement, (20 + 2) / 400);
+  // Hashtags of both platforms; the last post and its platform; "geen post" counts from the last post on either.
+  assert.deepEqual(both.tags.map(([t]) => t), ["glu", "fotografie"]);
+  assert.deepEqual([both.lastDay, both.lastPlatform], ["2026-10-01", "instagram"]);
+  assert.equal(both.quietDays, 1);
+  assert.equal(tiktokOnly.lastPlatform, "tiktok");
+  // A dagopdracht counts posts on any platform.
+  const task = lib.studentStats(posts, CFG, now, [{ date: "2026-09-30", min: 2, label: "" }, { date: "2026-10-01", min: 2, label: "" }]);
+  assert.deepEqual(task.tasks.map((t) => [t.date, t.count, t.status]), [["2026-09-30", 2, "reached"], ["2026-10-01", 1, "missed"]]);
+});
+
+test("studentStats: days before options.from are free (a student with only Instagram can't be judged before its start)", () => {
+  const ig = (id, iso) => ({ post_id: id, handle: "a.ig", created_at: iso, platform: "instagram" });
+  const posts = [ig("i1", "2026-10-01T08:00:00Z"), ig("i2", "2026-10-02T08:00:00Z")];
+  const now = ams("2026-10-06T12:00:00+02:00");
+  const plain = lib.studentStats(posts, CFG, now);
+  const from = lib.studentStats(posts, CFG, now, [], { from: "2026-10-01" });
+  assert.deepEqual(plain.missedList, ["2026-09-28", "2026-09-29", "2026-09-30", "2026-10-05"]);
+  assert.deepEqual(from.missedList, ["2026-10-05"]); // Monday 5 Oct is a real miss; 28-30 Sep were never measured
+  assert.deepEqual([from.isOff("2026-09-30"), from.isOff("2026-10-01"), from.isOff("2026-10-05")], [true, false, false]);
+  assert.equal(from.offName("2026-09-30"), "nog niet gevolgd");
+  assert.equal(from.offName("2026-10-03"), "weekend");
+  assert.equal(from.offName("2026-10-05"), null);
+  assert.equal(from.missedDays, 1);
+  assert.equal(from.quietDays, 2); // 5 and 6 Oct (3 and 4 Oct are weekend)
+  // Before anything was measured: no "geen post" days at all.
+  assert.equal(lib.studentStats([], CFG, ams("2026-09-29T12:00:00+02:00"), [], { from: "2026-10-01" }).quietDays, 0);
+});
+
+test("todayStatus: an Instagram post counts; Instagram is never fetched by Controleer nu; private only when all accounts are", () => {
+  const now = ams("2026-10-06T13:00:00+02:00");
+  const igPost = { platform: "instagram", created_at: "2026-10-06T07:00:00Z" };
+  const students = [
+    { handle: "a", posts: [igPost], accounts: [{ handle: "a", isPrivate: false }, { handle: "a.ig", isPrivate: false, platform: "instagram" }] },
+    { handle: "b", posts: [], accounts: [{ handle: "b", isPrivate: false }, { handle: "b.ig", isPrivate: false, platform: "instagram" }] },
+    { handle: "c", posts: [], accounts: [{ handle: "c", isPrivate: true }, { handle: "c.ig", isPrivate: false, platform: "instagram" }] },
+    { handle: "instagram:d", posts: [], accounts: [{ handle: "d", isPrivate: false, platform: "instagram" }] },
+    { handle: "e", posts: [], accounts: [{ handle: "e", isPrivate: true }, { handle: "e.ig", isPrivate: true, platform: "instagram" }] },
+  ];
+  const st = lib.todayStatus(CFG, students, [], now);
+  assert.deepEqual(st.rows.map((r) => [r.handle, r.done, r.private, r.checkable]),
+    [["a", true, false, ["a"]], ["b", false, false, ["b"]], ["c", false, false, []], ["instagram:d", false, false, []], ["e", false, true, []]]);
+  assert.deepEqual(lib.todayTargets(st), ["b"]);
+});

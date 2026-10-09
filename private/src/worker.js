@@ -21,6 +21,7 @@ const MIN_FINALE_MINUTES = 15;
 const TASKS_TAB = "dagopdrachten";
 const TASKS_HEADER = ["date", "min_posts", "label", "active", "updated_at", "updated_by"];
 const OUTLIERS_TAB = "outliers"; // public sheet: handles only
+const IG_TABS = ["ig_handles", "ig_history", "ig_posts", "ig_baseline"]; // public sheet: Instagram, handles only
 const OUTLIERS_HEADER = ["handle", "buiten_schaal", "updated_at"];
 const MAX_TASK_POSTS = 20;
 
@@ -179,7 +180,7 @@ class Api {
   async data() {
     const [admin, data] = await Promise.all([
       this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, FINALE_TAB, TASKS_TAB]),
-      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB]),
+      this.sheets.readTabs(this.dataId, ["handles", "history", "posts_latest", OUTLIERS_TAB, ...IG_TABS]),
     ]);
     const accounts = lib.parseAccounts(lib.rowsToObjects(admin.accounts));
     const runLog = lib.rowsToObjects(admin.run_log);
@@ -217,6 +218,11 @@ class Api {
       handles: lib.rowsToObjects(data.handles).map(strip),
       history: lib.rowsToObjects(data.history).map(strip),
       posts: lib.rowsToObjects(data.posts_latest).map(strip),
+      // Instagram (empty until the first Instagram run has created the tabs).
+      igHandles: lib.rowsToObjects(data.ig_handles).map(strip),
+      igHistory: lib.rowsToObjects(data.ig_history).map(strip),
+      igPosts: lib.rowsToObjects(data.ig_posts).map(strip),
+      igBaseline: lib.rowsToObjects(data.ig_baseline).map(strip),
       runLog: runLog.slice(-60).reverse().map(strip),
       activity: activity.slice(-80).reverse().map(strip),
       budget: lib.budget(CONFIG, runLog, { tiktok: tracked, instagram: igTracked }, now),
@@ -601,7 +607,7 @@ class Api {
   async todayCheck() {
     const [admin, data] = await Promise.all([
       this.sheets.readTabs(this.admin, ["accounts", "run_log", ACTIVITY_TAB, TASKS_TAB]),
-      this.sheets.readTabs(this.dataId, ["handles", "posts_latest"]),
+      this.sheets.readTabs(this.dataId, ["handles", "posts_latest", "ig_handles", "ig_posts"]),
     ]);
     const now = Date.now();
     const runLog = lib.rowsToObjects(admin.run_log);
@@ -621,10 +627,19 @@ class Api {
       if (!posts.has(h)) posts.set(h, []);
       posts.get(h).push(p);
     }
-    // Per student (all their accounts together): one post on either account counts.
+    // Per student (all their accounts together, TikTok and Instagram): one post on any account counts. The
+    // check itself only fetches TikTok accounts for now; Instagram posts only decide who is done.
+    const igInfo = new Map(lib.rowsToObjects(data.ig_handles).map((h) => [String(h.handle), h]));
+    const igPosts = new Map();
+    for (const p of lib.instagramPosts(lib.rowsToObjects(data.ig_posts))) {
+      const h = String(p.handle);
+      if (!igPosts.has(h)) igPosts.set(h, []);
+      igPosts.get(h).push(p);
+    }
     const students = [...lib.groupAccounts(accounts).values()].map((g) => ({
-      handle: g.key, posts: g.accounts.flatMap((a) => posts.get(a.handle) || []),
-      accounts: g.accounts.map((a) => ({ handle: a.handle, isPrivate: lib.truthy(info.get(a.handle)?.is_private) })),
+      handle: g.key, posts: [...g.accounts.flatMap((a) => posts.get(a.handle) || []), ...(g.instagram ? igPosts.get(g.instagram) || [] : [])],
+      accounts: [...g.accounts.map((a) => ({ handle: a.handle, isPrivate: lib.truthy(info.get(a.handle)?.is_private) })),
+        ...(g.instagram ? [{ handle: g.instagram, platform: "instagram", isPrivate: lib.truthy(igInfo.get(g.instagram)?.is_private) }] : [])],
     }));
     const status = lib.todayStatus(CONFIG, students, lib.parseAssignments(lib.rowsToObjects(admin[TASKS_TAB])), now);
     const targets = lib.todayTargets(status);

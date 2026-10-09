@@ -16,6 +16,9 @@ const PLATFORM_NL = { tiktok: "TikTok", instagram: "Instagram" };
 const FREQ_NL = { off: "uit", daily: "1× per dag", "12h": "elke 12 uur", "6h": "elke 6 uur", "4h": "elke 4 uur", "2h": "elke 2 uur" };
 const dayLabel = (d) => dateFmt.format(Date.parse(d + "T00:00:00Z"));
 const instagram = (h) => `https://www.instagram.com/${encodeURIComponent(h)}/`;
+// Link to an Instagram post: the post's own url when it is an instagram.com link, else the profile.
+const instagramPost = (p) => (/^https:\/\/(www\.)?instagram\.com\//i.test(String(p.url ?? "").trim()) ? String(p.url).trim() : instagram(p.handle));
+const IG_TYPE_NL = { photo: "foto", reel: "reel", carousel: "carrousel" };
 const tiktok = (h, id) => `https://www.tiktok.com/@${encodeURIComponent(h)}${id ? `/video/${encodeURIComponent(id)}` : ""}`;
 const $ = (id) => document.getElementById(id);
 
@@ -88,6 +91,27 @@ function build(raw) {
     if (!posts.has(h)) posts.set(h, []);
     posts.get(h).push(p);
   }
+  // Instagram: profile status (ig_handles), follower history, posts (marked platform "instagram") and the baseline.
+  const igInfo = new Map((raw.igHandles || []).map((h) => [String(h.handle), h]));
+  const igSeries = new Map();
+  let latestIg = 0;
+  for (const r of raw.igHistory || []) {
+    const t = lib.parseTs(r.timestamp);
+    if (t === null || t > cutoff) continue;
+    const h = String(r.handle);
+    if (!igSeries.has(h)) igSeries.set(h, []);
+    igSeries.get(h).push({ t, followers: lib.toNum(r.followers), following: lib.toNum(r.following), posts: lib.toNum(r.campaign_posts) ?? 0 });
+    latestIg = Math.max(latestIg, t);
+  }
+  for (const list of igSeries.values()) list.sort((a, b) => a.t - b.t);
+  const igBaseline = new Map((raw.igBaseline || []).map((r) => [String(r.handle),
+    { t: lib.parseTs(r.baseline_at), followers: lib.toNum(r.baseline_followers) }]));
+  const igPosts = new Map();
+  for (const p of lib.instagramPosts(raw.igPosts)) {
+    const h = String(p.handle);
+    if (!igPosts.has(h)) igPosts.set(h, []);
+    igPosts.get(h).push(p);
+  }
   // "+ 24 uur": compared with the run of ~24 hours earlier (rolling, runs are every 2 hours).
   const target = latest - DAY_MS + 45 * 60 * 1000;
   // Numbers of one series (an account, or a student's accounts added up).
@@ -98,44 +122,70 @@ function build(raw) {
     return { series, cur, views: cur ? cur.views : 0, gain: cur && base ? cur.views - base.views : null,
       followers: cur ? cur.followers : null, posts: postList, stats: lib.studentStats(postList, cfg, now, tasks) };
   };
+  // Instagram was not followed before its start date: for the Instagram account alone, and for a student without
+  // TikTok, those days are neither missed nor part of the streak.
+  const igFrom = cfg.instagram?.startDate || null;
+  // The Instagram account of a student, shaped like a TikTok account (stats, posts, info, series) plus its followers.
+  const igAccount = (handle) => {
+    const info = igInfo.get(handle) || null;
+    const series = igSeries.get(handle) || [];
+    const cur = series.at(-1) || null;
+    const base = igBaseline.get(handle) || null;
+    const list = igPosts.get(handle) || [];
+    const followers = cur && cur.followers != null ? cur.followers : lib.toNum(info?.followers);
+    return { handle, key: lib.instagramKey(handle), platform: "instagram", info, series, cur, posts: list, followers,
+      baseline: base && base.t !== null ? base : null,
+      gained: base && followers != null && base.followers != null ? followers - base.followers : null,
+      views: 0, gain: null, isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: false,
+      stats: lib.studentStats(list, cfg, now, tasks, { from: igFrom }) };
+  };
   // One row per student; a student with two accounts (main_account) gets both added up. Every
-  // student keeps `accounts`: the numbers per account, for the "per account" dropdowns.
+  // student keeps `accounts` (the TikTok accounts): the numbers per account, for the "per account" dropdowns.
+  // A student can also have one Instagram account (`ig`) or only that (no TikTok accounts).
   const students = [...lib.groupAccounts(raw.accounts).values()].map((g) => {
     const accounts = g.accounts.map((a) => {
       const info = handleInfo.get(a.handle) || null;
-      return { ...a, info, ...numbers(history.get(a.handle) || [], posts.get(a.handle) || []),
+      return { ...a, key: a.handle, info, ...numbers(history.get(a.handle) || [], posts.get(a.handle) || []),
         isPrivate: info ? lib.truthy(info.is_private) : false, isOutlier: outliers.has(a.handle) };
     });
-    const main = accounts[0];
+    const ig = g.instagram ? igAccount(g.instagram) : null;
     const multi = accounts.length > 1;
+    const main = accounts[0] || { row: g.instagramRow, instagram: g.instagram, instagramRaw: g.instagram || "", ...numbers([], []) };
+    const parts = [...accounts, ...(ig ? [ig] : [])];
     const s = {
-      ...main, name: g.name, handle: g.key, handles: accounts.map((a) => a.handle), accounts, multi,
+      ...main, name: g.name, handle: g.key, handles: accounts.map((a) => a.handle), accounts, multi, ig, parts,
+      split: parts.length > 1,
       ...(multi ? numbers(lib.mergeSeries(accounts.map((a) => a.series)), accounts.flatMap((a) => a.posts)) : {}),
-      isPrivate: accounts.some((a) => a.isPrivate), isOutlier: accounts.some((a) => a.isOutlier),
+      isPrivate: parts.some((a) => a.isPrivate), isOutlier: accounts.some((a) => a.isOutlier),
       // The student's one Instagram account (tracked), the first row it is typed on, and what that cell holds now.
       instagram: g.instagram, instagramRow: g.instagramRow, instagramIssue: g.instagramIssue,
       igCurrent: main.instagram, igRaw: main.instagramRaw,
     };
-    s.warnings = warnings(s, cfg, now);
+    // `posts` stays the TikTok posts (views, tables, "verdwenen"); `allPosts` and `stats` (calendar, streak, missed days,
+    // "geen post", dagopdrachten) count a post on either platform.
+    s.allPosts = ig ? [...s.posts, ...ig.posts] : s.posts;
+    if (ig) s.stats = lib.studentStats(s.allPosts, cfg, now, tasks, { from: accounts.length ? null : igFrom });
+    s.warnings = warnings(s, cfg, now, igInfo.size > 0);
     return s;
   });
   const sorted = [...students].sort((x, y) => y.views - x.views || x.handle.localeCompare(y.handle));
   sorted.forEach((s, i) => { s.rank = i > 0 && sorted[i - 1].views === s.views ? sorted[i - 1].rank : i + 1; });
-  // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account).
-  const byHandle = new Map(students.flatMap((s) => s.handles.map((h) => [h, s])));
-  return { cfg, now, latest, final, students, posts, tags: lib.hashtagStats(posts), tasks, outliers, series: history,
+  // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account), and so does
+  // "instagram:<handle>" (the Instagram account's own row).
+  const byHandle = new Map(students.flatMap((s) => [...s.handles.map((h) => [h, s]), ...(s.ig ? [[s.ig.key, s]] : []), [s.handle, s]]));
+  return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tags: lib.hashtagStats(posts), tasks, outliers, series: history,
     taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle };
 }
 
-// "@a + @b" for a student with two accounts.
-const handlesText = (s) => s.handles.map((h) => "@" + h).join(" + ");
+// "@a + @b" for a student with two TikTok accounts; "· IG @c" adds the Instagram account.
+const handlesText = (s) => [s.handles.map((h) => "@" + h).join(" + "), s.ig ? `IG @${s.ig.handle}` : ""].filter(Boolean).join(" · ");
 
 // Warnings per student. `detail` (HTML) is what a click on the badge shows: which video, since when.
-function warnings(s, cfg, now) {
+function warnings(s, cfg, now, igFetched = true) {
   const out = [];
-  // Status per account; with two accounts the badge says which one.
+  // Status per account; with two accounts (or TikTok and Instagram) the badge says which one.
   for (const a of s.accounts) {
-    const which = s.multi ? ` (@${a.handle})` : "";
+    const which = s.multi ? ` (@${a.handle})` : s.ig ? " (TikTok)" : "";
     const status = String(a.info?.last_status ?? "");
     const sinceTs = lib.parseTs(a.info?.status_since);
     const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend (vóór deze versie niet bijgehouden)";
@@ -149,13 +199,29 @@ function warnings(s, cfg, now) {
     }
     if (!a.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald" + which, detail: "Wordt opgehaald bij de volgende profielrun." });
   }
-  const anyInfo = s.accounts.some((a) => a.info);
+  if (s.ig) {
+    const a = s.ig;
+    const status = String(a.info?.last_status ?? "");
+    const sinceTs = lib.parseTs(a.info?.status_since);
+    const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend";
+    if (a.isPrivate) {
+      out.push({ cls: "bad", kind: "private", text: "privé (Instagram)",
+        detail: `Instagram @${esc(a.handle)} staat op privé ${since}. Posts van een privé-account zijn niet te zien; zodra het account openbaar is, worden de nieuwste posts alsnog opgehaald.` });
+    }
+    if (status.startsWith("fout")) {
+      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden (Instagram)", title: status,
+        detail: `Instagram @${esc(a.handle)} niet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
+    }
+    // Before the very first Instagram run every student would get this badge; Overzicht shows one note instead.
+    if (!a.info && igFetched) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald (Instagram)", detail: "Wordt opgehaald bij de volgende Instagram-run." });
+  }
+  const anyInfo = s.accounts.some((a) => a.info) || Boolean(s.ig?.info);
   const today = lib.localDay(now);
   // Counted in days on which posting is expected: weekends and holidays (off_days) are left out.
   if (anyInfo && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
     out.push({ cls: "warn", kind: "quiet", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
-      title: "Weekenden en vakantiedagen tellen niet mee",
-      detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}. Weekenden en vakantiedagen tellen niet mee.`
+      title: s.ig ? "Weekenden en vakantiedagen tellen niet mee; TikTok en Instagram tellen allebei" : "Weekenden en vakantiedagen tellen niet mee",
+      detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}${s.ig ? ` op ${PLATFORM_NL[s.stats.lastPlatform]}` : ""}. Weekenden en vakantiedagen tellen niet mee. Een post op TikTok of Instagram telt.`
         : "Nog geen enkele campagnepost gezien." });
   }
   if (s.stats.missing) {
@@ -187,7 +253,7 @@ const warnDetails = (s) => `<ul class="warn-list">${s.warnings.filter((w) => w.d
   .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
-  <span class="chip-handle">${esc(s.handles.map((h) => "@" + h).join(" + "))}</span>${extra}</a>`;
+  <span class="chip-handle">${esc(handlesText(s))}</span>${extra}</a>`;
 
 // ---------- Overzicht ----------
 
@@ -206,12 +272,13 @@ function renderOverview(m) {
     tile("Leerlingen gevolgd", fmt(all.length), `${m.cfg.campaign.start} t/m ${m.cfg.campaign.end}`)
     + tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)),
       all.length ? `mediaan per leerling: <strong>${fmt(Math.round(lib.median(all.map((s) => s.views))))}</strong>` : "")
-    + tile("Posts", fmt(all.reduce((n, s) => n + s.stats.posts, 0)))
+    + tile("Posts", fmt(all.reduce((n, s) => n + s.stats.posts, 0)),
+      all.some((s) => s.ig) ? `TikTok ${fmt(all.reduce((n, s) => n + s.stats.tiktokPosts, 0))} · Instagram ${fmt(all.reduce((n, s) => n + s.stats.instagramPosts, 0))}` : "")
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
 
   const q = state.search.trim().toLowerCase().replace(/^@/, "");
   let rows = all.filter((s) => (!state.onlyWarn || s.warnings.length)
-    && (!q || s.handles.some((h) => h.includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
+    && (!q || s.handles.some((h) => h.includes(q)) || (s.ig && s.ig.handle.toLowerCase().includes(q)) || (s.name || "onbekend").toLowerCase().includes(q)));
   const { key, dir } = state.sort;
   const val = SORTS[key];
   rows = rows.sort((a, b) => {
@@ -226,6 +293,7 @@ function renderOverview(m) {
     th.querySelector("button").dataset.arrow = on ? (dir > 0 ? "▲" : "▼") : "";
   }
   renderActions(m);
+  $("ov-ig-note").hidden = m.igFetched || !all.some((s) => s.ig);
   $("ov-body").innerHTML = rows.map((s) => `
     <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.rank}</td>
@@ -238,25 +306,27 @@ function renderOverview(m) {
       <td class="num opt">${fmt(s.stats.likes)}</td>
       <td class="opt">${s.stats.lastDay ? dayLabel(s.stats.lastDay) : "–"}</td>
       <td class="wide-only">${warnButtons(s)}</td>
-    </tr>${state.open.has(s.handle) ? s.accounts.map((a) => `
-    <tr class="link sub-row" tabindex="0" data-handle="${esc(a.handle)}">
+    </tr>${state.open.has(s.handle) ? s.parts.map((a) => `
+    <tr class="link sub-row" tabindex="0" data-handle="${esc(a.key)}">
       <td></td>
-      <td><span class="sub-mark">↳</span> <span class="meta">${a.handle === s.handle ? "eerste account" : "tweede account"}</span><span class="phone-only meta">@${esc(a.handle)}</span></td>
+      <td><span class="sub-mark">↳</span> <span class="meta">${partLabel(s, a)}</span><span class="phone-only meta">@${esc(a.handle)}</span></td>
       <td class="handle wide-only">@${esc(a.handle)}</td>
-      <td class="num">${fmt(a.views)}</td>
-      <td class="num opt">${signed(a.gain)}</td>
-      <td class="num opt">${fmt(a.followers)}</td>
+      <td class="num">${a.platform === "instagram" ? "–" : fmt(a.views)}</td>
+      <td class="num opt">${a.platform === "instagram" ? "–" : signed(a.gain)}</td>
+      <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.followers)}</td>
       <td class="num">${fmt(a.stats.posts)}</td>
-      <td class="num opt">${fmt(a.stats.likes)}</td>
+      <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.stats.likes)}</td>
       <td class="opt">${a.stats.lastDay ? dayLabel(a.stats.lastDay) : "–"}</td>
       <td class="wide-only">${accountBadges(a)}</td>
     </tr>`).join("") : ""}${state.warnOpen === s.handle && s.warnings.length ? `<tr class="warn-detail"><td colspan="10">${warnDetails(s)}</td></tr>` : ""}`).join("")
     || `<tr><td colspan="10">Geen leerlingen gevonden.</td></tr>`;
 }
 
-// "▸ 2 accounts": shows or hides the per-account rows of a student with two accounts.
-const accToggle = (s, cls = "") => (s.multi ? `<button type="button" class="acc-toggle ${cls}" data-open="${esc(s.handle)}"
-  aria-expanded="${state.open.has(s.handle)}" title="Cijfers per account">${state.open.has(s.handle) ? "▾" : "▸"} ${s.accounts.length} accounts</button>` : "");
+// "▸ 2 accounts": shows or hides the per-account rows of a student with more than one account (two on TikTok, or TikTok and Instagram).
+const accToggle = (s, cls = "") => (s.split ? `<button type="button" class="acc-toggle ${cls}" data-open="${esc(s.handle)}"
+  aria-expanded="${state.open.has(s.handle)}" title="Cijfers per account">${state.open.has(s.handle) ? "▾" : "▸"} ${s.parts.length} accounts</button>` : "");
+// What a per-account row calls the account.
+const partLabel = (s, a) => (a.platform === "instagram" ? "Instagram" : s.multi ? (a.handle === s.handle ? "eerste account" : "tweede account") : "TikTok");
 // Status of one account (per-account rows).
 const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">privé</span>` : "",
   String(a.info?.last_status ?? "").startsWith("fout") ? `<span class="badge bad" title="${esc(a.info.last_status)}">niet gevonden</span>` : "",
@@ -264,8 +334,8 @@ const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">privé</spa
 
 // Vandaag (Amsterdam) for every tracked student: posts today, required (1 or the dagopdracht), done.
 function todayOf(m) {
-  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.posts,
-    accounts: s.accounts.map((a) => ({ handle: a.handle, isPrivate: a.isPrivate })) })),
+  const st = lib.todayStatus(m.cfg, m.students.map((s) => ({ handle: s.handle, posts: s.allPosts,
+    accounts: s.parts.map((a) => ({ handle: a.handle, isPrivate: a.isPrivate, platform: a.platform || "tiktok" })) })),
     m.tasks, m.now);
   st.byHandle = new Map(st.rows.map((r) => [r.handle, r]));
   st.inCampaign = st.day >= m.cfg.campaign.start && st.day <= m.cfg.campaign.end && !m.final;
@@ -307,7 +377,7 @@ const heatClass = (n) => (n >= 3 ? "p3" : n === 2 ? "p2" : n === 1 ? "p1" : "");
 
 function dayCellClass(s, day, today, cfg) {
   const n = s.stats.perDay.get(day) || 0;
-  const off = lib.isOffDay(cfg, day);
+  const off = s.stats.isOff(day);
   const task = s.stats.tasks.find((t) => t.date === day);
   const taskCls = task ? (task.status === "missed" ? " task task-miss" : " task") : "";
   if (day > today) return (off ? "future off" : "future") + taskCls;
@@ -322,10 +392,12 @@ function dayCellText(s, day, today, always = false) {
   return day > today ? "" : always || n > 1 ? String(n) : "";
 }
 
-// Title text of a calendar cell: date, number of posts, a dagopdracht and, on a free day, why it is free.
-function dayTitle(cfg, day, n, task = null) {
-  const free = lib.offDayName(cfg, day);
-  return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${free ? ` (vrij: ${free})` : ""}`
+// Title text of a calendar cell: date, number of posts (with the platforms when the student has Instagram too),
+// a dagopdracht and, on a free day, why it is free.
+function dayTitle(cfg, day, n, task = null, on = null, stats = null) {
+  const free = stats ? stats.offName(day) : lib.offDayName(cfg, day);
+  const split = on && n ? ` (${[on.tiktok && `${on.tiktok} op TikTok`, on.instagram && `${on.instagram} op Instagram`].filter(Boolean).join(", ")})` : "";
+  return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${split}${free ? ` (vrij: ${free})` : ""}`
     + (task ? ` · dagopdracht: minimaal ${task.min}${task.label ? ` (${task.label})` : ""}` : "");
 }
 
@@ -354,6 +426,7 @@ function renderStudents(m) {
     <div class="legend-row">
       <span><span class="sw p1"></span>1 post</span><span><span class="sw p2"></span>2</span><span><span class="sw p3"></span>3+</span>
       <span><span class="sw miss"></span>gemist</span><span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
+      <span>Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</span>
       ${m.tasks.length ? `<span><span class="sw task-miss"></span>dagopdracht niet gehaald (posts/minimum)</span>` : ""}
       <span>Dagen volgens Nederlandse tijd. Vandaag telt nog niet als gemist.</span>
       ${offDaysText(m.cfg) ? `<span>Vrij (posten mag, hoeft niet; telt wel mee voor de reeks, overslaan breekt de reeks niet): ${offDaysText(m.cfg)}.</span>` : ""}
@@ -365,25 +438,25 @@ function renderStudents(m) {
         <tbody>${list.map((s) => {
           // A student with two accounts: one row (a post on either account counts), plus a row per account when opened.
           const row = (x, sub) => `
-          <tr class="link${sub ? " sub-row" : ""}" tabindex="0" data-handle="${esc(x.handle)}">
-            <td class="name">${sub ? `<span class="sub-mark">↳</span> <span class="meta">@${esc(x.handle)}</span>`
+          <tr class="link${sub ? " sub-row" : ""}" tabindex="0" data-handle="${esc(sub ? x.key : x.handle)}">
+            <td class="name">${sub ? `<span class="sub-mark">↳</span> <span class="meta">${x.platform === "instagram" ? "Instagram " : ""}@${esc(x.handle)}</span>`
               : `${nameCell(s)}${accToggle(s)} <span class="meta" title="${esc(handlesText(s))}">${esc(handlesText(s))}</span>`}</td>
             ${days.map((d) => {
               const n = x.stats.perDay.get(d) || 0;
-              return `<td class="day ${dayCellClass(x, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${dayCellText(x, d, today)}</td>`;
+              return `<td class="day ${dayCellClass(x, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d), !sub && x.ig ? x.stats.byDay.get(d) : null, x.stats))}">${dayCellText(x, d, today)}</td>`;
             }).join("")}
             <td class="num">${sub ? x.stats.streak : `<strong>${x.stats.streak}</strong>`}</td>
             <td class="num">${x.stats.missedDays}</td>
             ${m.tasks.length ? `<td class="num">${x.stats.tasksMissed}</td>` : ""}
             <td class="num">${x.stats.posts}</td>
           </tr>`;
-          return row(s, false) + (state.open.has(s.handle) ? s.accounts.map((a) => row(a, true)).join("") : "");
+          return row(s, false) + (state.open.has(s.handle) ? s.parts.map((a) => row(a, true)).join("") : "");
         }).join("")}
         </tbody>
       </table>
     </div>
     <p class="hint">Klik op een leerling voor de details. Weekgrenzen (maandag) hebben een lijntje.
-      Twee accounts: een dag is blauw en telt voor de reeks als op één van de twee gepost is; met <em>▸ 2 accounts</em> zie je ze apart.</p>`;
+      Meer dan één account (twee op TikTok, of TikTok en Instagram): een dag is blauw en telt voor de reeks als op één van de accounts gepost is; met <em>▸ 2 accounts</em> zie je ze apart.</p>`;
 }
 
 function renderStudent(m, handle) {
@@ -393,11 +466,16 @@ function renderStudent(m, handle) {
     box.innerHTML = `<a class="back" href="#leerlingen">← Alle leerlingen</a><p>@${esc(handle)} wordt niet (meer) gevolgd.</p>`;
     return;
   }
-  // Two accounts: all together (default), or one of them (dropdown; opening the page via an
-  // account's own row selects that account).
-  if (s.multi && handle !== s.handle && state.account === null) state.account = handle;
-  const v = (s.multi && s.accounts.find((a) => a.handle === state.account)) || s;
+  // Several accounts (two on TikTok, or TikTok and Instagram): all together (default), or one of them (dropdown;
+  // opening the page via an account's own row selects that account).
+  if (s.split && handle !== s.handle && state.account === null) state.account = handle;
+  const v = (s.split && s.parts.find((a) => a.key === state.account)) || s;
   const st = v.stats;
+  const ig = s.ig;
+  const onIg = v.platform === "instagram";                      // the page shows the Instagram account alone
+  const showTT = !onIg && (v !== s || s.accounts.length > 0);   // TikTok numbers exist for what is shown
+  const showIg = Boolean(ig) && (onIg || v === s);
+  const tt = (label) => (ig ? `${label} (TikTok)` : label);
   const today = lib.localDay(m.now);
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   // Week calendar (Mon-Sun) over the campaign.
@@ -405,9 +483,14 @@ function renderStudent(m, handle) {
   const lead = (new Date(days[0] + "T00:00:00Z").getUTCDay() + 6) % 7;
   const cells = [...Array(lead).fill(`<div class="d out"></div>`), ...days.map((d) => {
     const n = st.perDay.get(d) || 0;
-    return `<div class="d ${dayCellClass(v, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d)))}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${dayCellText(v, d, today, true)}</b></div>`;
+    return `<div class="d ${dayCellClass(v, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d), v === s && ig ? st.byDay.get(d) : null, st))}">${shortDate.format(Date.parse(d + "T00:00:00Z"))}<b>${dayCellText(v, d, today, true)}</b></div>`;
   })];
-  const posts = [...v.posts].sort((a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0));
+  const newest = (a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0);
+  const posts = showTT ? [...v.posts].sort(newest) : [];
+  const igList = showIg ? [...ig.posts].sort(newest) : [];
+  const postsLine = `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}${v === s && ig && s.accounts.length ? ` · TikTok ${st.tiktokPosts}, Instagram ${st.instagramPosts}` : ""}`;
+  const igSince = ig && ig.baseline && ig.gained != null ? `${signed(ig.gained)} sinds ${shortDay(lib.localDay(ig.baseline.t))}` : "";
+  const partName = (a) => (a.platform === "instagram" ? `Instagram @${esc(a.handle)}` : `${ig ? "TikTok " : ""}@${esc(a.handle)}`);
   box.innerHTML = `
     <a class="back" href="#leerlingen">← Alle leerlingen</a>
     <div class="detail-head">
@@ -416,36 +499,38 @@ function renderStudent(m, handle) {
       ${s.instagram ? `<a href="${instagram(s.instagram)}" target="_blank" rel="noopener">@${esc(s.instagram)} op Instagram ↗</a>` : ""}
       ${badges(s.warnings)}
     </div>
-    ${s.multi ? `<div class="controls"><label class="acc-select">Cijfers van <select id="st-account">
-      <option value="">beide accounts samen</option>${s.accounts.map((a) => `<option value="${esc(a.handle)}"${v === a ? " selected" : ""}>alleen @${esc(a.handle)}</option>`).join("")}
-    </select></label>${v !== s ? `<span class="meta">Positie en waarschuwingen gelden voor de leerling (beide accounts samen).</span>` : ""}</div>` : ""}
+    ${s.split ? `<div class="controls"><label class="acc-select">Cijfers van <select id="st-account">
+      <option value="">${ig ? "alle accounts samen (TikTok en Instagram)" : "beide accounts samen"}</option>${s.parts.map((a) => `<option value="${esc(a.key)}"${v === a ? " selected" : ""}>alleen ${partName(a)}</option>`).join("")}
+    </select></label>${v !== s ? `<span class="meta">Positie en waarschuwingen gelden voor de leerling (alle accounts samen).</span>` : ""}</div>` : ""}
     ${s.warnings.some((w) => w.detail) ? warnDetails(s) : ""}
     <div class="tiles">
-      ${tile("Positie", s.rank, `van ${m.students.length}`)}
-      ${tile("Weergaven", fmt(v.views), v.gain == null ? "" : `${signed(v.gain)} in 24 uur`)}
-      ${tile("Posts", fmt(st.posts), `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}`)}
+      ${showTT ? tile("Positie", s.rank, `van ${m.students.length}`) : ""}
+      ${showTT ? tile(tt("Weergaven"), fmt(v.views), v.gain == null ? "" : `${signed(v.gain)} in 24 uur`) : ""}
+      ${tile("Posts", fmt(st.posts), postsLine)}
       ${tile("Gemiste dagen", fmt(st.missedDays), "tot en met gisteren, zonder vrije dagen")}
       ${tile("Reeks", fmt(st.streak), `langste: ${st.longest}`)}
       ${st.tasks.length ? tile("Dagopdrachten", `${st.tasks.filter((t) => t.status === "reached").length}/${st.tasks.filter((t) => t.status !== "pending").length}`,
         st.tasksMissed ? `niet gehaald: ${st.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)} (${t.count}/${t.min})`).join(", ")}` : "gehaald") : ""}
-      ${tile("Gem. weergaven/post", fmt(st.avgViews))}
-      ${tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee")}
-      ${tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven")}
-      ${tile("Volgers", fmt(v.followers), v === s && s.multi ? "beide accounts opgeteld" : "")}
-      ${tile("Beste video", st.best ? `<a href="${tiktok(st.best.handle || s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
-        st.best ? `geplaatst ${stampFmt.format(st.best.created)}${s.multi ? ` op @${esc(st.best.handle)}` : ""}` : "")}
+      ${showTT ? tile("Gem. weergaven/post", fmt(st.avgViews)) : ""}
+      ${showTT ? tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee") : ""}
+      ${showTT ? tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven") : ""}
+      ${showTT ? tile(tt("Volgers"), fmt(v.followers), v === s && s.multi ? "beide accounts opgeteld" : "") : ""}
+      ${showIg ? tile("Volgers (Instagram)", fmt(ig.followers), igSince) : ""}
+      ${showTT ? tile("Beste video", st.best ? `<a href="${tiktok(st.best.handle || s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
+        st.best ? `geplaatst ${stampFmt.format(st.best.created)}${s.multi ? ` op @${esc(st.best.handle)}` : ""}` : "") : ""}
     </div>
     <div class="grid2">
       <div class="card">
         <h3 style="margin-top:0">Kalender</h3>
         <div class="cal">${["ma", "di", "wo", "do", "vr", "za", "zo"].map((d) => `<div class="dow">${d}</div>`).join("")}${cells.join("")}</div>
         ${st.missedList.length ? `<p class="hint">Gemist: ${st.missedList.map((d) => shortDate.format(Date.parse(d + "T00:00:00Z"))).join(", ")}</p>` : ""}
+        ${ig ? `<p class="hint">Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</p>` : ""}
       </div>
       <div class="card">
         <h3 style="margin-top:0">Hashtags</h3>
         <div class="chips">${st.tags.map(([t, n]) => `<span class="chip">#${esc(t)}<span class="chip-n">${n}×</span></span>`).join("") || `<span class="meta">Nog geen hashtags.</span>`}</div>
-        <h3>Totaal</h3>
-        <p class="meta">${fmt(st.likes)} likes · ${fmt(st.comments)} reacties · ${fmt(st.shares)} keer gedeeld</p>
+        ${showTT ? `<h3>Totaal</h3>
+        <p class="meta">${fmt(st.likes)} likes · ${fmt(st.comments)} reacties · ${fmt(st.shares)} keer gedeeld${ig ? " (TikTok)" : ""}</p>` : ""}
       </div>
     </div>
     <div id="st-videos" class="card" hidden>
@@ -453,13 +538,13 @@ function renderStudent(m, handle) {
       <p class="hint" id="st-videos-note"></p>
       <div class="chart-box"><canvas id="st-videos-chart" aria-label="Weergaven per video over tijd"></canvas></div>
     </div>
-    <h3>Posts in de campagne (${posts.length})</h3>
+    ${showTT ? `<h3>${ig ? "TikTok-posts" : "Posts"} in de campagne (${posts.length})</h3>
     <div class="table-wrap">
       <table class="board small">
         <thead><tr><th>Geplaatst</th><th class="num">Weergaven</th><th class="num">Likes</th><th class="num opt">Reacties</th><th class="num opt">Gedeeld</th><th class="num opt">Engagement</th><th>Hashtags</th><th></th></tr></thead>
         <tbody>${posts.map((p) => {
-          const v = lib.toNum(p.views) || 0;
-          const eng = v ? ((lib.toNum(p.likes) || 0) + (lib.toNum(p.comments) || 0) + (lib.toNum(p.shares) || 0)) / v : null;
+          const views = lib.toNum(p.views) || 0;
+          const eng = views ? ((lib.toNum(p.likes) || 0) + (lib.toNum(p.comments) || 0) + (lib.toNum(p.shares) || 0)) / views : null;
           const t = lib.parseTs(p.created_at);
           const flags = [p.post_type && p.post_type !== "video" ? `<span class="badge info">${esc(p.post_type)}</span>` : "",
             lib.truthy(p.pinned) ? `<span class="badge info">📌 vastgezet</span>` : "",
@@ -476,7 +561,23 @@ function renderStudent(m, handle) {
           </tr>`;
         }).join("") || `<tr><td colspan="8">Nog geen posts gezien.</td></tr>`}</tbody>
       </table>
-    </div>`;
+    </div>` : ""}
+    ${showIg ? `<h3>Instagram-posts in de campagne (${igList.length})</h3>
+    <div class="table-wrap">
+      <table class="board small" id="st-ig-posts">
+        <thead><tr><th>Geplaatst</th><th>Soort</th><th>Hashtags</th><th></th></tr></thead>
+        <tbody>${igList.map((p) => {
+          const t = lib.parseTs(p.created_at);
+          return `<tr>
+            <td>${t ? stampFmt.format(t) : "–"}</td>
+            <td>${esc(IG_TYPE_NL[p.post_type] || p.post_type || "–")}</td>
+            <td>${String(p.hashtags || "").split(/\s+/).filter(Boolean).map((x) => "#" + esc(x)).join(" ")}</td>
+            <td><a href="${esc(instagramPost(p))}" target="_blank" rel="noopener">open ↗</a></td>
+          </tr>`;
+        }).join("") || `<tr><td colspan="4">Nog geen posts gezien.</td></tr>`}</tbody>
+      </table>
+    </div>
+    <p class="hint">Instagram geeft alleen de posts zelf, geen likes, reacties of weergaven. Alleen posts vanaf ${esc(dayLabel(m.cfg.instagram?.startDate || m.cfg.campaign.start))} tellen mee. Stories worden niet meegeteld.</p>` : ""}`;
 }
 
 // ---------- Hashtags ----------
@@ -935,12 +1036,13 @@ let videoChart = null;
 function renderStudentVideos(m, s) {
   const box = $("st-videos");
   if (!box || typeof Chart === "undefined") return;
+  if (String(state.account || "").startsWith("instagram:")) return; // the Instagram account alone: no TikTok videos
   if (!state.postHistory) {
     loadPostHistory().then(() => state.view === "leerlingen" && m.byHandle.get(state.detail) === s && renderStudentVideos(m, s)).catch(() => {});
     return;
   }
   const ref = m.latest || Date.now();
-  const shown = (s.multi && s.accounts.find((a) => a.handle === state.account)) || s;
+  const shown = (s.multi && s.accounts.find((a) => a.key === state.account)) || s;
   const series = shown.posts.map((p) => ({ p, pts: (state.postHistory.byVideo.get(String(p.video_id)) || []).filter((x) => x.t <= ref) }))
     .filter((x) => x.pts.length);
   if (!series.length) return;
@@ -983,10 +1085,13 @@ function renderToday(m) {
   const cool = m.cfg.todayCheck?.cooldownMinutes ?? 10;
   const day = longDate.format(Date.parse(st.day + "T00:00:00Z"));
   const post = (s) => {
-    const list = s.posts.map((p) => ({ p, t: lib.parseTs(p.created_at) })).filter((x) => x.t !== null && lib.localDay(x.t) === st.day)
+    const list = s.allPosts.map((p) => ({ p, t: lib.parseTs(p.created_at) })).filter((x) => x.t !== null && lib.localDay(x.t) === st.day)
       .sort((a, b) => b.t - a.t);
     return list[0] || null;
   };
+  // Where the latest post of today was made: the platform when the student has both, the account when they have two.
+  const where = (s, p) => (p.platform === "instagram" ? " op Instagram" : s.ig ? ` op TikTok${s.multi ? " @" + esc(p.handle) : ""}` : s.multi ? ` op @${esc(p.handle)}` : "");
+  const href = (p) => (p.platform === "instagram" ? instagramPost(p) : tiktok(p.handle, p.video_id));
   const sorted = [...m.students].sort(byName);
   const todo = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return !r.done && !r.private; });
   const done = sorted.filter((s) => { const r = st.byHandle.get(s.handle); return r.done && !r.private; });
@@ -998,13 +1103,15 @@ function renderToday(m) {
   const item = (s) => {
     const last = post(s);
     return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span>
-      ${last ? `<span class="meta">· ${hourFmt.format(last.t)}${s.multi ? ` op @${esc(last.p.handle)}` : ""}</span> <a href="${tiktok(last.p.handle, last.p.video_id)}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
+      ${last ? `<span class="meta">· ${hourFmt.format(last.t)}${where(s, last.p)}</span> <a href="${esc(href(last.p))}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
   };
   $("td-title").textContent = `Vandaag, ${day}`;
   $("td-info").innerHTML = !st.inCampaign ? "Vandaag is geen campagnedag."
     : st.task ? `<strong>Dagopdracht:</strong> minimaal ${st.task.min} posts${st.task.label ? ` (${esc(st.task.label)})` : ""}. Klaar = ${st.task.min} posts vandaag.`
-    : st.offDay ? `Vrije dag (${esc(lib.offDayName(m.cfg, st.day))}): posten hoeft vandaag niet.` : "Klaar = vandaag minstens één post.";
-  $("td-checked").textContent = m.latest ? hourFmt.format(m.latest) : "nog niet";
+    : st.offDay ? `Vrije dag (${esc(lib.offDayName(m.cfg, st.day))}): posten hoeft vandaag niet.` : "Klaar = vandaag minstens één post (op TikTok of Instagram).";
+  $("td-checked").textContent = m.igFetched
+    ? `TikTok ${m.latest ? hourFmt.format(m.latest) : "nog niet"} · Instagram ${m.latestIg ? hourFmt.format(m.latestIg) : "nog niet"}`
+    : m.latest ? hourFmt.format(m.latest) : "nog niet";
   $("td-sched").textContent = ["tiktok", "instagram"].map((pl) => `${PLATFORM_NL[pl]} ${FREQ_NL[m.cfg.frequency[pl]] || m.cfg.frequency[pl]}`).join(", ");
   $("td-todo-title").textContent = st.task ? `Nog niet klaar (minder dan ${st.task.min} posts)` : "Nog niet gepost";
   $("td-done-title").textContent = st.task ? "Klaar" : "Gepost";
@@ -1103,9 +1210,12 @@ function renderSignals(m) {
 
 // ---------- Export ----------
 
+// posts, dagen_met_post, gemiste_dagen, huidige_reeks, langste_reeks, laatste_post, hashtags and opdrachten_niet_gehaald count both
+// platforms; weergaven, volgers, likes, reacties, gedeeld, engagement and beste_video are TikTok only (Instagram has none of these).
 const EXPORT_HEADER = ["naam", "handle", "positie", "weergaven", "volgers", "posts", "dagen_met_post", "gemiste_dagen", "opdrachten_niet_gehaald",
   "huidige_reeks", "langste_reeks", "gem_weergaven_per_post", "mediaan_weergaven_per_video", "likes", "reacties", "gedeeld", "engagement_pct",
-  "beste_video", "beste_video_weergaven", "laatste_post", "hashtags", "privé", "let_op"];
+  "beste_video", "beste_video_weergaven", "laatste_post", "hashtags", "privé", "let_op",
+  "tiktok_posts", "instagram_handle", "instagram_posts", "instagram_volgers", "instagram_volgers_sinds_start"];
 
 function exportRows(m) {
   return [...m.students].sort(byName).map((s) => {
@@ -1115,7 +1225,8 @@ function exportRows(m) {
       st.engagement == null ? null : Math.round(st.engagement * 1000) / 10,
       st.best ? tiktok(st.best.handle || s.handle, st.best.id) : "", st.best ? st.best.views : null, st.lastDay || "",
       st.tags.slice(0, 10).map(([t]) => "#" + t).join(" "), s.isPrivate ? "ja" : "nee",
-      s.warnings.map((w) => w.text).join("; ")];
+      s.warnings.map((w) => w.text).join("; "),
+      st.tiktokPosts, s.ig ? "@" + s.ig.handle : "", s.ig ? st.instagramPosts : null, s.ig ? s.ig.followers : null, s.ig ? s.ig.gained : null];
   });
 }
 

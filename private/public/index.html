@@ -37,6 +37,7 @@
     <section id="view-overzicht" class="view" hidden>
       <h2 class="final-title" id="ov-final" hidden></h2>
       <div class="tiles" id="ov-tiles"></div>
+      <p class="banner" id="ov-ig-note" role="status" hidden>Instagram is nog niet opgehaald: de eerste Instagram-run moet nog komen. Daarna tellen Instagram-posts mee voor de kalender, de reeks en Vandaag.</p>
       <div class="card actions" id="ov-actions"></div>
       <div class="controls">
         <input type="search" id="ov-search" placeholder="Zoek op naam of handle" aria-label="Zoeken">
@@ -52,7 +53,7 @@
               <th class="num" data-sort="views"><button type="button" class="sort">Weergaven</button></th>
               <th class="num opt" data-sort="gain"><button type="button" class="sort">+ 24 uur</button></th>
               <th class="num opt" data-sort="followers"><button type="button" class="sort">Volgers</button></th>
-              <th class="num" data-sort="posts"><button type="button" class="sort">Posts</button></th>
+              <th class="num" data-sort="posts" title="Posts op TikTok en Instagram samen"><button type="button" class="sort">Posts</button></th>
               <th class="num opt" data-sort="likes"><button type="button" class="sort">Likes</button></th>
               <th class="opt" data-sort="last"><button type="button" class="sort">Laatste post</button></th>
               <th class="wide-only" data-sort="warnings"><button type="button" class="sort">Let op</button></th>
@@ -70,6 +71,7 @@
         <p id="td-info"></p>
         <p class="meta">Laatst gecontroleerd: <strong id="td-checked"></strong> (de laatste ophaalrun). Geplande runs: <span id="td-sched"></span>.</p>
         <p class="buttons"><button type="button" class="btn primary" id="td-check">🔎 Controleer nu</button> <span class="meta" id="td-cost"></span></p>
+        <p class="hint">Een post op TikTok of Instagram telt. «Controleer nu» haalt alleen de TikTok-accounts op; Instagram wordt door de geplande runs bijgewerkt. Stories worden niet meegeteld.</p>
         <p class="hint">Haalt nu alleen de profielen op van wie vandaag nog niet (genoeg) gepost heeft: 1 record per account, dus goedkoper naarmate de lijst korter wordt. Een controle duurt ongeveer <strong>5–7 minuten</strong> voordat de cijfers hier staan; de pagina ververst vanzelf als de run klaar is.</p>
         <p class="status" id="td-msg" role="status"></p>
       </div>

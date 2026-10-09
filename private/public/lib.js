@@ -140,10 +140,15 @@ function markInstagram(e, seenIg) {
   e.instagramTracked = true;
 }
 
+/** Key of a student with only an Instagram account (no TikTok handle): "instagram:<handle>". */
+export const instagramKey = (handle) => `instagram:${handle}`;
+
 /**
  * Tracked accounts per student: Map(group -> { key, name, accounts, instagram, instagramRow, instagramIssue })
  * with the main account first. key = the main account's handle; name = the name on the main account's row;
  * instagram = the student's Instagram handle (from the main account's row), or null.
+ * A student with only an Instagram account (active row, no TikTok handle) is a group too: key
+ * "instagram:<handle>", accounts empty. Same grouping as collector/handles.py.
  */
 export function groupAccounts(accounts) {
   const groups = new Map();
@@ -159,7 +164,18 @@ export function groupAccounts(accounts) {
     g.instagramRow = main.row;
     g.instagramIssue = main.instagramIssue || null;
   }
+  for (const a of accounts.filter((x) => !x.handle && x.instagramTracked)) {
+    const key = instagramKey(a.instagram);
+    groups.set(key, { key, name: a.name, accounts: [], instagram: a.instagram, instagramRow: a.row, instagramIssue: null });
+  }
   return groups;
+}
+
+/** Rows of the public ig_posts tab as posts for studentStats: marked platform "instagram", with the fields
+ * the page reads (video_id = post_id, so a post can be found by one key on both platforms). */
+export function instagramPosts(rows) {
+  return (rows || []).filter((r) => String(r.post_id ?? "").trim())
+    .map((r) => ({ ...r, platform: "instagram", video_id: String(r.post_id) }));
 }
 
 /**
@@ -424,18 +440,29 @@ export function offDayName(cfg, day) {
   return isOffDay(cfg, day) ? "weekend" : null;
 }
 
+/** An Instagram post (rows of ig_posts, marked platform: "instagram"); anything else is a TikTok post. */
+export const isInstagramPost = (p) => p.platform === "instagram";
+
 /**
- * Posts of one account (campaign posts from posts_latest) -> calendar and grading numbers.
+ * Posts of one account, or of a student's accounts together (TikTok posts from posts_latest, Instagram posts
+ * marked platform: "instagram") -> calendar and grading numbers.
+ * A day counts as posted when there is at least one post on ANY platform; the streak, missed days, "geen post"
+ * and dagopdrachten all follow from that. Views, likes, comments, shares, engagement and the best video exist
+ * for TikTok only (an Instagram record has no likes or views), so those only add up TikTok posts.
  * Days are Amsterdam dates. Today is never counted as missed (the day isn't over), and neither is
  * a free day (isOffDay): a post on it extends the streak, no post simply doesn't count.
+ * options.from: first day that can be judged (the Instagram start date for a student with only Instagram:
+ * nothing was measured before it). Earlier days count as free: never missed, never a broken streak.
  */
-export function studentStats(posts, cfg, nowMs, assignments = []) {
+export function studentStats(posts, cfg, nowMs, assignments = [], { from = null } = {}) {
   const days = campaignDays(cfg);
   const today = localDay(nowMs);
   const perDay = new Map(days.map((d) => [d, 0]));
-  let views = 0, likes = 0, comments = 0, shares = 0, best = null, last = null, missing = 0;
+  const byDay = new Map(); // day -> { tiktok, instagram }: which platform the posts of a day were on
+  let views = 0, likes = 0, comments = 0, shares = 0, best = null, last = null, lastPlatform = null, missing = 0;
   const tags = new Map();
   const counted = [];
+  const tiktok = [];
   for (const p of posts) {
     const t = parseTs(p.created_at);
     if (t === null) continue;
@@ -443,20 +470,26 @@ export function studentStats(posts, cfg, nowMs, assignments = []) {
     if (!perDay.has(day)) continue;
     counted.push(p);
     perDay.set(day, perDay.get(day) + 1);
+    const on = byDay.get(day) || { tiktok: 0, instagram: 0 };
+    on[isInstagramPost(p) ? "instagram" : "tiktok"]++;
+    byDay.set(day, on);
+    if (last === null || t > last) { last = t; lastPlatform = isInstagramPost(p) ? "instagram" : "tiktok"; }
+    for (const tag of new Set(String(p.hashtags ?? "").toLowerCase().split(/\s+/).filter(Boolean))) {
+      tags.set(tag, (tags.get(tag) || 0) + 1);
+    }
+    if (isInstagramPost(p)) continue;
+    tiktok.push(p);
     const v = toNum(p.views) || 0;
     views += v;
     likes += toNum(p.likes) || 0;
     comments += toNum(p.comments) || 0;
     shares += toNum(p.shares) || 0;
     if (!best || v > best.views) best = { id: String(p.video_id), handle: String(p.handle ?? ""), views: v, created: t };
-    if (last === null || t > last) last = t;
     if (String(p.missing_since ?? "").trim()) missing++;
-    for (const tag of new Set(String(p.hashtags ?? "").toLowerCase().split(/\s+/).filter(Boolean))) {
-      tags.set(tag, (tags.get(tag) || 0) + 1);
-    }
   }
   const past = days.filter((d) => d < today);
-  const off = (day) => isOffDay(cfg, day);
+  const off = (day) => (from !== null && day < from) || isOffDay(cfg, day);
+  const offName = (day) => offDayName(cfg, day) || (from !== null && day < from ? "nog niet gevolgd" : null);
   const missed = past.filter((d) => perDay.get(d) === 0 && !off(d));
   // Streak = days with a post, counted back from today (from the last campaign day once it is over).
   // Only a missed day breaks it: nothing yet today and free days without a post are skipped.
@@ -485,17 +518,17 @@ export function studentStats(posts, cfg, nowMs, assignments = []) {
     return { ...a, count, status: count >= a.min ? "reached" : a.date < today ? "missed" : "pending" };
   });
   return {
-    perDay, today,
-    posts: counted.length,
+    perDay, byDay, today, isOff: off, offName,
+    posts: counted.length, tiktokPosts: tiktok.length, instagramPosts: counted.length - tiktok.length,
     daysPosted: days.filter((x) => x <= today && perDay.get(x) > 0).length,
     missedDays: missed.length, missedList: missed,
     streak, longest,
     views, likes, comments, shares,
-    avgViews: counted.length ? Math.round(views / counted.length) : null,
+    avgViews: tiktok.length ? Math.round(views / tiktok.length) : null,
     // Views of the typical video: unlike the average, one viral video hardly moves it.
-    medianViews: counted.length ? Math.round(median(counted.map((p) => toNum(p.views) || 0))) : null,
+    medianViews: tiktok.length ? Math.round(median(tiktok.map((p) => toNum(p.views) || 0))) : null,
     engagement: views ? (likes + comments + shares) / views : null,
-    best, last, lastDay,
+    best, last, lastDay, lastPlatform,
     quietDays,
     daysSinceLast: !campaignStarted ? null : lastDay ? dayDiff(today, lastDay) : dayDiff(today, cfg.campaign.start),
     missing,
@@ -545,10 +578,11 @@ export function median(values) {
 }
 
 /**
- * Vandaag: per student the campaign posts of today (Amsterdam, all their accounts together), how
- * many are needed (1, or the dagopdracht minimum) and whether that is reached. Private accounts
- * can't be checked. students: [{ handle, posts, isPrivate, accounts?: [{ handle, isPrivate }] }].
- * Returns { day, task, offDay, rows }.
+ * Vandaag: per student the campaign posts of today (Amsterdam, all their accounts together, TikTok and
+ * Instagram), how many are needed (1, or the dagopdracht minimum) and whether that is reached. Private accounts
+ * can't be checked. students: [{ handle, posts, isPrivate, accounts?: [{ handle, isPrivate, platform? }] }].
+ * "checkable" lists the TikTok accounts "Controleer nu" can fetch (its Instagram part comes with the
+ * frequency settings). Returns { day, task, offDay, rows }.
  */
 export function todayStatus(cfg, students, assignments, nowMs) {
   const day = localDay(nowMs);
@@ -558,7 +592,8 @@ export function todayStatus(cfg, students, assignments, nowMs) {
     const today = (s.posts || []).map((p) => parseTs(p.created_at)).filter((t) => t !== null && localDay(t) === day).sort((a, b) => a - b);
     const accounts = s.accounts || [{ handle: s.handle, isPrivate: s.isPrivate }];
     return { handle: s.handle, count: today.length, required, done: today.length >= required,
-      private: accounts.every((a) => a.isPrivate), checkable: accounts.filter((a) => !a.isPrivate).map((a) => a.handle),
+      private: accounts.every((a) => a.isPrivate),
+      checkable: accounts.filter((a) => !a.isPrivate && a.platform !== "instagram").map((a) => a.handle),
       first: today[0] ?? null, last: today.at(-1) ?? null };
   });
   return { day, task, offDay: isOffDay(cfg, day), rows };

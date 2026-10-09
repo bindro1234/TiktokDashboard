@@ -29,7 +29,13 @@ Object.assign(accountsSheet[0], { instagram_handle: "@Anna.Gram" });
 Object.assign(accountsSheet[1], { instagram_handle: "https://www.instagram.com/bram.ig/?igsh=x" });
 Object.assign(accountsSheet[2], { instagram_handle: "chris.ig" });
 Object.assign(accountsSheet[3], { instagram_handle: "https://www.instagram.com/p/DeRh47eptOn" }); // a post link: invalid
+// Pim has only Instagram (no TikTok handle at all).
+accountsSheet.push({ _row: 17, student_name: "Pim", tiktok_handle: "", instagram_handle: "@Pim.Only", active: "ja" });
+// Instagram counts from this day (the real config says 2026-10-07; earlier here so the calendar can show posts on both platforms).
+const IG_START = "2026-09-30";
+const igConfig = { ...CFG.instagram, startDate: IG_START };
 const tracked = lib.parseAccounts(accountsSheet).filter((a) => a.tracked).map((a) => a.handle);
+const igTracked = lib.parseAccounts(accountsSheet).filter((a) => a.instagramTracked).map((a) => a.instagram);
 const students = lib.groupAccounts(lib.parseAccounts(accountsSheet)).size; // rows per student
 const tagsPool = ["fyp", "glu", "schoolproject", "viral", "tiktoknl", "sport"];
 const posts = [], history = [];
@@ -63,9 +69,31 @@ tracked.forEach((h, i) => {
       followers: 50 + i * 20 + d * 3, campaign_likes: mine.reduce((s, p) => s + p.likes, 0), campaign_posts: mine.length });
   }
 });
+// Instagram posts (ig_posts): Anna posts on Instagram on 30 Sep, 1 and 2 Oct (next to TikTok), Chris posts on Instagram on two of
+// the days he missed on TikTok, Bram has none, Pim (only Instagram) posts on 30 Sep and 2 Oct plus two posts on 5 Oct.
+const igPosts = [], igHistory = [];
+const igPost = (handle, iso, type = "reel", tags = "glu fotografie") => igPosts.push({ post_id: String(3000000000000000000n + BigInt(igPosts.length)), handle,
+  created_at: iso, post_type: type, hashtags: tags, url: `https://www.instagram.com/${type === "reel" ? "reel" : "p"}/X${igPosts.length}/`, first_seen: iso, last_seen: iso });
+for (const day of ["2026-09-30", "2026-10-01", "2026-10-02"]) igPost("anna.gram", `${day}T09:15:00Z`);
+const chrisMissed = lib.studentStats(posts.filter((p) => p.handle === "test_03"), CFG, NOW, []).missedList;
+const chrisRescued = chrisMissed.slice(0, 2);
+for (const day of chrisRescued) igPost("chris.ig", `${day}T12:00:00Z`, "photo");
+for (const day of ["2026-09-30", "2026-10-02"]) igPost("pim.only", `${day}T14:00:00Z`, "carousel");
+igPost("pim.only", "2026-10-05T08:00:00Z"); igPost("pim.only", "2026-10-05T18:00:00Z");
+igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo"); // today: reaches the dagopdracht (2)
+igTracked.forEach((h, i) => {
+  for (const day of ["2026-09-30", "2026-10-07"]) {
+    igHistory.push({ timestamp: `${day}T05:00:00Z`, handle: h, followers: 100 + i * 10 + (day === "2026-10-07" ? 7 : 0), following: 50, posts_count: 20,
+      is_private: false, campaign_posts: igPosts.filter((p) => p.handle === h).length });
+  }
+});
+const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: "2026-09-30T05:00:00Z", baseline_followers: 100 + i * 10 }));
 // Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
 Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
 Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
+const igHandles = igTracked.map((h, i) => ({ handle: h, is_private: h === "bram.ig", followers: 100 + i * 10 + 7, last_scraped: "",
+  last_status: h === "bram.ig" ? "privé" : h === "chris.ig" ? "fout: dead_page: not found" : "ok",
+  status_since: h === "bram.ig" ? "2026-10-04T08:00:00Z" : h === "chris.ig" ? "2026-10-05T14:00:00Z" : "2026-09-30T06:00:00Z" }));
 const handles = tracked.map((h, i) => ({ handle: h, is_private: i === 1, followers: 50 + i * 20, last_scraped: "",
   last_status: i === 1 ? "privé" : i === 2 ? "fout: dead_page: not found" : "ok",
   status_since: i === 1 ? "2026-10-03T08:00:00Z" : i === 2 ? "2026-10-05T14:00:00Z" : "2026-09-28T06:00:00Z" }));
@@ -94,9 +122,9 @@ function api(req, body) {
     return [200, { me: "docent@school.nl", serverTime: NOW,
       config: { campaign: CFG.campaign, budget: CFG.budget, schedule: CFG.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
         forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
-        frequency: CFG.frequency, instagram: CFG.instagram },
+        frequency: CFG.frequency, instagram: igConfig },
       finale, finaleHasRun,
-      accounts, handles, history, posts, runLog, activity,
+      accounts, handles, history, posts, igHandles, igHistory, igPosts, igBaseline, runLog, activity,
       budget: lib.budget(CFG, runLog, { tiktok: tracked.length, instagram: accounts.filter((a) => a.instagramTracked).length }, NOW),
       lastProfilesRun: lib.lastProfilesRun(runLog), lastInstagramRun: null,
       lastTodayCheck: null, tasks, outliers: [...outliers] }];
@@ -212,6 +240,24 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
   await page.close();
 }
 
+// Student pages at phone size (the Instagram table and tiles must not push the page sideways), also the sub-rows of Overzicht.
+{
+  const sp = await open({ width: 390, height: 844 }, "#leerlingen/test_01");
+  await sp.waitForSelector("#st-ig-posts");
+  if (!(await noHScroll(sp))) fail("390px: student page with Instagram scrolls sideways");
+  await sp.evaluate(() => { location.hash = "leerlingen/instagram:pim.only"; });
+  await sp.waitForSelector("#st-ig-posts");
+  if (!(await noHScroll(sp))) fail("390px: Instagram-only student page scrolls sideways");
+  await sp.evaluate(() => { location.hash = "overzicht"; });
+  await sp.waitForSelector('#ov-body button[data-open="test_01"]');
+  await sp.click('#ov-body button[data-open="test_01"]');
+  if (!(await noHScroll(sp))) fail("390px: Overzicht with the Instagram sub-row scrolls sideways");
+  if (process.env.SHOTS) await sp.screenshot({ path: `${process.env.SHOTS}/private-overzicht-sub-390px.png`, fullPage: true });
+  if (sp.errors.length) fail(`390px student pages: browser errors: ${sp.errors.join(" | ")}`);
+  console.log("390px: student pages and Overzicht sub-rows fit");
+  await sp.close();
+}
+
 const page = await open({ width: 1280, height: 900 }, "#overzicht");
 await page.waitForSelector("#ov-body tr[data-handle]");
 const rows = await page.$$eval("#ov-body tr[data-handle]", (r) => r.length);
@@ -224,7 +270,10 @@ if (!annaRow.includes("@test_01 + @test_13")) fail(`overzicht: two accounts not 
 await page.click('#ov-body td.wide-only button[data-open="test_01"]');
 const subRows = await page.$$eval("#ov-body tr.sub-row", (r) => r.map((x) => x.dataset.handle));
 console.log(`overzicht: Anna = @test_01 + @test_13, per account: ${subRows.join(", ")}`);
-if (subRows.join() !== "test_01,test_13") fail(`overzicht: per-account rows wrong (${subRows})`);
+if (!annaRow.includes("IG @anna.gram")) fail(`overzicht: Anna's Instagram handle not shown (${annaRow.slice(0, 120)})`);
+if (subRows.join() !== "test_01,test_13,instagram:anna.gram") fail(`overzicht: per-account rows wrong (${subRows})`);
+const igSub = await page.textContent('#ov-body tr.sub-row[data-handle="instagram:anna.gram"]');
+if (!/Instagram/.test(igSub) || !igSub.includes("@anna.gram")) fail(`overzicht: Instagram sub-row wrong (${igSub.slice(0, 100)})`);
 const sumOk = await page.evaluate(() => {
   const num = (tr) => Number(tr.children[3].textContent.replace(/\D/g, ""));
   const subs = [...document.querySelectorAll("#ov-body tr.sub-row")];
@@ -232,13 +281,18 @@ const sumOk = await page.evaluate(() => {
 });
 if (!sumOk) fail("overzicht: Anna's views are not the sum of her two accounts");
 await page.click('#ov-body td.wide-only button[data-open="test_01"]');
-for (const w of ["privé", "niet gevonden", "verdwenen", "geen post"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+for (const w of ["privé", "niet gevonden", "verdwenen", "geen post", "privé (Instagram)", "niet gevonden (Instagram)", "privé (TikTok)"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+// Pim has only Instagram: a row with the Instagram handle, no TikTok handle.
+const pimRow = await page.textContent('#ov-body tr[data-handle="instagram:pim.only"]');
+if (!pimRow.includes("IG @pim.only") || pimRow.includes("@test")) fail(`overzicht: Instagram-only student wrong (${pimRow.slice(0, 120)})`);
+if (!(await page.textContent("#ov-tiles")).includes("TikTok") || !/Instagram \d+/.test(await page.textContent("#ov-tiles"))) fail("overzicht: posts tile does not split TikTok and Instagram");
+if (!(await page.$eval("#ov-ig-note", (e) => e.hidden))) fail("overzicht: 'Instagram nog niet opgehaald' shown although Instagram data exists");
 if (!(await page.$("#ov-body mark.unknown"))) fail("overzicht: empty name not highlighted as onbekend");
 await page.click('#ov-table th[data-sort="name"] button');
 const namesAsc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((x) => x.firstChild.textContent.trim()));
 await page.click('#ov-table th[data-sort="name"] button');
 const namesDesc = await page.$$eval("#ov-body tr td:nth-child(2)", (t) => t.map((x) => x.firstChild.textContent.trim()));
-if (namesAsc[0] !== "Anna" || namesDesc[0] !== "Kim") fail(`overzicht: sort by name wrong (${namesAsc[0]} / ${namesDesc[0]})`);
+if (namesAsc[0] !== "Anna" || namesDesc[0] !== "Pim") fail(`overzicht: sort by name wrong (${namesAsc[0]} / ${namesDesc[0]})`);
 // Actie nodig chips: name and @handle on one line, vertically centred on each other.
 const chipOff = await page.$$eval("#ov-actions a.chip", (chips) => chips.map((a) => {
   const range = document.createRange();
@@ -287,7 +341,25 @@ const merge = await page.evaluate(() => {
   return { subs: subs.length, bad, rescued: main.filter((miss, i) => !miss && subs.some((s) => s[i])).length };
 });
 console.log(`leerlingen: Anna per account ${merge.subs} rows; ${merge.rescued} days only one account posted (still counted); ${merge.bad} wrong`);
-if (merge.subs !== 2 || merge.bad) fail(`leerlingen: two accounts not combined right (${JSON.stringify(merge)})`);
+if (merge.subs !== 3 || merge.bad) fail(`leerlingen: accounts not combined right (${JSON.stringify(merge)})`);
+// A student's row counts a post on either platform: Chris's missed days are his TikTok-missed days minus the two days he
+// posted on Instagram, and Anna's three accounts add up (also: a tooltip names the platform).
+{
+  const days = lib.campaignDays(CFG);
+  const chrisBoth = lib.studentStats([...posts.filter((p) => p.handle === "test_03"), ...lib.instagramPosts(igPosts.filter((p) => p.handle === "chris.ig"))], CFG, NOW, tasks);
+  if (chrisMissed.length < 2 || chrisBoth.missedList.length !== chrisMissed.length - 2) fail("fixture: Chris's Instagram posts do not rescue two days");
+  const missedCells = await page.$$eval('#ll-content tr[data-handle="test_03"]:not(.sub-row) td.day', (c) => c.map((x) => x.classList.contains("miss")));
+  if (JSON.stringify(missedCells) !== JSON.stringify(days.map((d) => chrisBoth.missedList.includes(d)))) fail("leerlingen: Chris's missed days are not the combined TikTok + Instagram ones");
+  console.log(`leerlingen: Chris missed ${chrisMissed.length} days on TikTok alone, ${chrisBoth.missedList.length} with Instagram`);
+  const title = await page.$eval(`#ll-content tr[data-handle="test_01"]:not(.sub-row) td.day:nth-child(${days.indexOf("2026-10-01") + 2})`, (c) => c.title);
+  if (!/op Instagram/.test(title)) fail(`leerlingen: tooltip has no platform (${title})`);
+  // Pim has only Instagram, which was not followed before 30 Sep: 28 and 29 Sep are "vrij", not "gemist".
+  const pim = await page.$$eval('#ll-content tr[data-handle="instagram:pim.only"] td.day', (c) => c.slice(0, 3).map((x) => x.className));
+  if (!/\boff\b/.test(pim[0]) || !/\boff\b/.test(pim[1]) || /miss/.test(pim[0] + pim[1])) fail(`leerlingen: Pim's days before the Instagram start (${pim.join(" | ")})`);
+  const pimTitle = await page.$eval('#ll-content tr[data-handle="instagram:pim.only"] td.day', (c) => c.title);
+  if (!/nog niet gevolgd/.test(pimTitle)) fail(`leerlingen: Pim's first day has no explanation (${pimTitle})`);
+  if (!(await page.textContent("#ll-content .legend-row")).includes("Stories worden niet meegeteld.")) fail("leerlingen: no note about stories");
+}
 if (!missCells) fail("leerlingen: no missed days marked");
 if (!offCells || offMissed) fail(`leerlingen: free days wrong (${offCells} vrij, ${offMissed} weekend cells marked gemist)`);
 const taskCells = await page.$$eval(".heat td.task-miss", (c) => c.map((x) => x.textContent));
@@ -297,10 +369,16 @@ if (!(await page.textContent(".heat thead")).includes("Opdr. niet gehaald")) fai
 await page.click('#ll-content tr[data-handle="test_01"]:not(.sub-row) td.day');
 await page.waitForSelector(".cal");
 // Anna's page: both accounts together, or one of them.
-const allPosts = await page.$$eval("#ll-content tbody tr", (r) => r.length);
+const ttRows = "#ll-content table:not(#st-ig-posts) tbody tr";
+const allPosts = await page.$$eval(ttRows, (r) => r.length);
+const igRows = await page.$$eval("#st-ig-posts tbody tr", (r) => r.length);
+if (igRows !== igPosts.filter((p) => p.handle === "anna.gram").length) fail(`student detail: ${igRows} Instagram posts, expected 3`);
+const igHref = await page.$eval("#st-ig-posts tbody tr a", (a) => a.href);
+if (!igHref.startsWith("https://www.instagram.com/")) fail(`student detail: Instagram post link wrong (${igHref})`);
 await page.selectOption("#st-account", "test_13");
 await page.waitForTimeout(200);
-const onePosts = await page.$$eval("#ll-content tbody tr", (r) => r.length);
+const onePosts = await page.$$eval(ttRows, (r) => r.length);
+if (await page.$("#st-ig-posts")) fail("student detail: Instagram posts shown on a TikTok account alone");
 const expected13 = posts.filter((p) => p.handle === "test_13").length;
 console.log(`student detail: Anna ${allPosts} posts together, ${onePosts} on @test_13`);
 if (onePosts !== expected13 || allPosts !== expected13 + posts.filter((p) => p.handle === "test_01").length) fail("student detail: account dropdown wrong");
@@ -309,8 +387,27 @@ if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/priva
 const igLink = await page.$eval("#ll-content .detail-head", (h) => [...h.querySelectorAll("a")].map((a) => a.textContent.trim()).filter((t) => /Instagram/.test(t)));
 if (igLink.join() !== "@anna.gram op Instagram ↗") fail(`student detail: Instagram link wrong (${igLink.join()})`);
 const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
-for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
-console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval("#ll-content tbody tr", (r) => r.length)}`);
+for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video", "Weergaven (TikTok)", "Volgers (TikTok)", "Volgers (Instagram)"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
+const igTile = await page.$eval("#ll-content .tile:has(.label:text('Volgers (Instagram)'))", (t) => t.textContent);
+if (!igTile.replace(/\s+/g, " ").includes("+7 sinds")) fail(`student detail: Instagram followers gained missing (${igTile})`);
+console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval(ttRows, (r) => r.length)}, Instagram ${igRows}`);
+if (!(await page.textContent("#ll-content")).includes("Stories worden niet meegeteld.")) fail("student detail: no note about stories");
+// The Instagram account alone: its own calendar and table, no TikTok numbers.
+await page.selectOption("#st-account", "instagram:anna.gram");
+await page.waitForTimeout(200);
+const igOnlyTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
+if (igOnlyTiles.some((t) => /Weergaven|Engagement|Mediaan/.test(t)) || !igOnlyTiles.includes("Volgers (Instagram)")) fail(`student detail: Instagram alone shows ${igOnlyTiles.join(", ")}`);
+if (await page.$(ttRows)) fail("student detail: TikTok table on the Instagram account alone");
+await page.selectOption("#st-account", "");
+// A student with only Instagram: no TikTok links or tiles, the Instagram table, and a working row link.
+await page.evaluate(() => { location.hash = "leerlingen/instagram:pim.only"; });
+await page.waitForSelector("#st-ig-posts");
+const pimTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
+const pimLinks = await page.$$eval("#ll-content .detail-head a", (a) => a.map((x) => x.textContent.trim()));
+if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only op Instagram ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
+if ((await page.$$eval("#st-ig-posts tbody tr", (r) => r.length)) !== igPosts.filter((p) => p.handle === "pim.only").length) fail("student detail: Pim's Instagram posts not all listed");
+await page.evaluate(() => { location.hash = "leerlingen/test_01"; });
+await page.waitForSelector(".cal");
 
 // Vandaag: lists and "Controleer nu" with its cost.
 await page.evaluate(() => { location.hash = "vandaag"; });
@@ -320,6 +417,11 @@ const todayCounts = await page.evaluate(() => ["td-todo-n", "td-done-n", "td-pri
 console.log(`vandaag: nog niet/gepost/privé = ${todayCounts.join("/")}, knop: "${cost}"`);
 if (!/\d+ accounts?, \d+ records?/.test(cost)) fail(`vandaag: no cost shown (${cost})`);
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
+// Pim (only Instagram) posted twice today on Instagram: done (dagopdracht 2), with the platform and a link to the post.
+const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram%3Apim.only"])', (li) => ({ text: li.textContent.replace(/\s+/g, " "), href: li.querySelector('a[target]')?.href }));
+if (!/2\/2/.test(pimToday.text) || !/op Instagram/.test(pimToday.text) || !pimToday.href?.startsWith("https://www.instagram.com/")) fail(`vandaag: Instagram-only student wrong (${JSON.stringify(pimToday)})`);
+if (!/Instagram/.test(await page.textContent("#td-checked"))) fail("vandaag: last checked has no Instagram time");
+if (!(await page.textContent("#view-vandaag")).includes("Stories worden niet meegeteld.")) fail("vandaag: no note about stories");
 page.once("dialog", (d) => d.accept());
 await page.click("#td-check");
 await page.waitForFunction(() => /5–7 minuten|gestart/.test(document.getElementById("td-msg").textContent));
@@ -435,10 +537,44 @@ if (!lines[0].includes("opdrachten_niet_gehaald")) fail("export: no opdrachten_n
 if (!lines[0].includes("mediaan_weergaven_per_video")) fail("export: no mediaan_weergaven_per_video column");
 if (lines.length - 1 < students - 1) fail("export: missing rows");
 if (!csv.includes("@test_01, @test_13")) fail("export: Anna's two accounts not on one row");
+for (const col of ["tiktok_posts", "instagram_handle", "instagram_posts", "instagram_volgers", "instagram_volgers_sinds_start"]) if (!lines[0].includes(col)) fail(`export: no ${col} column`);
+// Split a CSV line on ";" (fields with ";" inside are quoted, e.g. the warnings).
+const cells = (line) => [...line.matchAll(/("(?:[^"]|"")*"|[^;]*)(;|$)/g)].slice(0, -1).map((m) => m[1].replace(/^"|"$/g, "").replace(/""/g, '"'));
+const chrisLine = cells(lines.find((l) => l.startsWith("Chris;")));
+const head = cells(lines[0]);
+const col = (name) => chrisLine[head.indexOf(name)];
+const chrisIg = igPosts.filter((p) => p.handle === "chris.ig").length;
+// (Cells starting with @ get a leading ' so Excel does not read them as a formula.)
+if (col("instagram_handle") !== "'@chris.ig" || col("instagram_posts") !== String(chrisIg) || col("instagram_volgers_sinds_start") !== "7") fail(`export: Chris's Instagram columns wrong (${col("instagram_handle")}, ${col("instagram_posts")}, ${col("instagram_volgers_sinds_start")})`);
+if (Number(col("posts")) !== Number(col("tiktok_posts")) + chrisIg) fail("export: posts is not TikTok + Instagram");
+if (!lines.find((l) => l.startsWith("Pim;;")) && !lines.find((l) => l.startsWith("Pim;"))) fail("export: Instagram-only student missing");
 await page.waitForTimeout(300);
 if (!posted.some((p) => p.url === "/api/log" && p.body.action === "export")) fail("export: not logged");
 if (page.errors.length) fail(`browser errors: ${page.errors.join(" | ")}`);
 await page.close();
+
+// Before the very first Instagram run (no ig_* rows yet): one note on Overzicht instead of a badge on every student,
+// and the Instagram handles still show.
+{
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const np = await ctx.newPage();
+  if (process.env.CDN_SHIM) await (await import(process.env.CDN_SHIM)).default(np);
+  await np.route("**/api/data", async (route) => {
+    const res = await route.fetch();
+    const data = await res.json();
+    await route.fulfill({ response: res, json: { ...data, igHandles: [], igHistory: [], igPosts: [], igBaseline: [] } });
+  });
+  await np.goto(base + "#overzicht");
+  await np.waitForSelector("#ov-body tr[data-handle]");
+  if (await np.$eval("#ov-ig-note", (e) => e.hidden)) fail("overzicht: no note that Instagram has not been fetched yet");
+  if ((await np.textContent("#ov-body")).includes("nog niet opgehaald (Instagram)")) fail("overzicht: every student has a 'nog niet opgehaald (Instagram)' badge before the first Instagram run");
+  if (!(await np.textContent('#ov-body tr[data-handle="test_01"]')).match(/IG @[\w.]+/)) fail("overzicht: Instagram handle missing before the first run");
+  await np.evaluate(() => { location.hash = "vandaag"; });
+  await np.waitForSelector("#td-todo li");
+  if (/Instagram/.test(await np.textContent("#td-checked"))) fail("vandaag: shows an Instagram time before any Instagram run");
+  console.log("overzicht: before the first Instagram run one note, no per-student badge");
+  await ctx.close();
+}
 
 // Finale from Beheer: explanation with cost per hour, start with a deadline, LIVE banner, stop.
 {

@@ -613,3 +613,38 @@ test("Controleer nu: a student with two accounts is done when either posted; oth
   const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
   assert.equal(JSON.parse(dispatch.body).inputs.handles, "chris,chris.ads"); // Anna posted on her second account
 });
+
+test("/api/data: the Instagram tabs come along (stripped of row numbers), and are empty before the first Instagram run", async () => {
+  let d = await (await req("/api/data")).json();
+  assert.deepEqual([d.igHandles, d.igHistory, d.igPosts, d.igBaseline], [[], [], [], []]); // tabs don't exist yet
+  sheets.ig_handles = [["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"], ["anna.ig", false, 120, "2026-10-07T08:00:00Z", "ok", "2026-10-07T08:00:00Z"]];
+  sheets.ig_history = [["timestamp", "handle", "followers", "following", "posts_count", "is_private", "campaign_posts"], ["2026-10-07T08:00:00Z", "anna.ig", 120, 30, 55, false, 1]];
+  sheets.ig_posts = [["post_id", "handle", "created_at", "post_type", "hashtags", "url", "first_seen", "last_seen"],
+    ["17900000000000001", "anna.ig", "2026-10-07T07:30:00Z", "reel", "glu", "https://www.instagram.com/reel/X/", "2026-10-07T08:00:00Z", "2026-10-07T08:00:00Z"]];
+  sheets.ig_baseline = [["handle", "baseline_at", "baseline_followers"], ["anna.ig", "2026-10-07T08:00:00Z", 118]];
+  d = await (await req("/api/data")).json();
+  assert.deepEqual(d.igHandles.map((h) => [h.handle, h.followers, h.last_status]), [["anna.ig", 120, "ok"]]);
+  assert.equal(d.igHistory[0].campaign_posts, 1);
+  assert.deepEqual(d.igPosts.map((p) => [p.post_id, p.post_type, p.url]), [["17900000000000001", "reel", "https://www.instagram.com/reel/X/"]]);
+  assert.equal(d.igBaseline[0].baseline_followers, 118);
+  for (const row of [...d.igHandles, ...d.igHistory, ...d.igPosts, ...d.igBaseline]) assert.equal("_row" in row, false);
+});
+
+test("Controleer nu: an Instagram post counts as posted today, Instagram accounts are never fetched, an Instagram-only student is not a target", async () => {
+  const now = new Date().toISOString();
+  sheets.accounts[0] = [...sheets.accounts[0], "instagram_handle"];
+  sheets.accounts[1].push("anna.ig");                  // Anna: TikTok anna_1 + Instagram anna.ig
+  sheets.accounts.push(["Dewi", "dewi", "ja", "dewi.ig"], ["Pim", "", "ja", "pim.only"]);
+  sheets.handles.push(["chris", false, 1, "", "ok"], ["dewi", false, 1, "", "ok"]);
+  sheets.posts_latest = [["video_id", "handle", "created_at", "views"]];
+  sheets.ig_handles = [["handle", "is_private", "followers", "last_scraped", "last_status", "status_since"],
+    ["anna.ig", false, 1, "", "ok", ""], ["dewi.ig", true, 1, "", "privé", ""], ["pim.only", false, 1, "", "ok", ""]];
+  sheets.ig_posts = [["post_id", "handle", "created_at"], ["1", "anna.ig", now]];
+  sheets._runs = [{ status: "completed" }];
+  const res = await req("/api/today/check", { body: {} });
+  assert.equal(res.status, 200, await res.clone().text());
+  const dispatch = calls.find((c) => c.url.endsWith(`/actions/workflows/${CONFIG.workflows.collect}/dispatches`));
+  // Anna posted on Instagram: not checked. Dewi's TikTok is public (only her Instagram is private): checked. Pim has no
+  // TikTok. Chris has nothing today. No Instagram handle is ever sent.
+  assert.equal(JSON.parse(dispatch.body).inputs.handles, "chris,dewi");
+});
