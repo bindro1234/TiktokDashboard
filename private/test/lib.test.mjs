@@ -527,6 +527,58 @@ test("studentStats: days before options.from are free (a student with only Insta
   assert.equal(lib.studentStats([], CFG, ams("2026-09-29T12:00:00+02:00"), [], { from: "2026-10-01" }).quietDays, 0);
 });
 
+test("studentStats: options.unknownFrom - a day without a post can't be judged when the student's Instagram is invisible", () => {
+  const tt = (id, iso) => ({ video_id: id, handle: "a", created_at: iso, views: 10 });
+  const posts = [tt("1", "2026-09-29T08:00:00Z"), tt("2", "2026-10-01T08:00:00Z")];
+  const now = ams("2026-10-06T12:00:00+02:00");
+  const tasks = [{ date: "2026-09-29", min: 2, label: "" }, { date: "2026-10-01", min: 2, label: "" }, { date: "2026-10-02", min: 1, label: "" }];
+  const plain = lib.studentStats(posts, CFG, now, tasks);
+  const unk = lib.studentStats(posts, CFG, now, tasks, { unknownFrom: "2026-10-01" });
+  // Without the option nothing changes: 28 and 30 Sep, 2 Oct and 5 Oct are missed (3-4 Oct is a weekend).
+  assert.deepEqual(plain.missedList, ["2026-09-28", "2026-09-30", "2026-10-02", "2026-10-05"]);
+  assert.deepEqual([plain.unknownDays, plain.unknownList, plain.isUnknown("2026-10-02")], [0, [], false]);
+  assert.deepEqual(lib.studentStats(posts, CFG, now, tasks, { unknownFrom: null }).missedList, plain.missedList);
+  // From 1 Oct a day without a post is "niet te controleren": not missed, and the days before it are judged as usual.
+  assert.deepEqual(unk.missedList, ["2026-09-28", "2026-09-30"]);
+  assert.deepEqual(unk.unknownList, ["2026-10-02", "2026-10-05"]);
+  assert.deepEqual([unk.missedDays, unk.unknownDays], [2, 2]);
+  // The weekend stays "vrij" (free wins), a day with a post and today are never unknown, nor is a day before the option.
+  assert.deepEqual(["2026-10-03", "2026-10-01", "2026-10-06", "2026-09-30"].map((d) => unk.isUnknown(d)), [false, false, false, false]);
+  assert.deepEqual(["2026-10-02", "2026-10-05"].map((d) => unk.isUnknown(d)), [true, true]);
+  // Unknown days neither break the streak nor end the longest run: 1 Oct counts, 2 Oct and 5 Oct are skipped, 30 Sep (judged) breaks it.
+  assert.deepEqual([plain.streak, unk.streak, unk.longest], [0, 1, 1]);
+  // A dagopdracht that isn't reached is "unknown" from that day on, "missed" before it.
+  assert.deepEqual(unk.tasks.map((t) => [t.date, t.count, t.status]), [["2026-09-29", 1, "missed"], ["2026-10-01", 1, "unknown"], ["2026-10-02", 0, "unknown"]]);
+  assert.equal(unk.tasksMissed, 1);
+  assert.deepEqual(plain.tasks.map((t) => t.status), ["missed", "missed", "missed"]);
+  // "Dagen geen post" is not touched here: the pages leave that warning out for a student without a handle.
+  assert.equal(unk.quietDays, plain.quietDays);
+});
+
+test("todayGroups: no handle and nothing on TikTok today is 'niet te controleren', not 'nog niet gepost'", () => {
+  const now = ams("2026-10-06T13:00:00+02:00");
+  const today = { created_at: "2026-10-06T07:00:00Z" };
+  const acc = (private_ = false) => [{ handle: "x", isPrivate: private_ }];
+  const students = [
+    { handle: "done", posts: [today], accounts: acc() },
+    { handle: "todo", posts: [], accounts: acc() },
+    { handle: "nohandle", posts: [], noHandle: true, accounts: acc() },
+    { handle: "nohandle-done", posts: [today], noHandle: true, accounts: acc() },
+    { handle: "priv", posts: [], accounts: acc(true) },
+    { handle: "nohandle-priv", posts: [], noHandle: true, accounts: acc(true) },
+  ];
+  const g = lib.todayGroups(lib.todayStatus(CFG, students, [], now));
+  const names = (rows) => rows.map((r) => r.handle);
+  assert.deepEqual(names(g.todo), ["todo"]);
+  assert.deepEqual(names(g.done), ["done", "nohandle-done"]);      // posted on TikTok today: fine, handle or not
+  assert.deepEqual(names(g.unverifiable), ["nohandle", "nohandle-priv"]);   // the handle is what fixes both
+  assert.deepEqual(names(g.priv), ["priv"]);
+  // Every student is in exactly one list.
+  assert.equal(g.todo.length + g.done.length + g.unverifiable.length + g.priv.length, students.length);
+  // "Controleer nu" still fetches the TikTok account of a student without a handle (it is a public account).
+  assert.deepEqual(lib.todayTargets(lib.todayStatus(CFG, students, [], now)), ["x", "x"]);
+});
+
 test("todayStatus: an Instagram post counts; Controleer nu fetches the public accounts of both platforms; private only when all accounts are", () => {
   const now = ams("2026-10-06T13:00:00+02:00");
   const igPost = { platform: "instagram", created_at: "2026-10-06T07:00:00Z" };

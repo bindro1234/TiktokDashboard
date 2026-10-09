@@ -146,6 +146,7 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .heat td.p2 { background: var(--h2); color: #fff; }
 .heat td.p3 { background: var(--h3); color: #fff; }
 .heat td.miss { background: var(--miss); }
+.heat td.unverified { background: repeating-linear-gradient(135deg, var(--off) 0 3px, transparent 3px 6px); }
 .heat td.future { background: transparent; border: 1px dashed var(--border); }
 .heat td.off:not(.p1):not(.p2):not(.p3) { background: var(--off); }
 .heat td.future.off { background: var(--off); opacity: 0.45; }
@@ -162,6 +163,7 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .legend-row { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 10px 0; font-size: 0.85rem; color: var(--text-2); }
 .legend-row .sw { display: inline-block; width: 14px; height: 14px; border-radius: 3px; vertical-align: -2px; margin-right: 4px; background: var(--surface-2); }
 .legend-row .sw.p1 { background: var(--h1); } .legend-row .sw.p2 { background: var(--h2); } .legend-row .sw.p3 { background: var(--h3); }
+.legend-row .sw.unverified { background: repeating-linear-gradient(135deg, var(--off) 0 3px, transparent 3px 6px); border: 1px solid var(--border); }
 .legend-row .sw.miss { background: var(--miss); } .legend-row .sw.off { background: var(--off); } .legend-row .sw.future { background: transparent; border: 1px dashed var(--border); }
 .legend-row .sw.task-miss { background: transparent; box-shadow: inset 0 0 0 2.5px var(--task); }
 
@@ -175,6 +177,7 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 .cal .d b { display: block; font-size: 1rem; }
 .cal .d.p1 { background: var(--h1); } .cal .d.p2 { background: var(--h2); color: #fff; } .cal .d.p3 { background: var(--h3); color: #fff; }
 .cal .d.miss { background: var(--miss); }
+.cal .d.unverified { background: repeating-linear-gradient(135deg, var(--off) 0 4px, transparent 4px 8px); }
 .cal .d.future { background: transparent; border: 1px dashed var(--border); color: var(--muted); }
 .cal .d.off:not(.p1):not(.p2):not(.p3):not(.future) { background: var(--off); color: var(--text-2); }
 .cal .d.future.off { background: var(--off); opacity: 0.55; }
