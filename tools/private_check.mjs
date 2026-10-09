@@ -79,7 +79,8 @@ const igPost = (handle, iso, type = "reel", tags = "glu fotografie") => igPosts.
 [["2026-09-30", "glu fotografie"], ["2026-10-01", "glu"], ["2026-10-02", "fotografie"]].forEach(([day, tags]) => igPost("anna.gram", `${day}T09:15:00Z`, "reel", tags));
 const chrisMissed = lib.studentStats(posts.filter((p) => p.handle === "test_03"), CFG, NOW, []).missedList;
 const chrisRescued = chrisMissed.filter((d) => d >= IG_START).slice(0, 2);   // days Instagram counts (from IG_START)
-chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo", i === 0 ? "av" : "glu"));
+// (Chris's #glu post also carries a typo of #fotografie: a close hashtag for the "gebruiken niet" list.)
+chrisRescued.forEach((day, i) => igPost("chris.ig", `${day}T12:00:00Z`, "photo", i === 0 ? "av" : "glu fotografi"));
 for (const day of ["2026-09-30", "2026-10-02"]) igPost("pim.only", `${day}T14:00:00Z`, "carousel");
 igPost("pim.only", "2026-10-05T08:00:00Z"); igPost("pim.only", "2026-10-05T18:00:00Z");
 igPost("pim.only", "2026-10-07T10:00:00Z"); igPost("pim.only", "2026-10-07T13:00:00Z", "photo", "av"); // today: reaches the dagopdracht (2)
@@ -90,6 +91,11 @@ igTracked.forEach((h, i) => {
   }
 });
 const igBaseline = igTracked.map((h, i) => ({ handle: h, baseline_at: "2026-09-30T05:00:00Z", baseline_followers: 100 + i * 10 }));
+// Eva (test_05, no Instagram handle) put the same typo on a TikTok post after the Instagram start.
+{
+  const evaPost = posts.filter((p) => p.handle === "test_05" && p.created_at >= `${IG_START}T00:00:00Z`).at(-1);
+  evaPost.hashtags = `${evaPost.hashtags} fotografi`.trim();
+}
 // Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
 Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
 Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
@@ -647,6 +653,20 @@ if ((await page.inputValue("#tag-search")) !== "fotografie" || !(await page.text
 // Who has posted without it comes first, those nothing can be seen of (no Instagram, private, not found) last.
 const notFoto = await rowsText("#tag-notuse");
 if (!notFoto[0].startsWith("Chris") || !/0 van 2 posts/.test(notFoto[0]) || !/geen Instagram-handle/.test(notFoto.at(-1))) fail(`hashtags: order of the "gebruiken niet" list (${notFoto.join(" | ")})`);
+// A hashtag that looks like the one searched is named next to the student: Chris on Instagram, Eva (no handle) on TikTok.
+{
+  const chris = notFoto.find((t) => t.startsWith("Chris")), eva = notFoto.find((t) => t.startsWith("Eva"));
+  if (!/gebruikt #fotografi \(1× Instagram\)$/.test(chris)) fail(`hashtags: Chris's close hashtag (${chris})`);
+  if (!/geen Instagram-handle/.test(eva) || !/gebruikt #fotografi \(1× TikTok\)$/.test(eva)) fail(`hashtags: Eva's close hashtag on TikTok (${eva})`);
+  if ((await rowsText("#tag-uses")).some((t) => /gebruikt #/.test(t))) fail("hashtags: a student who uses the hashtag got a 'gebruikt #' hint");
+  // The numbers stay Instagram: Eva does not count as a user because of TikTok.
+  if (!notFoto.some((t) => t.startsWith("Eva")) || (await rowsText("#tag-uses")).some((t) => t.startsWith("Eva"))) fail("hashtags: a TikTok post made Eva a user");
+  // A short school hashtag has no relatives.
+  await page.fill("#tag-search", "glu");
+  if ((await rowsText("#tag-notuse")).some((t) => /gebruikt #/.test(t))) fail("hashtags: #glu got close-hashtag hints");
+  await page.fill("#tag-search", "fotografie");
+  if (process.env.SHOTS) await page.locator("#tag-result").screenshot({ path: `${process.env.SHOTS}/private-hashtags-near-1280px.png` });
+}
 {
   // The same at phone size: the lists stack, nothing pushes the page sideways.
   const hp = await open({ width: 390, height: 844 }, "#hashtags");

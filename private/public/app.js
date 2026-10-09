@@ -623,7 +623,7 @@ function tagStudents(m) {
       : !ig.info ? "nog niet opgehaald"
       : ig.isPrivate ? "privé"
       : String(ig.info.last_status ?? "").startsWith("fout") ? "niet gevonden" : null;
-    return { id: s.handle, s, posts: ig ? ig.posts : [], note };
+    return { id: s.handle, s, posts: ig ? ig.posts : [], tiktokPosts: s.posts, note };
   });
 }
 
@@ -666,10 +666,13 @@ function renderHashtags(m) {
         <span class="meta">· laatst gebruikt ${esc(dayLabel(lib.localDay(u.last)))}</span> <a href="${esc(instagramPost(u.lastPost))}" target="_blank" rel="noopener">open ↗</a>${u.onLast ? ""
         : ` <span class="badge warn" title="De nieuwste Instagram-post van deze leerling heeft #${esc(tag)} niet">ontbreekt op laatste post</span>`}</li>`;
     };
+    // A hashtag that looks like the searched one ("gebruikt #grafischlyceum"): probably meant or a typo. Most used first, at most two.
+    const nearText = (n) => n.near.slice(0, 2).map((t) => `#${esc(t.tag)} (${[t.instagram && `${t.instagram}× Instagram`, t.tiktok && `${t.tiktok}× TikTok`].filter(Boolean).join(", ")})`).join(", ");
     const notItem = (n) => {
       const r = byId.get(n.id);
       return `<li>${name(r)} ${n.total ? `<span class="meta">0 van ${postsText(n.total)}</span>` : ""}${n.note ? ` <span class="badge info">${esc(n.note)}</span>`
-        : n.total ? "" : ` <span class="meta">nog geen posts sinds ${esc(dayLabel(start))}</span>`}</li>`;
+        : n.total ? "" : ` <span class="meta">nog geen posts sinds ${esc(dayLabel(start))}</span>`}${n.near.length
+        ? ` <span class="badge warn" title="Een hashtag die erop lijkt: bedoeld of een typefout? Telt niet mee als #${esc(tag)}.">gebruikt ${nearText(n)}</span>` : ""}</li>`;
     };
     // Nobody uses it: maybe a typo; offer the hashtags that start with what was typed.
     const similar = all.uses.length ? [] : table.filter((t) => t.tag.startsWith(tag)).sort((a, b) => b.posts - a.posts).slice(0, 6);

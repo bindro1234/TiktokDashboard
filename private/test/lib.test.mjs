@@ -400,6 +400,54 @@ test("Controleer nu: a platform that is off is left out of the targets and named
   assert.deepEqual(lib.todaySkipped(onlyIg, freq("off", "4h")), []);
 });
 
+// ---------- hashtags: close to the one searched ----------
+
+test("closeTag: the real cases (#grafischlyceum, #grafischlyceumutecht) are close to #grafischlyceumutrecht; short hashtags and other words are not", () => {
+  const school = "grafischlyceumutrecht";
+  assert.equal(lib.closeTag(school, "grafischlyceum"), true);        // the start of it (7 Instagram posts in the review)
+  assert.equal(lib.closeTag(school, "grafischlyceumutecht"), true);  // a missing letter (29 TikTok posts)
+  assert.equal(lib.closeTag(school, "grafischlyceumutrech"), true);
+  assert.equal(lib.closeTag(school, "grafischlyceumurtecht"), true, "two neighbouring letters swapped counts as one slip");
+  assert.equal(lib.closeTag("grafischlyceum", school), true, "also the other way round (searching the short one)");
+  assert.equal(lib.closeTag("fotografie", "fotografi"), true);
+  assert.equal(lib.closeTag("school", "schoolproject"), true);
+  // Never the same hashtag, and never the short school ones: glu and av would otherwise match half of all hashtags.
+  assert.equal(lib.closeTag(school, school), false);
+  assert.deepEqual(["gluuwu", "glu1", "gl", "avond", "avontuur", "glutenvrij"].map((t) => lib.closeTag("glu", t)), [false, false, false, false, false, false]);
+  assert.deepEqual(["avond", "ave", "a"].map((t) => lib.closeTag("av", t)), [false, false, false]);
+  // Other words stay other words: one slip needs 7 letters, two need 12.
+  assert.equal(lib.closeTag("viral", "vital"), false);
+  assert.equal(lib.closeTag("fotografie", "fotograaf"), false);
+  assert.equal(lib.closeTag(school, "grafischlyceumutrechtiscool"), true, "a longer hashtag that starts with it");
+  assert.equal(lib.closeTag(school, "grafischeschool"), false);
+  assert.equal(lib.closeTag("", "x"), false);
+});
+
+test("tagUsage: students who don't use the hashtag get the close ones they used instead (Instagram and TikTok), most used first; users get none", () => {
+  const ig = (day, hashtags) => ({ post_id: day + hashtags, handle: "x", created_at: `${day}T10:00:00Z`, hashtags });
+  const tt = (day, hashtags) => ({ video_id: day + hashtags, handle: "x", created_at: `${day}T10:00:00Z`, hashtags });
+  const students = [
+    { id: "uses", posts: [ig("2026-10-08", "grafischlyceumutrecht glu")], tiktokPosts: [] },
+    { id: "short", posts: [ig("2026-10-08", "grafischlyceum"), ig("2026-10-09", "grafischlyceum fotografie"), ig("2026-10-09", "grafischlyceumutecht")] },
+    { id: "tiktok", posts: [], tiktokPosts: [tt("2026-10-08", "grafischlyceumutecht fyp"), tt("2026-10-09", "grafischlyceumutecht")], note: "geen Instagram-handle" },
+    { id: "both", posts: [ig("2026-10-08", "grafischlyceum")], tiktokPosts: [tt("2026-10-09", "grafischlyceum")] },
+    { id: "before", posts: [], tiktokPosts: [tt("2026-10-01", "grafischlyceumutecht")] },   // before the Instagram start: no hint
+    { id: "other", posts: [ig("2026-10-08", "glu fotografie")], tiktokPosts: [tt("2026-10-08", "viral")] },
+    { id: "none", posts: [] },
+  ];
+  const u = lib.tagUsage(students, "grafischlyceumutrecht", "2026-10-07");
+  assert.deepEqual(u.uses.map((x) => x.id), ["uses"]);
+  const near = (id) => u.notUse.find((x) => x.id === id).near;
+  assert.deepEqual(near("short"), [{ tag: "grafischlyceum", instagram: 2, tiktok: 0, total: 2 }, { tag: "grafischlyceumutecht", instagram: 1, tiktok: 0, total: 1 }]);
+  assert.deepEqual(near("tiktok"), [{ tag: "grafischlyceumutecht", instagram: 0, tiktok: 2, total: 2 }]);
+  assert.deepEqual(near("both"), [{ tag: "grafischlyceum", instagram: 1, tiktok: 1, total: 2 }]);
+  assert.deepEqual([near("before"), near("other"), near("none")], [[], [], []]);
+  // TikTok never makes a student "use" the hashtag: the usage numbers stay Instagram.
+  assert.equal(u.notUse.find((x) => x.id === "tiktok").total, 0);
+  // Searching a short school hashtag finds no relatives at all.
+  assert.ok(lib.tagUsage(students, "glu", "2026-10-07").notUse.every((x) => x.near.length === 0));
+});
+
 // ---------- finale (manual) ----------
 
 const FIN = { started_at: "2026-10-26T13:00:00Z", started_by: "x@y.nl", deadline: "2026-10-26T15:00:00Z", status: "active", ended_at: "" };

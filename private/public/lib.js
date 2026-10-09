@@ -916,10 +916,57 @@ export function hashtagPosts(posts, startDay) {
     .sort((a, b) => b.t - a.t);
 }
 
+/** Edit distance between two hashtags (insert, delete, replace or swap two neighbours: one slip of the keyboard is 1). */
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1);
+    }
+  }
+  return d[a.length][b.length];
+}
+
 /**
- * Who uses a hashtag. students: [{ id, posts (Instagram posts), note? }] (note: why nothing can be seen, e.g. "privé").
+ * Is `other` a hashtag that was probably meant as `tag`: the start of it or the other way round (#grafischlyceum for
+ * #grafischlyceumutrecht, from 6 letters up) or a typo of it (#grafischlyceumutecht: one slip from 7 letters up, two
+ * from 12)? Short hashtags (glu, av) are never "close" to anything, or every search would find relatives.
+ */
+export function closeTag(tag, other) {
+  if (!tag || !other || tag === other) return false;
+  const [short, long] = tag.length <= other.length ? [tag, other] : [other, tag];
+  if (short.length >= 6 && long.startsWith(short)) return true;
+  if (long.length < 7) return false;
+  return editDistance(tag, other) <= (long.length >= 12 ? 2 : 1);
+}
+
+/**
+ * The hashtags a student used that are close to `tag` (see closeTag) in their posts from startDay on, most used first:
+ * [{ tag, instagram, tiktok, total }]. Instagram posts are the ones this tab is about; TikTok posts only add a hint
+ * (a student may use the school hashtag, with a typo, on TikTok), they never count as "uses".
+ */
+export function nearTags(tag, instagramPosts, tiktokPosts, startDay) {
+  const found = new Map();
+  for (const [platform, posts] of [["instagram", instagramPosts], ["tiktok", tiktokPosts]]) {
+    for (const x of hashtagPosts(posts, startDay)) {
+      for (const t of x.tags) {
+        if (!closeTag(tag, t)) continue;
+        if (!found.has(t)) found.set(t, { tag: t, instagram: 0, tiktok: 0, total: 0 });
+        found.get(t)[platform]++;
+        found.get(t).total++;
+      }
+    }
+  }
+  return [...found.values()].sort((a, b) => b.total - a.total || a.tag.localeCompare(b.tag));
+}
+
+/**
+ * Who uses a hashtag. students: [{ id, posts (Instagram posts), tiktokPosts?, note? }] (note: why nothing can be seen,
+ * e.g. "privé"; tiktokPosts only for the hints of nearTags).
  * uses: { id, used, total, last (ms of the latest post with it), lastPost, onLast (does the newest post have it?) }
- * notUse: { id, total, note }
+ * notUse: { id, total, note, near } (near: close hashtags this student used instead, see nearTags)
  */
 export function tagUsage(students, tag, startDay) {
   const uses = [], notUse = [];
@@ -927,7 +974,7 @@ export function tagUsage(students, tag, startDay) {
     const posts = hashtagPosts(s.posts, startDay);
     const withTag = posts.filter((x) => x.tags.has(tag));
     if (withTag.length) uses.push({ id: s.id, used: withTag.length, total: posts.length, last: withTag[0].t, lastPost: withTag[0].post, onLast: posts[0].tags.has(tag) });
-    else notUse.push({ id: s.id, total: posts.length, note: s.note || null });
+    else notUse.push({ id: s.id, total: posts.length, note: s.note || null, near: nearTags(tag, s.posts, s.tiktokPosts, startDay) });
   }
   return { uses, notUse };
 }
