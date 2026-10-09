@@ -9,6 +9,7 @@ import time
 import requests
 
 API = "https://api.brightdata.com/datasets/v3"
+USAGE_URL = "https://api.brightdata.com/customer/bw"  # billable rows per dataset, per day and per month
 log = logging.getLogger(__name__)
 
 FINAL_STATUSES = {"ready", "failed", "canceled", "cancelled"}
@@ -54,6 +55,23 @@ class BrightData:
             raise BrightDataError(f"trigger: no snapshot_id in response {resp.text[:300]}")
         log.info("Triggered %s with %d input(s): snapshot %s", dataset_id, len(inputs), snapshot_id)
         return snapshot_id
+
+    def billed_rows_this_month(self) -> int | None:
+        """Rows Bright Data itself has billed this calendar month (UTC), over all datasets, or None when
+        that can't be read. This is the number the invoice is based on; run_log only knows the jobs this
+        collector logged. Uses the account usage endpoint, which is not part of the datasets API, so any
+        problem (no permission for this key, a changed format) must never stop a run."""
+        try:
+            resp = self.session.get(USAGE_URL, timeout=60)
+            if resp.status_code != 200:
+                return None
+            total = 0
+            for customer in resp.json().values():
+                for sums in (customer.get("sums") or {}).values():
+                    total += int(((sums or {}).get("back_m0") or {}).get("rows_initial_billable") or 0)
+            return total
+        except (requests.RequestException, ValueError, AttributeError, TypeError):
+            return None
 
     def progress(self, snapshot_id: str) -> dict:
         resp = self._get(f"/progress/{snapshot_id}")

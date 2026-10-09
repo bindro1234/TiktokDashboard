@@ -61,6 +61,7 @@ Sommige leerlingen hebben twee accounts (bijv. één voor hun merk en één voor
 
 - Bright Data rekent per record: 1 profiel = 1 record, 1 post = 1 record. 5.000 records per kalendermaand zijn gratis, daarna ca. $1,50 per 1.000.
 - **Harde limiet:** `budget.monthly_cap` in `config.yaml` (nu **23.000**; boven de gratis 5.000 is het pay-as-you-go). Vóór elke run telt de collector de records van deze maand op uit `run_log` en weigert de run (status `refused`) als het totaal boven de limiet zou komen. Ook elke finale-run.
+- **De telling klopt met de rekening:** vóór elke run vergelijkt de collector `run_log` met het aantal rijen dat Bright Data zelf voor deze maand heeft gefactureerd (`/customer/bw`, in `status` te zien). Is dat hoger (een job die nooit gelogd is, een test met de hand), dan telt het verschil mee als een rij `billing_adjustment` in `run_log`; de limiet zit dus nooit onder wat echt gefactureerd wordt. Het telt alleen omhoog, nooit omlaag. Is het niet te lezen (bijv. geen rechten voor de sleutel), dan staat er *billing check unavailable* in de notities en telt `run_log` alleen, zoals eerder.
 - Vóór een weekrefresh of controle wordt ook budget **gereserveerd** voor alle profielruns die deze maand nog komen, zodat de hoofdbron nooit zonder budget komt te zitten.
 - De weekrefresh haalt maximaal `posts_refresh.num_of_posts` posts per account op (nu **40**). Dat is ook de bovengrens die de dry-run gebruikt en die wordt gereserveerd.
 - **Schatting oktober** (profielen elke 2 uur, 1 t/m 30 oktober = 30 dagen × 12 runs):

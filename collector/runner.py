@@ -71,8 +71,39 @@ class Collector:
                 f"expected={res.expected} actual={res.actual} errors={res.errors}"
                 + (f"\n\n- " + "\n- ".join(res.notes) if res.notes else ""))
 
+    def month_used(self, res: RunResult | None = None, write: bool = True) -> int:
+        """Records used this calendar month (UTC), never lower than what Bright Data bills.
+
+        run_log is the ledger, but a job that never reached it (a crash between the job and its log row,
+        a test started by hand) is billed all the same. So the figure is the larger of run_log and the rows
+        Bright Data itself reports as billed this month. The difference is booked as a billing_adjustment
+        row, so everything that adds up run_log (this cap check, the Worker's finale and Controleer nu
+        checks, the budget bar on Beheer) sees it. It only ever raises the count, never lowers it."""
+        logged = model.month_usage(self.admin.read("run_log"), self.now_utc)
+        probe = getattr(self.bd, "billed_rows_this_month", None)
+        if probe is None:
+            return logged
+        billed = probe()
+        if billed is None:
+            if res:
+                res.notes.append("billing check unavailable (Bright Data usage not readable): counting run_log only")
+            return logged
+        gap = billed - logged
+        if gap <= 0:
+            return logged
+        note = f"billing: Bright Data billed {billed} rows this month, run_log has {logged}: counting {gap} more"
+        if res:
+            res.notes.append(note)
+        if write and not self.dry_run:
+            self.admin.append("run_log", [{
+                "timestamp": self.stamp, "run_type": "billing_adjustment",
+                "window": f"{self.now_local:%Y-%m-%d}/billing-{self.now_local:%H%M}", "dry_run": False,
+                "expected_records": 0, "actual_records": gap, "errors": 0, "status": "ok", "snapshot_ids": "",
+                "notes": note}])
+        return billed
+
     def budget_ok(self, res: RunResult, reserve: int = 0) -> bool:
-        used = model.month_usage(self.admin.read("run_log"), self.now_utc)
+        used = self.month_used(res)
         total = used + res.expected + reserve
         res.notes.append(f"budget: used this month {used} + this run max {res.expected}"
                          + (f" + reserved for remaining profile runs {reserve}" if reserve else "")
@@ -469,11 +500,13 @@ class Collector:
 
     def status(self) -> None:
         run_log = self.admin.read("run_log")
-        used = model.month_usage(run_log, self.now_utc)
+        logged = model.month_usage(run_log, self.now_utc)
+        used = self.month_used(write=False)  # read-only: status never books an adjustment
         handles, issues = self.accounts()
         runs, reserve = self._reserve()
         summary(f"Amsterdam time {self.now_local:%Y-%m-%d %H:%M}\n\n"
-                f"- active handles: {len(handles)}\n- records used this month: {used} / {self.cfg.monthly_cap}\n"
+                f"- active handles: {len(handles)}\n- records used this month: {used} / {self.cfg.monthly_cap}"
+                + (f" (run_log has {logged}; Bright Data bills {used})" if used != logged else "") + "\n"
                 f"- profile runs left this month: {runs} (≈{reserve} records)\n"
                 f"- projected month total without refreshes: {used + reserve}\n"
                 + "".join(f"- issue: {i}\n" for i in issues))
