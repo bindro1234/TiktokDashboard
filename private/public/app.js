@@ -886,6 +886,8 @@ function renderInstagramMissing(m) {
   const box = $("ig-missing");
   const focused = document.activeElement?.closest?.("form[data-ig-quick]")?.dataset.igQuick;
   const missing = m.students.filter((s) => !s.instagram).sort(byName);
+  // The whole block is only there while somebody still lacks a handle.
+  $("ig-card").hidden = !missing.length;
   $("ig-count").textContent = `(${missing.length} van ${m.students.length})`;
   box.innerHTML = missing.map((s) => {
     const row = s.instagramRow;
@@ -896,7 +898,7 @@ function renderInstagramMissing(m) {
       <button type="submit" class="btn small primary">Opslaan</button>
       ${s.instagramIssue ? `<span class="badge bad" title="${esc(s.instagramIssue)}">${esc(s.instagramIssue)}</span>` : ""}
     </form></li>`;
-  }).join("") || `<li class="meta">Alle actieve leerlingen hebben een Instagram-account.</li>`;
+  }).join("");
   if (focused) box.querySelector(`form[data-ig-quick="${focused}"] input`)?.focus();
 }
 
@@ -906,8 +908,9 @@ async function saveInstagram(row, was, handle, button, msgId) {
     const res = await api("/api/accounts/instagram", { row, was, handle });
     state.igFor = null;
     state.igDraft.delete(row);
-    flash(res.message, true, msgId);
     await load();
+    // Saving the last missing handle hides the block that holds its message: say it above the table instead.
+    flash(res.message, true, $("ig-card").hidden ? "acc-msg" : msgId);
   } catch (err) {
     flash(err.message, false, msgId);
     if (button) button.disabled = false;

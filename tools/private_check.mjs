@@ -1140,6 +1140,34 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
   await pp.close();
 }
 
+// Beheer: "Leerlingen zonder Instagram" is only there while somebody lacks a handle. This goes last: it gives students handles.
+{
+  const igMissing = () => [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((g) => !g.instagram);
+  const bp = await open({ width: 1280, height: 900 }, "#beheer");
+  await bp.waitForSelector("#acc-body tr");
+  if (await bp.$eval("#ig-card", (c) => c.hidden) || !igMissing().length) fail("beheer: 'Leerlingen zonder Instagram' hidden while students lack a handle");
+  // Everybody but one has a handle: the last one is filled in through the form, which then makes the block disappear.
+  const [last, ...rest] = igMissing();
+  for (const g of rest) accountsSheet.find((r) => r._row === g.instagramRow).instagram_handle = `fill.ig${g.instagramRow}`;
+  await bp.reload();
+  await bp.waitForSelector("#ig-missing form[data-ig-quick]");
+  if ((await bp.$$eval("#ig-missing form[data-ig-quick]", (f) => f.length)) !== 1 || await bp.$eval("#ig-card", (c) => c.hidden)) fail("beheer: the block should show the one student without a handle");
+  await bp.fill("#ig-missing form[data-ig-quick] input", "@Last.One");
+  await bp.click("#ig-missing form[data-ig-quick] button[type=submit]");
+  await bp.waitForFunction(() => document.getElementById("ig-card").hidden, null, { timeout: 10000 });
+  const said = await bp.textContent("#acc-msg");
+  if (!/Instagram van .*@last\.one opgeslagen/.test(said)) fail(`beheer: no confirmation after saving the last handle (${said})`);
+  if (!(await bp.isVisible("#acc-body tr")) || !(await bp.isVisible("#freq-form"))) fail("beheer: the rest of Beheer disappeared with the block");
+  // The students' Vandaag/Overzicht groups agree: nobody without a handle is left either.
+  await bp.evaluate(() => { location.hash = "overzicht"; });
+  await bp.waitForSelector("#ov-body tr[data-handle]");
+  if (/geen Instagram-handle/.test(await bp.textContent("#ov-actions"))) fail("overzicht: Actie nodig still lists students without a handle");
+  if (process.env.SHOTS) { await bp.evaluate(() => { location.hash = "beheer"; }); await bp.screenshot({ path: `${process.env.SHOTS}/private-beheer-no-ig-block-1280px.png`, fullPage: true }); }
+  if (bp.errors.length) fail(`beheer without the Instagram block: browser errors: ${bp.errors.join(" | ")}`);
+  console.log(`beheer: the Instagram block is gone once the last of ${rest.length + 1} students got a handle; the confirmation moved above the table`);
+  await bp.close();
+}
+
 await browser.close();
 server.close();
 console.log(failed ? "Private check FAILED" : "Private check passed");
