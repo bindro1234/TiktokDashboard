@@ -31,6 +31,8 @@ def build(cfg: config.Config) -> dict:
         "sheets": {"adminId": cfg.admin_sheet_id, "dataId": cfg.data_sheet_id},
         "budget": {"monthlyCap": cfg.monthly_cap},
         "instagram": {"startDate": cfg.instagram_start.isoformat() if cfg.instagram_start else None},
+        # Start value of the school hashtags on the Hashtags tab; teachers change them on Beheer (private sheet).
+        "hashtags": {"school": list(cfg.school_hashtags)},
         # How often each platform is pulled: the step and its windows (the Instagram ones are keyed ig-08u).
         # The Worker's timer, the budget and the collector all read these same windows.
         "frequency": dict(cfg.frequency),

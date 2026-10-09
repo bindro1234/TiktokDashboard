@@ -581,8 +581,9 @@ export function median(values) {
  * Vandaag: per student the campaign posts of today (Amsterdam, all their accounts together, TikTok and
  * Instagram), how many are needed (1, or the dagopdracht minimum) and whether that is reached. Private accounts
  * can't be checked. students: [{ handle, posts, isPrivate, accounts?: [{ handle, isPrivate, platform? }] }].
- * "checkable" lists the TikTok accounts "Controleer nu" can fetch (its Instagram part comes with the
- * frequency settings). Returns { day, task, offDay, rows }.
+ * "checkable" lists what "Controleer nu" can fetch: the public accounts on both platforms, a TikTok
+ * handle as it is and an Instagram one as "instagram:<handle>" (the platform in front, like the collector's
+ * `today` command wants it). Returns { day, task, offDay, rows }.
  */
 export function todayStatus(cfg, students, assignments, nowMs) {
   const day = localDay(nowMs);
@@ -593,22 +594,28 @@ export function todayStatus(cfg, students, assignments, nowMs) {
     const accounts = s.accounts || [{ handle: s.handle, isPrivate: s.isPrivate }];
     return { handle: s.handle, count: today.length, required, done: today.length >= required,
       private: accounts.every((a) => a.isPrivate),
-      checkable: accounts.filter((a) => !a.isPrivate && a.platform !== "instagram").map((a) => a.handle),
+      checkable: accounts.filter((a) => !a.isPrivate).map((a) => (a.platform === "instagram" ? instagramKey(a.handle) : a.handle)),
       first: today[0] ?? null, last: today.at(-1) ?? null };
   });
   return { day, task, offDay: isOffDay(cfg, day), rows };
 }
 
-/** Accounts "Controleer nu" fetches: every non-private account of the students not done yet today. */
+/** Accounts "Controleer nu" fetches: every non-private account (TikTok and Instagram) of the students not done yet today. */
 export function todayTargets(status) {
   return status.rows.filter((r) => !r.done && !r.private).flatMap((r) => r.checkable);
+}
+
+/** How many of the targets are Instagram accounts ("instagram:<handle>") and how many TikTok. */
+export function targetSplit(targets) {
+  const instagram = targets.filter((t) => t.startsWith("instagram:")).length;
+  return { tiktok: targets.length - instagram, instagram };
 }
 
 /** Start time (ms) of the last Vandaag check: its activity_log entry or its run_log row. */
 export function lastTodayCheck(runLog, activity) {
   let last = null;
   for (const r of runLog || []) {
-    if (r.run_type !== "today_check" || truthy(r.dry_run)) continue;
+    if (!["today_check", "ig_today_check"].includes(r.run_type) || truthy(r.dry_run)) continue;
     const t = parseTs(r.timestamp);
     if (t !== null && (last === null || t > last)) last = t;
   }
@@ -691,21 +698,93 @@ export function signals(s, posts, byVideo, series) {
   return flags;
 }
 
-/** Per hashtag: posts using it, accounts (with counts), total views. */
-export function hashtagStats(postsByHandle) {
+// ---------- Hashtags (Instagram: hashtags in the caption) ----------
+
+export const MAX_SCHOOL_HASHTAGS = 12;   // same limit as collector/config.py
+const MAX_TAG_LENGTH = 60;
+const TAG_RE = /^[\p{L}\p{N}_]+$/u;      // letters, digits and underscore, like the collector's \w
+
+/** "#GLU " -> "glu"; null when it is not one hashtag (empty, a space or another character inside, too long). */
+export function normalizeTag(text) {
+  const tag = String(text ?? "").trim().replace(/^#+/, "").toLowerCase();
+  return tag && tag.length <= MAX_TAG_LENGTH && TAG_RE.test(tag) ? tag : null;
+}
+
+/** A list as a teacher types it ("glu, #AV grafischlyceumutrecht") -> { tags: lowercase without doubles, invalid: the entries that are no hashtag }. */
+export function parseTagList(text) {
+  const tags = [], invalid = [];
+  for (const item of String(Array.isArray(text) ? text.join(" ") : text ?? "").split(/[\s,;]+/).filter(Boolean)) {
+    const tag = normalizeTag(item);
+    if (!tag) invalid.push(item);
+    else if (!tags.includes(tag)) tags.push(tag);
+  }
+  return { tags, invalid };
+}
+
+/** Rows of the private settings tab (key, value) -> Map(key -> { value, row }); the last row of a key wins. */
+export function parseSettings(rows) {
+  const out = new Map();
+  for (const r of rows || []) {
+    const key = String(r.key ?? "").trim();
+    if (key) out.set(key, { value: String(r.value ?? ""), row: r._row ?? null });
+  }
+  return out;
+}
+
+export const SCHOOL_HASHTAGS_KEY = "school_hashtags";
+
+/** The school hashtags: the list saved on Beheer, or (nothing saved yet) the start value from config.yaml. */
+export function schoolHashtags(settings, fallback) {
+  const saved = settings.get(SCHOOL_HASHTAGS_KEY);
+  return saved ? parseTagList(saved.value).tags : [...(fallback || [])];
+}
+
+/** The hashtags of one post (lowercase, without #). Only the caption's hashtags are in the data, not those in comments. */
+export const postTags = (p) => new Set(String(p.hashtags ?? "").toLowerCase().split(/\s+/).filter(Boolean));
+
+/** Instagram posts that count for hashtags: made on or after startDay (Amsterdam), newest first, each with its tags. */
+export function hashtagPosts(posts, startDay) {
+  return (posts || []).map((post) => ({ post, t: parseTs(post.created_at), tags: postTags(post) }))
+    .filter((x) => x.t !== null && (!startDay || localDay(x.t) >= startDay))
+    .sort((a, b) => b.t - a.t);
+}
+
+/**
+ * Who uses a hashtag. students: [{ id, posts (Instagram posts), note? }] (note: why nothing can be seen, e.g. "privé").
+ * uses: { id, used, total, last (ms of the latest post with it), lastPost, onLast (does the newest post have it?) }
+ * notUse: { id, total, note }
+ */
+export function tagUsage(students, tag, startDay) {
+  const uses = [], notUse = [];
+  for (const s of students) {
+    const posts = hashtagPosts(s.posts, startDay);
+    const withTag = posts.filter((x) => x.tags.has(tag));
+    if (withTag.length) uses.push({ id: s.id, used: withTag.length, total: posts.length, last: withTag[0].t, lastPost: withTag[0].post, onLast: posts[0].tags.has(tag) });
+    else notUse.push({ id: s.id, total: posts.length, note: s.note || null });
+  }
+  return { uses, notUse };
+}
+
+/** "Ontbreekt op laatste post": who uses the hashtag but not on the newest post, and who has posted but never used it. */
+export function missingOnLast(usage) {
+  return { uses: usage.uses.filter((u) => !u.onLast), notUse: usage.notUse.filter((n) => n.total > 0) };
+}
+
+/** Most used hashtags over all students' Instagram posts: [{ tag, posts, students, last }]. */
+export function tagTable(students, startDay) {
   const tags = new Map();
-  for (const [handle, list] of postsByHandle) {
-    for (const p of list) {
-      for (const tag of new Set(String(p.hashtags ?? "").toLowerCase().split(/\s+/).filter(Boolean))) {
+  for (const s of students) {
+    for (const x of hashtagPosts(s.posts, startDay)) {
+      for (const tag of x.tags) {
         let t = tags.get(tag);
-        if (!t) tags.set(tag, (t = { tag, posts: 0, views: 0, accounts: new Map() }));
+        if (!t) tags.set(tag, (t = { tag, posts: 0, students: new Set(), last: 0 }));
         t.posts++;
-        t.views += toNum(p.views) || 0;
-        t.accounts.set(handle, (t.accounts.get(handle) || 0) + 1);
+        t.students.add(s.id);
+        t.last = Math.max(t.last, x.t);
       }
     }
   }
-  return [...tags.values()];
+  return [...tags.values()].map((t) => ({ ...t, students: t.students.size }));
 }
 
 // ---------- CSV ----------

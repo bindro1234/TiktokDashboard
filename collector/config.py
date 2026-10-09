@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import pathlib
+import re
 from dataclasses import dataclass, field
 from zoneinfo import ZoneInfo
 
@@ -142,6 +143,7 @@ class Config:
     instagram_start: dt.date | None = None   # first day an Instagram post counts
     frequency: dict = field(default_factory=dict)        # platform -> step ("off", "12h", ...)
     frequency_steps: dict = field(default_factory=dict)  # step -> window names from profile_windows
+    school_hashtags: tuple[str, ...] = ()   # start value of the school hashtags (teachers edit them on Beheer)
 
     def platform_windows(self, platform: str, step: str | None = None) -> tuple[Window, ...]:
         """The profile windows a platform really runs in: its frequency step's windows out of the pool
@@ -161,6 +163,23 @@ class Config:
         """The days an Instagram post counts: instagram.start_date up to and including campaign.end_date."""
         return Campaign(start=self.instagram_start or self.campaign.start, end=self.campaign.end,
                         collect_until=self.campaign.collect_until, tz=self.tz)
+
+
+MAX_SCHOOL_HASHTAGS = 12   # same limit as the Beheer form (private/src/worker.js)
+
+
+def _hashtags(raw) -> tuple[str, ...]:
+    """The school hashtags from config.yaml: lowercase words without '#', no doubles, at most MAX_SCHOOL_HASHTAGS."""
+    tags: list[str] = []
+    for item in raw or []:
+        tag = str(item).strip().lstrip("#").lower()
+        if not re.fullmatch(r"\w+", tag):
+            raise ValueError(f"hashtags.school: {item!r} is not a hashtag (letters, digits and _ only, no spaces)")
+        if tag not in tags:
+            tags.append(tag)
+    if len(tags) > MAX_SCHOOL_HASHTAGS:
+        raise ValueError(f"hashtags.school: at most {MAX_SCHOOL_HASHTAGS} hashtags")
+    return tuple(tags)
 
 
 def _frequency(raw: dict | None, pool: tuple[Window, ...]) -> tuple[dict, dict]:
@@ -231,4 +250,5 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         instagram_start=_date((raw.get("instagram") or {}).get("start_date")),
         frequency=frequency,
         frequency_steps=frequency_steps,
+        school_hashtags=_hashtags((raw.get("hashtags") or {}).get("school")),
     )

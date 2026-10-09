@@ -24,6 +24,12 @@ instagram:
   # from this day (inclusive) to campaign.end_date count; earlier ones are never stored.
   start_date: 2026-10-07
 
+hashtags:
+  # School hashtags: one-click presets on the teacher page's Hashtags tab (words without #, lowercase).
+  # This is only the start value: teachers change the list on Beheer, which stores it in the private
+  # sheet (tab settings) and needs no deploy. Remove the sheet row to fall back to this list.
+  school: [glu, grafischlyceumutrecht, av]
+
 sheets:
   # Private: accounts (student names), run_log, profile_window. Never publish.
   admin_id: 1CnX4WcJkCgKvGXIDRb_P1CTzADUc_qkkCCqQXTpu_No

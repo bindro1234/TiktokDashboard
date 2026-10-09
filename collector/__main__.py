@@ -48,6 +48,27 @@ def split_handles(text: str) -> tuple[list[str], list[str]]:
     return tiktok, ig
 
 
+def run_today(col: Collector, handles: str) -> None:
+    """"Controleer nu": one profiles run for the TikTok accounts in the list and one for its Instagram accounts.
+    A failing platform never stops the other one (the teacher presses the button once for both); the first
+    error is raised afterwards, so the workflow still shows red. Every run writes its own run_log row."""
+    tiktok, ig = split_handles(handles)
+    runs = []
+    if tiktok or not ig:
+        runs.append(lambda: col.run_today_check(f"{col.now_local:%Y-%m-%d}/today-{col.now_local:%H%M}", tiktok))
+    if ig:
+        runs.append(lambda: col.run_ig_today_check(f"{col.now_local:%Y-%m-%d}/ig-today-{col.now_local:%H%M}", ig))
+    failure = None
+    for run in runs:
+        try:
+            run()
+        except Exception as exc:  # noqa: BLE001 - already logged in run_log by run_guarded
+            logging.exception("today check failed")
+            failure = failure or exc
+    if failure:
+        raise failure
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="collector", description=__doc__)
     parser.add_argument("command", choices=["auto", "profiles", "ig-profiles", "force", "refresh", "check", "today", "status", "setup"])
@@ -84,11 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         chosen = [h.strip().lstrip("@").lower() for h in args.handles.split(",") if h.strip()]
         col.run_window_check(manual, chosen or None)
     elif args.command == "today":
-        tiktok, ig = split_handles(args.handles)
-        if tiktok or not ig:
-            col.run_today_check(f"{col.now_local:%Y-%m-%d}/today-{col.now_local:%H%M}", tiktok)
-        if ig:
-            col.run_ig_today_check(f"{col.now_local:%Y-%m-%d}/ig-today-{col.now_local:%H%M}", ig)
+        run_today(col, args.handles)
     elif args.command == "status":
         col.status()
     return 0

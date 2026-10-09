@@ -7,6 +7,7 @@ import re
 import unittest
 
 from collector import config, model
+from collector.__main__ import run_today
 from collector.config import UTC
 from collector.handles import normalize_handle, parse_accounts
 from collector.runner import Collector
@@ -490,6 +491,18 @@ class OffDayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             config._off_days({"periods": [{"name": "x", "from": "2026-10-23", "to": "2026-10-19"}]})
         self.assertEqual(config._off_days(None), config.OffDays())
+
+    def test_school_hashtags_start_value(self):
+        from collector import worker_config
+        self.assertEqual(CFG.school_hashtags, ("glu", "grafischlyceumutrecht", "av"))
+        self.assertEqual(worker_config.build(CFG)["hashtags"], {"school": ["glu", "grafischlyceumutrecht", "av"]})
+        # Written however a teacher likes: '#', capitals, doubles; checked like the Beheer form does.
+        self.assertEqual(config._hashtags(["#GLU", " av ", "glu"]), ("glu", "av"))
+        self.assertEqual(config._hashtags(None), ())
+        with self.assertRaises(ValueError):
+            config._hashtags(["twee woorden"])
+        with self.assertRaises(ValueError):
+            config._hashtags([f"tag{i}" for i in range(config.MAX_SCHOOL_HASHTAGS + 1)])
 
 
 class FakeSheet:
@@ -1001,6 +1014,45 @@ class InstagramRunTests(unittest.TestCase):
         handles = {r["handle"]: r for r in self.data.tabs["ig_handles"]}
         self.assertEqual(sorted(handles), ["ig_aa", "ig_bb", "ig_dd"])    # every account keeps its row
         self.assertEqual([r["handle"] for r in self.data.tabs["ig_history"]], ["ig_bb"])
+
+    def test_controleer_nu_fetches_both_platforms_in_one_command(self):
+        # "Controleer nu" sends one list: TikTok handles bare, Instagram handles with the platform in front.
+        run_today(self.col(), "aa, instagram:ig_aa ,@bb,ig:ig_bb,instagram:nobody")
+        self.assertEqual(self.bd.asked, {"tiktok": [["aa", "bb"]], "instagram": [["ig_aa", "ig_bb"]]})
+        rows = self.admin.tabs["run_log"]
+        self.assertEqual([(r["run_type"], r["status"], r["expected_records"], r["actual_records"]) for r in rows],
+                         [("today_check", "ok", 2, 2), ("ig_today_check", "ok", 2, 2)])
+        self.assertIn("not checked (inactive, unknown or private): @nobody", rows[1]["notes"])
+        # Neither counts as a full run: the scheduled runs are not skipped afterwards.
+        self.assertIsNone(self.col().minutes_since_profiles())
+        self.assertIsNone(self.col().minutes_since_profiles(model.IG_PROFILE_RUN_TYPES))
+
+    def test_controleer_nu_with_only_instagram_accounts_runs_only_instagram(self):
+        run_today(self.col(), "instagram:ig_dd")
+        self.assertEqual(self.bd.asked, {"tiktok": [], "instagram": [["ig_dd"]]})
+        self.assertEqual([r["run_type"] for r in self.admin.tabs["run_log"]], ["ig_today_check"])
+
+    def test_controleer_nu_dry_run_plans_both_and_fetches_nothing(self):
+        run_today(self.col(dry=True), "aa,instagram:ig_aa")
+        self.assertEqual(self.bd.asked, {"tiktok": [], "instagram": []})
+        rows = self.admin.tabs["run_log"]
+        self.assertEqual([(r["run_type"], r["status"], r["dry_run"], r["expected_records"]) for r in rows],
+                         [("today_check", "dry-run", True, 1), ("ig_today_check", "dry-run", True, 1)])
+
+    def test_controleer_nu_failure_on_one_platform_does_not_stop_the_other(self):
+        class TikTokDown(FakeBothBrightData):
+            def trigger(self, dataset, inputs, **params):
+                if dataset != CFG.instagram_dataset:
+                    raise RuntimeError("TikTok profiles dataset is down")
+                return super().trigger(dataset, inputs, **params)
+
+        self.bd = TikTokDown(self.tt, self.recs)
+        with self.assertRaises(RuntimeError):      # the workflow still ends red
+            run_today(self.col(), "aa,instagram:ig_aa")
+        rows = self.admin.tabs["run_log"]
+        self.assertEqual([(r["run_type"], r["status"]) for r in rows], [("today_check", "failed"), ("ig_today_check", "ok")])
+        self.assertIn("TikTok profiles dataset is down", rows[0]["notes"])
+        self.assertEqual(self.bd.asked["instagram"], [["ig_aa"]])
 
     def test_reserve_counts_both_platforms_and_status_shows_them(self):
         by = self.col().reserve_by_platform()
