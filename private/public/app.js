@@ -1704,15 +1704,16 @@ function calChanged(focus) {
   $("ll-content").querySelector(focus)?.focus();
 }
 
-// Beheer groups: closed at first; which ones are open is remembered per browser (a link into a group opens it, without remembering).
+// Beheer groups: closed at first; the ones a teacher opens or closes by hand are remembered per browser (a link into a group opens
+// it without remembering). The state is saved at the click itself (the group is about to flip), not afterwards: nothing to race with.
 {
-  const groups = () => [...document.querySelectorAll("details.bh-group")];
   const saved = store.get(BEHEER_KEY) || {};
-  for (const d of groups()) if (saved[d.dataset.group] === true) d.open = true;
+  for (const d of document.querySelectorAll("details.bh-group")) if (saved[d.dataset.group] === true) d.open = true;
   $("view-beheer").addEventListener("click", (ev) => {
     const d = ev.target.closest("summary")?.parentElement;
     if (!d || !d.matches("details.bh-group")) return;
-    setTimeout(() => store.set(BEHEER_KEY, Object.fromEntries(groups().map((x) => [x.dataset.group, x.open]))), 0);
+    saved[d.dataset.group] = !d.open;
+    store.set(BEHEER_KEY, saved);
   });
 }
 
