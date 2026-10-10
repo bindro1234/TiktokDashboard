@@ -106,9 +106,6 @@ posts.find((p) => p.handle === "test_07" && !p.missing_since).missing_since = ol
   const evaPost = posts.filter((p) => p.handle === "test_05" && p.created_at >= `${IG_START}T00:00:00Z`).at(-1);
   evaPost.hashtags = `${evaPost.hashtags} fotografi`.trim();
 }
-// Opvallend: test_05's biggest video gets almost no likes, test_11's first video no comments or shares.
-Object.assign(posts.filter((p) => p.handle === "test_05").sort((a, b) => b.views - a.views)[0], { likes: 1 });
-Object.assign(posts.find((p) => p.handle === "test_11"), { comments: 0, shares: 0 });
 const igHandles = igTracked.map((h, i) => ({ handle: h, is_private: h === "bram.ig", followers: 100 + i * 10 + IG_GAIN[h], last_scraped: "",
   last_status: h === "bram.ig" ? "privé" : h === "chris.ig" ? "fout: dead_page: not found" : "ok",
   status_since: h === "bram.ig" ? "2026-10-04T08:00:00Z" : h === "chris.ig" ? "2026-10-05T14:00:00Z" : "2026-09-30T06:00:00Z" }));
@@ -148,7 +145,7 @@ function api(req, body) {
     const cfgNow = effective();
     return [200, { me: "docent@school.nl", serverTime: NOW,
       config: { campaign: CFG.campaign, budget: CFG.budget, schedule: cfgNow.schedule, refreshNumOfPosts: CFG.refreshNumOfPosts,
-        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck, signals: CFG.signals,
+        forceMinMinutes: CFG.forceMinMinutes, finale: CFG.finale, offDays: CFG.offDays, todayCheck: CFG.todayCheck,
         frequency: cfgNow.frequency, frequencyDefault: CFG.frequency, frequencySteps: CFG.frequencySteps, instagram: igConfig },
       finale, finaleHasRun,
       settings: { schoolHashtags: schoolTags, schoolHashtagsDefault: [...CFG.hashtags.school] },
@@ -260,8 +257,9 @@ let failed = false;
 const fail = (msg) => { failed = true; console.log(`FAIL ${msg}`); };
 const browser = await chromium.launch({ executablePath });
 
-async function open(viewport, path = "", font = process.env.CHECK_FONT) {
+async function open(viewport, path = "", font = process.env.CHECK_FONT, init = null) {
   const page = await browser.newPage({ viewport, acceptDownloads: true });
+  if (init) await page.addInitScript(init);
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(e.message));
   // A 409 or 400 from the fake API is an expected answer (refresh cooldown, a refused form entry), not a page error.
@@ -285,6 +283,10 @@ async function open(viewport, path = "", font = process.env.CHECK_FONT) {
 const showBoard = async (p, board) => {
   await p.click(`#ov-board button[data-board="${board}"]`);
   await p.waitForSelector(`#ov-board button[data-board="${board}"][aria-pressed="true"]`);
+};
+// The Beheer groups are closed at first. Open them the way a teacher does: a click on the header (which is remembered in that browser).
+const openGroups = async (p, groups = ["leerlingen", "ophalen", "campagne"]) => {
+  for (const g of groups) if (!(await p.$eval(`#bh-g-${g}`, (d) => d.open))) await p.click(`#bh-g-${g} > summary`);
 };
 const noHScroll = (page) => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
 // The elements that stick out past the viewport (outside the tables, which scroll inside their own box): for the failure message.
@@ -317,16 +319,86 @@ for (const [viewport, font] of sweeps) {
     const width = await textWidth(page);
     if (!(width >= font[2])) fail(`${tag}: the stress font did not apply (the sample text is ${Math.round(width)}px wide at 15px, wanted at least ${font[2]}px): is the font installed?`);
   }
-  for (const view of ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"]) {
+  for (const view of ["overzicht", "vandaag", "leerlingen", "hashtags", "beheer"]) {
     await page.evaluate((v) => { location.hash = v; }, view);
     await page.waitForTimeout(250);
     if (!(await page.isVisible(`#view-${view}`))) fail(`${tag}: tab ${view} not shown`);
     if (!(await noHScroll(page))) fail(`${tag}: tab ${view} scrolls sideways (scrollWidth ${await page.evaluate(() => document.documentElement.scrollWidth)}px; sticking out: ${await stickingOut(page) || "nothing outside the tables"})`);
     if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-${view}-${tag}.png`, fullPage: true });
   }
+  // The Leerlingen switch and both toggles, and Beheer with all its groups open (the tabs above show it folded).
+  await page.evaluate(() => { location.hash = "leerlingen"; });
+  await page.waitForSelector("#ll-platform");
+  for (const plat of ["instagram", "tiktok", "all"]) {
+    await page.click(`#ll-platform button[data-plat="${plat}"]`);
+    for (const wanted of [true, false]) {
+      for (const id of ["ll-whole", "ll-hidefree"]) if ((await page.isChecked(`#${id}`)) !== wanted) await page.click(`#${id}`);
+      if (!(await noHScroll(page))) fail(`${tag}: Leerlingen (${plat}, ${wanted ? "whole campaign, free days hidden" : "up to today"}) scrolls sideways (sticking out: ${await stickingOut(page) || "nothing outside the tables"})`);
+    }
+  }
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-leerlingen-${tag}.png`, fullPage: true });
+  await page.evaluate(() => { location.hash = "beheer"; });
+  await page.waitForSelector("#acc-body tr", { state: "attached" });
+  await openGroups(page, ["leerlingen", "ophalen", "campagne", "log"]);
+  await page.waitForTimeout(150);
+  if (!(await noHScroll(page))) fail(`${tag}: Beheer with every group open scrolls sideways (sticking out: ${await stickingOut(page) || "nothing outside the tables"})`);
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-beheer-open-${tag}.png`, fullPage: true });
   if (page.errors.length) fail(`${tag}: browser errors: ${page.errors.join(" | ")}`);
-  console.log(`${tag}: all tabs open, no sideways scroll`);
+  console.log(`${tag}: all tabs open, Leerlingen switch and toggles, Beheer groups open: no sideways scroll`);
   await page.close();
+}
+
+// Marks (Instagram, TikTok, and the warning icons): one colour that follows the text (so light and dark both work, at least 3:1 against
+// the background), hidden from screen readers themselves, and never alone: a platform mark has its own name and tooltip, a warning
+// mark has its words in the same badge. The tabs have none.
+{
+  const audit = () => {
+    const rgb = (c) => (c.match(/[\d.]+/g) || []).map(Number);
+    const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b); };
+    const backdrop = (el) => { for (let e = el; e; e = e.parentElement) { const c = rgb(getComputedStyle(e).backgroundColor); if (c.length >= 3 && (c[3] ?? 1) > 0.5) return c; } return rgb(getComputedStyle(document.body).backgroundColor); };
+    const problems = [];
+    const marks = [...document.querySelectorAll("svg.ico")].filter((s) => s.getClientRects().length);
+    for (const s of marks) {
+      const where = () => `${s.closest("tr,li,.tile,h3,.badge,a,.card")?.textContent.trim().replace(/\s+/g, " ").slice(0, 40) || "?"}`;
+      const cs = getComputedStyle(s);
+      if (s.getAttribute("aria-hidden") !== "true" || s.getAttribute("focusable") !== "false") problems.push(`svg not hidden from screen readers (${where()})`);
+      const plat = s.closest(".plat");
+      if (plat) {
+        const name = plat.getAttribute("aria-label");
+        if (plat.getAttribute("role") !== "img" || !["TikTok", "Instagram"].includes(name) || plat.title !== name) problems.push(`platform mark without its name (${where()})`);
+      } else {
+        const badge = s.closest(".badge");
+        const words = badge ? [...badge.childNodes].filter((n) => n.nodeType === 3 || (n.nodeType === 1 && !n.matches("svg") && !n.matches(".plat"))).map((n) => n.textContent).join("").trim() : "";
+        if (!words) problems.push(`warning mark without words next to it (${where()})`);
+      }
+      if (cs.stroke !== cs.color) problems.push(`mark is not in the text colour (${where()}: stroke ${cs.stroke}, color ${cs.color})`);
+      const fg = rgb(cs.color), bg = backdrop(s);
+      const [a, b] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+      const ratio = (a + 0.05) / (b + 0.05);
+      if (ratio < 3) problems.push(`mark too faint (${ratio.toFixed(1)}:1; ${where()})`);
+    }
+    if (document.querySelector(".tabs svg, .tabs img")) problems.push("icons on the tabs");
+    return { count: marks.length, problems: [...new Set(problems)].slice(0, 6) };
+  };
+  for (const scheme of ["light", "dark"]) {
+    const ip = await open({ width: 1280, height: 900 }, "#overzicht");
+    await ip.emulateMedia({ colorScheme: scheme });
+    await ip.waitForSelector("#ov-body tr[data-handle]");
+    const seen = {};
+    for (const [view, extra] of [["overzicht", async () => { await showBoard(ip, "tiktok"); await ip.click('#ov-body td.wide-only button[data-warn]:has-text("privé")'); }], ["vandaag", null],
+      ["leerlingen", async () => { await ip.click('#ll-platform button[data-plat="instagram"]'); }], ["leerlingen/test_01", null], ["beheer", async () => { await openGroups(ip); }]]) {
+      await ip.evaluate((v) => { location.hash = v; }, view);
+      await ip.waitForTimeout(250);
+      if (extra) await extra();
+      const r = await ip.evaluate(audit);
+      seen[view] = r.count;
+      if (r.problems.length) fail(`marks (${scheme}) on ${view}: ${r.problems.join("; ")}`);
+    }
+    if (Object.values(seen).some((n) => !n)) fail(`marks (${scheme}): a page without any mark ${JSON.stringify(seen)}`);
+    console.log(`marks (${scheme}): ${JSON.stringify(seen)} -- hidden from screen readers, named or with words, 3:1 contrast`);
+    if (ip.errors.length) fail(`marks (${scheme}): browser errors: ${ip.errors.join(" | ")}`);
+    await ip.close();
+  }
 }
 
 // Text pasted into the forms on Beheer (a long link, a sentence) shows up in previews and messages: in a wide font at phone size
@@ -335,7 +407,8 @@ for (const [viewport, font] of sweeps) {
   const longLink = "https://www.instagram.com/leerling_met_een_hele_lange_naam_die_niet_past/reel/Cxyz1234567890abcdefghijklmnop/?igsh=MWRsbHVicXRyZWF0Z2VuZA%3D%3D";
   for (const [name, css] of [["DejaVu Sans", "DejaVu Sans"], ["monospace", '"DejaVu Sans Mono", "Liberation Mono", monospace']]) {
     const bp = await open({ width: 390, height: 844 }, "#beheer", css);
-    await bp.waitForSelector("#acc-body tr");
+    await bp.waitForSelector("#acc-body tr", { state: "attached" });
+    await openGroups(bp);
     await bp.fill("#sh-input", `glu ${longLink} ${longLink.toUpperCase()}`);
     await bp.fill('#add-form [name="handle"]', longLink.replace("instagram", "tiktok"));
     await bp.fill('#add-form [name="instagram"]', longLink + "/zzzzzzzzzzzzzzzzzzzzzzzzzzzz");
@@ -412,7 +485,7 @@ if (!annaRow.includes("@test_01 + @test_13")) fail(`overzicht: two accounts not 
 await page.click('#ov-body td.wide-only button[data-open="test_01"]');
 const subRows = await page.$$eval("#ov-body tr.sub-row", (r) => r.map((x) => x.dataset.handle));
 console.log(`overzicht: Anna = @test_01 + @test_13, per account: ${subRows.join(", ")}`);
-if (!annaRow.includes("IG @anna.gram")) fail(`overzicht: Anna's Instagram handle not shown (${annaRow.slice(0, 120)})`);
+if (!annaRow.includes("@anna.gram") || /\bIG\b/.test(annaRow) || !(await page.$('#ov-body tr[data-handle="test_01"] td.handle .plat-instagram'))) fail(`overzicht: Anna's Instagram handle not shown with its mark (${annaRow.slice(0, 120)})`);
 if (subRows.join() !== "test_01,test_13,instagram:anna.gram") fail(`overzicht: per-account rows wrong (${subRows})`);
 const igSub = await page.textContent('#ov-body tr.sub-row[data-handle="instagram:anna.gram"]');
 if (!/Instagram/.test(igSub) || !igSub.includes("@anna.gram")) fail(`overzicht: Instagram sub-row wrong (${igSub.slice(0, 100)})`);
@@ -423,7 +496,19 @@ const sumOk = await page.evaluate(() => {
 });
 if (!sumOk) fail("overzicht: Anna's views are not the sum of her two accounts");
 await page.click('#ov-body td.wide-only button[data-open="test_01"]');
-for (const w of ["privé", "niet gevonden", "verdwenen", "privé (Instagram)", "niet gevonden (Instagram)", "privé (TikTok)"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+for (const w of ["privé", "niet gevonden", "verdwenen"]) if (!text.includes(w)) fail(`overzicht: no "${w}" warning`);
+// The platform of a warning is a mark in front of the words, not words: "privé (Instagram)" is now [Instagram] privé. Each warning type has its own icon.
+{
+  const badges = await page.$$eval("#ov-body .badge", (b) => b.map((x) => ({ text: x.textContent.trim(), plat: [...x.querySelectorAll(".plat")].map((p) => p.getAttribute("aria-label")).join(), icons: x.querySelectorAll("svg.ico").length })));
+  const has = (text, plat) => badges.some((b) => b.text === text && b.plat === plat && b.icons >= 2);
+  if (!has("privé", "Instagram") || !has("niet gevonden", "Instagram") || !has("privé", "TikTok") || !has("niet gevonden", "TikTok")) fail(`overzicht: warnings without the platform mark (${JSON.stringify(badges.filter((b) => /privé|niet gevonden/.test(b.text)))})`);
+  if (badges.some((b) => /\((Instagram|TikTok)\)/.test(b.text))) fail(`overzicht: a warning still says the platform in words (${badges.map((b) => b.text).filter((x) => /\((Instagram|TikTok)\)/.test(x)).join(" | ")})`);
+  // One icon per type: private, not found, no Instagram handle, video gone (distinct shapes), each with its words beside it.
+  const kinds = await page.$$eval("#ov-body .badge > svg.ico", (s) => s.map((x) => ({ words: x.closest(".badge").textContent.trim().replace(/^\d+ /, ""), path: x.innerHTML })));
+  const shape = (re) => new Set(kinds.filter((k) => re.test(k.words)).map((k) => k.path));
+  const shapes = [/^privé/, /^niet gevonden/, /^geen Instagram-handle/, /video.* verdwenen$/].map(shape);
+  if (shapes.some((s) => s.size !== 1) || new Set(shapes.flatMap((s) => [...s])).size !== 4) fail(`overzicht: the four warning types should each have one distinct icon (${shapes.map((s) => s.size).join("/")})`);
+}
 // Instagram has started and most students have no (valid) handle: for them "geen Instagram-handle" replaces "dagen geen post"
 // (test_04 stopped posting on TikTok on 4 Oct but may post on Instagram), and nobody else is warned about silence.
 const noHandleCount = [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((g) => !g.instagram).length;
@@ -439,8 +524,8 @@ const noHandleCount = [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).va
 }
 // Pim has only Instagram: a row with the Instagram handle, no TikTok handle.
 const pimRow = await page.textContent('#ov-body tr[data-handle="instagram:pim.only"]');
-if (!pimRow.includes("IG @pim.only") || pimRow.includes("@test")) fail(`overzicht: Instagram-only student wrong (${pimRow.slice(0, 120)})`);
-if (!(await page.textContent("#ov-tiles")).includes("TikTok") || !/Instagram \d+/.test(await page.textContent("#ov-tiles"))) fail("overzicht: posts tile does not split TikTok and Instagram");
+if (!pimRow.includes("@pim.only") || /\bIG\b/.test(pimRow) || pimRow.includes("@test") || !(await page.$('#ov-body tr[data-handle="instagram:pim.only"] td.handle .plat-instagram'))) fail(`overzicht: Instagram-only student wrong (${pimRow.slice(0, 120)})`);
+if (!(await page.$("#ov-tiles .plat-tiktok")) || !(await page.$("#ov-tiles .plat-instagram")) || !/\d+\s+·\s+\d+/.test(await page.textContent("#ov-tiles"))) fail("overzicht: posts tile does not split TikTok and Instagram (with the platform marks)");
 if (!(await page.$eval("#ov-ig-note", (e) => e.hidden))) fail("overzicht: 'Instagram nog niet opgehaald' shown although Instagram data exists");
 if (!(await page.$("#ov-body mark.unknown"))) fail("overzicht: empty name not highlighted as onbekend");
 await page.click('#ov-table th[data-sort="name"] button');
@@ -461,6 +546,7 @@ console.log(`overzicht: Actie nodig chips, @handle vs name centre: worst ${worst
 if (Math.abs(worstChip) > 2) fail(`overzicht: handles in Actie nodig are ${worstChip}px off centre`);
 
 // Actie nodig, median, clickable warnings (which video, since when).
+let ovTodoN = null;
 const actions = await page.textContent("#ov-actions");
 for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet gehaald", "Dagopdracht vandaag"]) if (!actions.includes(w)) fail(`overzicht: Actie nodig has no "${w}"`);
 {
@@ -468,9 +554,20 @@ for (const w of ["Actie nodig", "Privé", "Niet gevonden", "Dagopdracht niet geh
   if (!group.includes("Geen Instagram-handle: niet te controleren") || !group.includes(`(${noHandleCount})`) || !group.includes("Handles invullen")) fail(`overzicht: Actie nodig group for missing handles wrong (${group.slice(0, 160)})`);
   const todoGroup = await page.$eval("#ov-actions", (a) => [...a.querySelectorAll(".action-group")].filter((g) => /Nog niet gepost vandaag|Dagopdracht vandaag/.test(g.querySelector("h3").textContent)).map((g) => g.textContent).join(" "));
   if (todoGroup.includes("Dewi")) fail("overzicht: a student without a handle is listed as 'nog niet gepost vandaag'");
+  // "Nog niet gepost vandaag" is only a count and a link to Vandaag now (the names are on Vandaag); the other groups keep their chips.
+  const todo = await page.$eval("#ov-actions", (a) => {
+    const g = [...a.querySelectorAll(".action-group")].find((x) => /Nog niet gepost vandaag|Dagopdracht vandaag/.test(x.querySelector("h3").textContent));
+    return g ? { chips: g.querySelectorAll("a.chip").length, text: g.textContent.replace(/\s+/g, " "), link: g.querySelector('a[href="#vandaag"]')?.textContent || "" } : null;
+  });
+  if (!todo || todo.chips || !/\d+ leerling(en)? (heeft|hebben)/.test(todo.text) || !/Naar Vandaag/.test(todo.link)) fail(`overzicht: Actie nodig "nog niet gepost" should be a count with a link to Vandaag (${JSON.stringify(todo)})`);
+  for (const title of ["Privé", "Niet gevonden", "Dagopdracht niet gehaald"]) {
+    if (!(await page.$$eval("#ov-actions .action-group", (g, ti) => g.some((x) => x.querySelector("h3").textContent.startsWith(ti) && x.querySelectorAll("a.chip").length), title))) fail(`overzicht: Actie nodig group "${title}" lost its names`);
+  }
+  ovTodoN = Number(/(\d+) leerling(en)?/.exec(todo.text)[1]);
+  console.log(`overzicht: Actie nodig "nog niet gepost" = ${todo.text.slice(0, 80)}`);
 }
 if (!/mediaan per leerling/.test(await page.textContent("#ov-tiles"))) fail("overzicht: no median next to the total");
-await page.click('#ov-body td.wide-only button[data-warn]:text("verdwenen")');
+await page.click('#ov-body td.wide-only button[data-warn]:has-text("verdwenen")');
 const detail = await page.textContent("#ov-body tr.warn-detail");
 if (!/verdwenen sinds/.test(detail) || !/open ↗/.test(detail)) fail(`overzicht: warning details missing (${detail.slice(0, 80)})`);
 {
@@ -485,7 +582,7 @@ if (!/verdwenen sinds/.test(detail) || !/open ↗/.test(detail)) fail(`overzicht
   const gijs = await page.$eval('#ov-body tr[data-handle="test_07"]', (r) => r.textContent);
   if (/verdwenen/.test(gijs)) fail(`overzicht: an old "verdwenen" is still on Overzicht (${gijs.slice(0, 120)})`);
 }
-await page.click('#ov-body td.wide-only button[data-warn]:text("privé")');
+await page.click('#ov-body td.wide-only button[data-warn]:has-text("privé")');
 if (!/privé sinds/.test(await page.textContent("#ov-body tr.warn-detail"))) fail("overzicht: privé has no 'since'");
 if (!(await page.textContent("#ov-body")).includes("opdracht 1 okt")) fail("overzicht: no dagopdracht badge");
 console.log(`overzicht: actie nodig "${actions.replace(/\s+/g, " ").slice(0, 90)}…"`);
@@ -495,6 +592,21 @@ console.log(`overzicht: sort by name ok=${namesAsc[0] === "Anna"}, with warning=
 
 await page.evaluate(() => { location.hash = "leerlingen"; });
 await page.waitForSelector(".heat tbody tr");
+// The calendar starts on Alles (the official count), with the days up to today, and free days shown.
+{
+  const upToToday = lib.campaignDays(CFG).filter((d) => d <= lib.localDay(NOW));
+  const d = await page.evaluate(() => ({ plat: document.querySelector("#ll-platform [aria-pressed=true]")?.dataset.plat, hide: document.getElementById("ll-hidefree")?.checked,
+    whole: document.getElementById("ll-whole")?.checked, cols: document.querySelectorAll(".heat tbody tr:first-child td.day").length,
+    last: document.querySelector(".heat thead th:nth-last-child(5)")?.title, switchStyle: document.getElementById("ll-platform")?.className }));
+  if (d.plat !== "all" || d.hide || d.whole || d.switchStyle !== "seg") fail(`leerlingen: defaults are ${JSON.stringify(d)}`);
+  if (d.cols !== upToToday.length || upToToday.length >= lib.campaignDays(CFG).length) fail(`leerlingen: ${d.cols} day columns by default, expected the ${upToToday.length} up to today`);
+  if (!/7 okt/.test(d.last)) fail(`leerlingen: the last day column is "${d.last}", expected today (7 okt)`);
+  if ((await page.$$eval("#ll-platform button", (b) => b.map((x) => x.textContent)).then((x) => x.join())) !== "Alles,Instagram,TikTok") fail("leerlingen: the switch should read Alles, Instagram, TikTok");
+  await page.click("#ll-whole");
+  await page.waitForFunction((n) => document.querySelectorAll(".heat tbody tr:first-child td.day").length === n, lib.campaignDays(CFG).length);
+  if (await page.evaluate(() => document.activeElement.id) !== "ll-whole") fail("leerlingen: the toggle lost the keyboard focus after drawing again");
+}
+// From here the older checks look at the whole campaign.
 const heatRows = await page.$$eval(".heat tbody tr", (r) => r.length);
 const missCells = await page.$$eval(".heat td.miss", (c) => c.length);
 const days = await page.$$eval(".heat tbody tr:first-child td.day", (c) => c.length);
@@ -557,6 +669,118 @@ const taskCells = await page.$$eval(".heat td.task-miss", (c) => c.map((x) => x.
 console.log(`leerlingen: dagopdracht not reached in ${taskCells.length} cells, e.g. "${taskCells[0]}"`);
 if (!taskCells.length || !taskCells.every((t) => /^[01]\/2$/.test(t))) fail(`leerlingen: dagopdracht cells wrong (${taskCells.join(",")})`);
 if (!(await page.textContent(".heat thead")).includes("Opdr. niet gehaald")) fail("leerlingen: no 'opdrachten niet gehaald' column");
+// The platform switch: Alles is the official count; Instagram and TikTok recount Reeks, Gemist, Posts and the squares for that platform
+// alone, say so on the columns, and leave the dagopdrachten out (judged on Alles only).
+{
+  const campaign = lib.campaignDays(CFG);
+  const rowData = () => page.evaluate(() => Object.fromEntries([...document.querySelectorAll("#ll-content .heat tbody tr:not(.sub-row)")].map((tr) => [tr.dataset.handle,
+    { cells: [...tr.querySelectorAll("td.day")].map((c) => c.className.replace(/\bday\b/, "").trim()), nums: [...tr.querySelectorAll("td.num")].map((c) => c.textContent.trim()), text: tr.querySelector("td.name").textContent.replace(/\s+/g, " ").trim() }])));
+  const choose = async (plat) => {
+    await page.click(`#ll-platform button[data-plat="${plat}"]`);
+    await page.waitForSelector(`#ll-platform button[data-plat="${plat}"][aria-pressed="true"]`);
+  };
+  const heads = () => page.$$eval("#ll-content .heat thead th.num", (t) => t.map((x) => ({ text: x.textContent.trim(), mark: [...x.querySelectorAll(".plat")].map((p) => p.getAttribute("aria-label")).join() })));
+  const same = (got, want, label) => { if (JSON.stringify(got) !== JSON.stringify(want)) fail(`leerlingen: ${label}: ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`); };
+  const missedOf = (r) => campaign.filter((d, i) => r.cells[i].split(/\s+/).includes("miss"));
+  const numsOf = (s) => [String(s.streak), String(s.missedDays), String(s.posts)];
+  const igOf = (h) => lib.studentStats(lib.instagramPosts(igPosts.filter((p) => p.handle === h)), CFG, NOW, [], { from: IG_START });
+  const ttOf = (h) => lib.studentStats(posts.filter((p) => p.handle === h), CFG, NOW, []);
+
+  // Alles: the official numbers (both platforms, with the dagopdrachten column).
+  const all = await rowData();
+  const chrisBoth = lib.studentStats([...posts.filter((p) => p.handle === "test_03"), ...lib.instagramPosts(igPosts.filter((p) => p.handle === "chris.ig"))], CFG, NOW, tasks);
+  same(all.test_03.nums, [String(chrisBoth.streak), String(chrisBoth.missedDays), String(chrisBoth.tasksMissed), String(chrisBoth.posts)], "Alles, Chris (Reeks, Gemist, Opdr., Posts)");
+  same((await heads()).map((h) => h.text + h.mark), ["Reeks", "Gemist", "Opdr. niet gehaald", "Posts"], "Alles: column heads");
+  if (await page.$("#ll-plat-note")) fail("leerlingen: a note about one platform on Alles");
+
+  // Instagram: Chris posted on Instagram on two days only.
+  await choose("instagram");
+  const ig = await rowData();
+  const chrisIg = igOf("chris.ig");
+  same(ig.test_03.nums, numsOf(chrisIg), "Instagram, Chris");
+  same(missedOf(ig.test_03), chrisIg.missedList, "Instagram, Chris: missed squares");
+  same(ig.test_01.nums, numsOf(igOf("anna.gram")), "Instagram, Anna");
+  same(ig["instagram:pim.only"].nums, numsOf(igOf("pim.only")), "Instagram, Pim");
+  if (ig.test_03.nums[1] === all.test_03.nums[1] || Number(ig.test_03.nums[1]) <= Number(all.test_03.nums[1])) fail("leerlingen: Chris should have more missed days on Instagram alone than on Alles");
+  same((await heads()).map((h) => h.text + ":" + h.mark), ["Reeks:Instagram", "Gemist:Instagram", "Posts:Instagram"], "Instagram: column heads name the platform (no dagopdrachten column)");
+  const note = (await page.textContent("#ll-plat-note")).replace(/\s+/g, " ");
+  if (!/alleen posts op Instagram/.test(note) || !/Alles is de officiële telling/.test(note) || !/Dagopdrachten worden alleen bij Alles beoordeeld/.test(note)) fail(`leerlingen: note on the Instagram view (${note})`);
+  if (await page.$(".heat td.task, .heat td.task-miss")) fail("leerlingen: dagopdracht squares on a single platform");
+  // A student without an Instagram handle can't be judged there: no row of missed days, "niet te controleren" instead.
+  const dewiIg = ig.test_04;
+  if (!dewiIg.nums.every((n) => n === "–") || !/geen Instagram-handle/.test(dewiIg.text) || dewiIg.cells.some((c) => /\bmiss\b/.test(c)) || !dewiIg.cells.some((c) => /unverified/.test(c))) fail(`leerlingen: Dewi (no handle) on Instagram (${JSON.stringify(dewiIg).slice(0, 200)})`);
+  if (!(await page.textContent(".legend-row")).includes("niet te controleren (geen Instagram-handle)")) fail("leerlingen: no legend for the unknown days on Instagram");
+  if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-kalender-instagram-1280px.png`, fullPage: true });
+
+  // TikTok: Chris's missed days are his TikTok-only ones; Pim has no TikTok account.
+  await choose("tiktok");
+  const tt = await rowData();
+  same(tt.test_03.nums, numsOf(ttOf("test_03")), "TikTok, Chris");
+  same(missedOf(tt.test_03), chrisMissed, "TikTok, Chris: missed squares");
+  same((await heads()).map((h) => h.text + ":" + h.mark), ["Reeks:TikTok", "Gemist:TikTok", "Posts:TikTok"], "TikTok: column heads");
+  const pimTt = tt["instagram:pim.only"];
+  if (!pimTt.nums.every((n) => n === "–") || !/geen TikTok-account/.test(pimTt.text) || pimTt.cells.some((c) => /\bmiss\b/.test(c))) fail(`leerlingen: Pim (no TikTok) on TikTok (${JSON.stringify(pimTt).slice(0, 200)})`);
+  if (!/alleen posts op TikTok/.test(await page.textContent("#ll-plat-note"))) fail("leerlingen: no note on the TikTok view");
+  // Back to Alles: exactly the official numbers again.
+  await choose("all");
+  same(await rowData(), all, "Alles again after the other two");
+
+  // "Verberg vrije dagen": weekends and free periods leave the table; the numbers do not change (a post on a free day still
+  // counts toward the streak) and a note says so.
+  const free = campaign.filter((d) => lib.isOffDay(CFG, d));
+  await page.click("#ll-hidefree");
+  await page.waitForSelector("#ll-free-note");
+  const shown = await page.$$eval(".heat thead th:not(.name):not(.num)", (t) => t.map((x) => x.title));
+  if (shown.length !== campaign.length - free.length || free.some((d) => shown.includes(new Intl.DateTimeFormat("nl-NL", { timeZone: "UTC", weekday: "short", day: "numeric", month: "short" }).format(Date.parse(d + "T00:00:00Z"))))) fail(`leerlingen: ${shown.length} columns with free days hidden, expected ${campaign.length - free.length}`);
+  const numbersOnly = (r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, v.nums]));
+  same(numbersOnly(await rowData()), numbersOnly(all), "numbers (Reeks, Gemist, Posts) with free days hidden");
+  if (!posts.some((p) => free.includes(p.created_at.slice(0, 10)))) fail("fixture: nobody posted on a free day");
+  const freeNote = (await page.textContent("#ll-free-note")).replace(/\s+/g, " ");
+  if (!freeNote.includes(`${free.length} vrije dagen verborgen`) || !/post op een vrije dag telt wel mee voor de reeks/.test(freeNote)) fail(`leerlingen: note about hidden free days (${freeNote})`);
+  await page.click("#ll-hidefree");
+  await page.waitForFunction(() => !document.getElementById("ll-free-note"));
+  if ((await page.$$eval(".heat thead th:not(.name):not(.num)", (t) => t.length)) !== campaign.length) fail("leerlingen: free days did not come back");
+
+  // Remembered per browser: the switch and both toggles survive a reload.
+  await choose("instagram");
+  await page.click("#ll-hidefree");
+  await page.click("#ll-whole");   // off again: days up to today
+  await page.reload();
+  await page.waitForSelector(".heat tbody tr");
+  const back = await page.evaluate(() => ({ plat: document.querySelector("#ll-platform [aria-pressed=true]").dataset.plat, hide: document.getElementById("ll-hidefree").checked, whole: document.getElementById("ll-whole").checked }));
+  same(back, { plat: "instagram", hide: true, whole: false }, "the choices after a reload");
+  // Back to Alles / free days shown / whole campaign for the checks below.
+  await choose("all");
+  await page.click("#ll-hidefree");
+  await page.click("#ll-whole");
+  await page.waitForFunction((n) => document.querySelectorAll(".heat tbody tr:first-child td.day").length === n, campaign.length);
+  console.log("leerlingen: platform switch (Alles/Instagram/TikTok), Verberg vrije dagen, Toon hele campagne, remembered after a reload");
+}
+// Without browser storage (private window, blocked site data) the page works as usual; the choices are just not remembered.
+{
+  const ns = await open({ width: 1280, height: 900 }, "#leerlingen", undefined, () => {
+    Object.defineProperty(window, "localStorage", { get() { throw new DOMException("denied", "SecurityError"); } });
+  });
+  await ns.waitForSelector(".heat tbody tr");
+  await ns.click('#ll-platform button[data-plat="instagram"]');
+  await ns.click("#ll-hidefree");
+  await ns.click("#ll-whole");
+  await ns.waitForSelector("#ll-free-note");
+  const got = await ns.evaluate(() => ({ plat: document.querySelector("#ll-platform [aria-pressed=true]").dataset.plat, hide: document.getElementById("ll-hidefree").checked,
+    whole: document.getElementById("ll-whole").checked, cols: document.querySelectorAll(".heat tbody tr:first-child td.day").length }));
+  const wholeFree = lib.campaignDays(CFG).filter((d) => !lib.isOffDay(CFG, d)).length;
+  if (got.plat !== "instagram" || !got.hide || !got.whole || got.cols !== wholeFree) fail(`leerlingen without storage: ${JSON.stringify(got)}`);
+  await ns.evaluate(() => { location.hash = "beheer"; });
+  await ns.waitForSelector("#acc-body tr", { state: "attached" });
+  await ns.click("#bh-g-leerlingen > summary");
+  if (!(await ns.$eval("#bh-g-leerlingen", (d) => d.open))) fail("beheer without storage: a group does not open");
+  await ns.reload();
+  await ns.waitForSelector("#acc-body tr", { state: "attached" });
+  if (await ns.$eval("#bh-g-leerlingen", (d) => d.open)) fail("beheer without storage: a group is open after a reload (nothing can be remembered)");
+  if (ns.errors.length) fail(`without storage: browser errors: ${ns.errors.join(" | ")}`);
+  console.log("leerlingen and beheer: work without browser storage (choices not remembered)");
+  await ns.close();
+}
 await page.click('#ll-content tr[data-handle="test_01"]:not(.sub-row) td.day');
 await page.waitForSelector(".cal");
 // Anna's page: both accounts together, or one of them.
@@ -575,27 +799,32 @@ console.log(`student detail: Anna ${allPosts} posts together, ${onePosts} on @te
 if (onePosts !== expected13 || allPosts !== expected13 + posts.filter((p) => p.handle === "test_01").length) fail("student detail: account dropdown wrong");
 await page.selectOption("#st-account", "");
 if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-student.png`, fullPage: true });
-const igLink = await page.$eval("#ll-content .detail-head", (h) => [...h.querySelectorAll("a")].map((a) => a.textContent.trim()).filter((t) => /Instagram/.test(t)));
-if (igLink.join() !== "@anna.gram op Instagram ↗") fail(`student detail: Instagram link wrong (${igLink.join()})`);
-const tiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
-for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video", "Weergaven (TikTok)", "Volgers (TikTok)", "Volgers (Instagram)"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
-const igTile = await page.$eval("#ll-content .tile:has(.label:text('Volgers (Instagram)'))", (t) => t.textContent);
+// The links to the accounts: the mark of the platform in front of the handle (no "op Instagram" in words).
+const markedLinks = (sel, plat) => page.$eval(sel, (h, p) => [...h.querySelectorAll("a")].filter((a) => a.querySelector(`.plat-${p}`)).map((a) => a.textContent.trim()), plat);
+const igLink = await markedLinks("#ll-content .detail-head", "instagram");
+if (igLink.join() !== "@anna.gram ↗") fail(`student detail: Instagram link wrong (${igLink.join()})`);
+if ((await markedLinks("#ll-content .detail-head", "tiktok")).join() !== "@test_01 ↗,@test_13 ↗") fail("student detail: TikTok links wrong");
+// A tile that is about one platform says which with a mark ("Weergaven:TikTok").
+const tileLabels = () => page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent.trim() + (x.querySelector(".plat") ? ":" + x.querySelector(".plat").getAttribute("aria-label") : "")));
+const tiles = await tileLabels();
+for (const t of ["Gemiste dagen", "Reeks", "Gem. weergaven/post", "Mediaan per video", "Engagement", "Beste video", "Weergaven:TikTok", "Volgers:TikTok", "Volgers:Instagram"]) if (!tiles.includes(t)) fail(`student detail: no ${t}`);
+const igTile = await page.$eval("#ll-content .tile:has(.label .plat-instagram)", (t) => t.textContent);
 if (!igTile.replace(/\s+/g, " ").includes("+7 sinds")) fail(`student detail: Instagram followers gained missing (${igTile})`);
 console.log(`student detail: ${tiles.length} tiles, posts=${await page.$$eval(ttRows, (r) => r.length)}, Instagram ${igRows}`);
 if (!(await page.textContent("#ll-content")).includes("Stories worden niet meegeteld.")) fail("student detail: no note about stories");
 // The Instagram account alone: its own calendar and table, no TikTok numbers.
 await page.selectOption("#st-account", "instagram:anna.gram");
 await page.waitForTimeout(200);
-const igOnlyTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
-if (igOnlyTiles.some((t) => /Weergaven|Engagement|Mediaan/.test(t)) || !igOnlyTiles.includes("Volgers (Instagram)")) fail(`student detail: Instagram alone shows ${igOnlyTiles.join(", ")}`);
+const igOnlyTiles = await tileLabels();
+if (igOnlyTiles.some((t) => /Weergaven|Engagement|Mediaan/.test(t)) || !igOnlyTiles.includes("Volgers:Instagram")) fail(`student detail: Instagram alone shows ${igOnlyTiles.join(", ")}`);
 if (await page.$(ttRows)) fail("student detail: TikTok table on the Instagram account alone");
 await page.selectOption("#st-account", "");
 // A student with only Instagram: no TikTok links or tiles, the Instagram table, and a working row link.
 await page.evaluate(() => { location.hash = "leerlingen/instagram:pim.only"; });
 await page.waitForSelector("#st-ig-posts");
-const pimTiles = await page.$$eval("#ll-content .tile .label", (t) => t.map((x) => x.textContent));
+const pimTiles = await tileLabels();
 const pimLinks = await page.$$eval("#ll-content .detail-head a", (a) => a.map((x) => x.textContent.trim()));
-if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only op Instagram ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
+if (pimTiles.some((t) => /Weergaven|Positie|Engagement/.test(t)) || pimLinks.join() !== "@pim.only ↗") fail(`student detail: Instagram-only student wrong (${pimTiles.join(", ")} / ${pimLinks.join()})`);
 if ((await page.$$eval("#st-ig-posts tbody tr", (r) => r.length)) !== igPosts.filter((p) => p.handle === "pim.only").length) fail("student detail: Pim's Instagram posts not all listed");
 // The student page keeps the full list of videos that disappeared, however long ago.
 for (const [h, n] of [["test_06", 2], ["test_07", 1]]) {
@@ -638,6 +867,7 @@ if (!/^(\d+) accounts, \1 records \((\d+) TikTok, 1 Instagram\)$/.test(cost)) fa
   if (hints.length !== 1 || hints[0].length > 160 || !hints[0].includes("Stories worden niet meegeteld.") || !/5–7 minuten per platform/.test(hints[0])) fail(`vandaag: the explanation under Controleer nu (${hints.length} paragraphs: ${hints.join(" | ")})`);
 }
 if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately");
+if (ovTodoN !== Number(todayCounts[0])) fail(`vandaag: Overzicht says ${ovTodoN} students have not posted, Vandaag lists ${todayCounts[0]}`);
 // No Instagram handle and nothing on TikTok today: "niet te controleren", in a group of their own with a link to the handle form,
 // not under "nog niet gepost". Together the four lists hold every student once.
 {
@@ -656,8 +886,8 @@ if (todayCounts[2] !== "1") fail("vandaag: private account not listed separately
   if (process.env.SHOTS) await page.screenshot({ path: `${process.env.SHOTS}/private-vandaag-nohandle-1280px.png`, fullPage: true });
 }
 // Pim (only Instagram) posted twice today on Instagram: done (dagopdracht 2), with the platform and a link to the post.
-const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram%3Apim.only"])', (li) => ({ text: li.textContent.replace(/\s+/g, " "), href: li.querySelector('a[target]')?.href }));
-if (!/2\/2/.test(pimToday.text) || !/op Instagram/.test(pimToday.text) || !pimToday.href?.startsWith("https://www.instagram.com/")) fail(`vandaag: Instagram-only student wrong (${JSON.stringify(pimToday)})`);
+const pimToday = await page.$eval('#td-done li:has(a[href="#leerlingen/instagram%3Apim.only"])', (li) => ({ text: li.textContent.replace(/\s+/g, " "), href: li.querySelector('a[target]')?.href, marks: li.querySelectorAll(".plat-instagram").length }));
+if (!/2\/2/.test(pimToday.text) || /op Instagram/.test(pimToday.text) || pimToday.marks < 2 || !pimToday.href?.startsWith("https://www.instagram.com/")) fail(`vandaag: Instagram-only student wrong (${JSON.stringify(pimToday)})`);
 if (!/Instagram/.test(await page.textContent("#td-checked"))) fail("vandaag: last checked has no Instagram time");
 if (!(await page.textContent("#view-vandaag")).includes("Stories worden niet meegeteld.")) fail("vandaag: no note about stories");
 let confirmText = "";
@@ -667,13 +897,43 @@ await page.waitForFunction(() => /5–7 minuten|gestart/.test(document.getElemen
 if (!posted.some((p) => p.url === "/api/today/check")) fail("vandaag: Controleer nu did not post");
 if (!/\(\d+ TikTok, 1 Instagram\)/.test(confirmText) || !/5–10 minuten/.test(confirmText)) fail(`vandaag: the confirmation does not name both platforms (${confirmText})`);
 
-// Opvallend: flags with their numbers.
-await page.evaluate(() => { location.hash = "opvallend"; });
-await page.waitForFunction(() => document.querySelectorAll("#sig-body tr").length && !/laden/.test(document.getElementById("sig-body").textContent));
-const sig = await page.textContent("#sig-body");
-console.log(`opvallend: ${await page.textContent("#sig-meta")}`);
-for (const w of ["Likes per weergave", "Geen reacties of shares"]) if (!sig.includes(w)) fail(`opvallend: no "${w}" flag`);
-if (/bot/i.test(sig)) fail("opvallend: says 'bot'");
+// The 5 tabs, the Presentatie button in the header, and old links to tabs that are gone (Stijgers, Opvallend, Presentatie, Export).
+{
+  const nav = await page.$$eval(".tabs a", (a) => a.map((x) => ({ text: x.textContent.trim(), icons: x.querySelectorAll("svg, img").length, view: x.dataset.view })));
+  if (nav.map((n) => n.text).join() !== "Overzicht,Vandaag,Leerlingen,Hashtags,Beheer" || nav.some((n) => n.icons)) fail(`tabs: ${JSON.stringify(nav)} (5 tabs, no icons on them)`);
+  const gone = await page.evaluate(() => ["stijgers", "opvallend", "presentatie", "export"].filter((v) => document.getElementById(`view-${v}`)));
+  if (gone.length) fail(`tabs: sections of removed tabs are still in the page: ${gone.join()}`);
+  const btn = await page.$eval(".present-actions a.present-btn", (a) => ({ text: a.textContent.trim(), href: a.getAttribute("href"), target: a.target, rel: a.rel, dark: document.querySelector(".present-actions a.present-dark")?.getAttribute("href") }));
+  if (!/Presentatie/.test(btn.text) || btn.href !== "present/index.html?present" || btn.target !== "_blank" || !/noopener/.test(btn.rel) || btn.dark !== "present/index.html?present&donker") fail(`header: Presentatie button ${JSON.stringify(btn)}`);
+  const present = await fetch(base + btn.href.split("?")[0]);
+  if (!present.ok) fail("header: the Presentatie button leads to a page that does not exist");
+  const hasSignals = await fetch(base + "app.js").then((r) => r.text()).then((s) => /renderSignals|renderRisers|sig-body|vid-body/.test(s));
+  if (hasSignals) fail("app.js still has code of Opvallend or Stijgers");
+  // Old links: no blank page, the place they live now (or the nearest), and a short notice that goes away on the next click.
+  const legacy = [["stijgers", "overzicht", /Stijgers staat niet meer/], ["opvallend", "overzicht", /Opvallend bestaat niet meer/],
+    ["presentatie", "overzicht", /knop ▶ Presentatie/], ["export", "beheer", /Export staat nu op Beheer, onder Campagne/]];
+  for (const [hash, view, text] of legacy) {
+    const lp = await open({ width: 1280, height: 900 }, "#" + hash);
+    await lp.waitForSelector(`#view-${view}:not([hidden])`);
+    await lp.waitForSelector("#moved:not([hidden])");
+    const got = await lp.evaluate(() => ({ hash: location.hash, moved: document.getElementById("moved").textContent, tab: document.querySelector('.tabs a[aria-current="page"]')?.dataset.view,
+      visible: [...document.querySelectorAll(".view")].filter((v) => !v.hidden).map((v) => v.id), campagne: document.getElementById("bh-g-campagne").open }));
+    if (got.tab !== view || got.visible.join() !== `view-${view}` || !text.test(got.moved) || got.hash !== "#" + view + (hash === "export" ? "/export" : "")) fail(`old link #${hash}: ${JSON.stringify(got)}`);
+    if (hash === "export" && !got.campagne) fail("old link #export: the Campagne group did not open");
+    if (hash === "export" && !(await lp.evaluate(() => { const r = document.getElementById("bh-export").getBoundingClientRect(); return r.top < innerHeight && r.bottom > 0; }))) fail("old link #export: the export button is not in view");
+    await lp.click('.tabs a[data-view="vandaag"]');
+    await lp.waitForSelector("#moved", { state: "hidden" });
+    if (lp.errors.length) fail(`old link #${hash}: browser errors: ${lp.errors.join(" | ")}`);
+    await lp.close();
+  }
+  // The same while the page is open (a click on an old link, a bookmark pasted in the address bar).
+  await page.evaluate(() => { location.hash = "stijgers"; });
+  await page.waitForSelector("#moved:not([hidden])");
+  if (!(await page.isVisible("#view-overzicht"))) fail("old link while open: Overzicht not shown");
+  await page.click('.tabs a[data-view="overzicht"]');
+  await page.waitForSelector("#moved", { state: "hidden" });
+  console.log("tabs: 5 tabs, Presentatie button in the header, old links (stijgers, opvallend, presentatie, export) land on Overzicht/Beheer with a notice");
+}
 
 // Hashtags: search, school presets, who uses it and who does not, "ontbreekt op laatste post", the most-used table.
 await page.evaluate(() => { location.hash = "hashtags"; });
@@ -759,7 +1019,71 @@ if (!notFoto[0].startsWith("Chris") || !/0 van 2 posts/.test(notFoto[0]) || !/ge
 console.log(`hashtags: ${tableRows.length} Instagram hashtags, #glu used by 3 of ${students} students`);
 
 await page.evaluate(() => { location.hash = "beheer"; });
-await page.waitForSelector("#acc-body tr");
+await page.waitForSelector("#acc-body tr", { state: "attached" });
+// Beheer: three groups that fold open and closed (closed at first), the activity log folded at the bottom, every section in its group,
+// and a group that needs attention says so on its closed header.
+{
+  const groupsOf = (p) => p.evaluate(() => [...document.querySelectorAll("#view-beheer > details")].map((d) => ({ id: d.id, open: d.open, title: d.querySelector(".bh-title").textContent,
+    attn: d.querySelector(".bh-attn") && !d.querySelector(".bh-attn").hidden ? [...d.querySelectorAll(".bh-attn .badge")].map((b) => b.textContent.trim()) : [] })));
+  const g = await groupsOf(page);
+  if (g.map((x) => x.id + ":" + x.title).join() !== "bh-g-leerlingen:Leerlingen,bh-g-ophalen:Ophalen en budget,bh-g-campagne:Campagne,bh-g-log:Activiteitenlog") fail(`beheer: groups ${JSON.stringify(g)}`);
+  if (g.some((x) => x.open)) fail("beheer: a group is open at first");
+  const holds = { "bh-g-leerlingen": ["#add-form", "#ig-card", "#acc-body", "#acc-issues"], "bh-g-ophalen": ["#bh-refresh", "#freq-form", "#bh-budget", "#run-body", "#bh-runs"],
+    "bh-g-campagne": ["#bh-finale", "#task-form", "#sh-form", "#bh-export", "#exp-download"], "bh-g-log": ["#act-body"] };
+  for (const [id, sels] of Object.entries(holds)) for (const s of sels) if (!(await page.$(`#${id} ${s}`))) fail(`beheer: ${s} is not in group ${id}`);
+  if ((await page.$$eval("#view-beheer > *:not(details):not(.bh-intro)", (e) => e.length)) !== 0) fail("beheer: sections outside the groups");
+  if (await page.isVisible("#freq-form")) fail("beheer: a closed group shows its content");
+  // Needs attention: students without Instagram (and problems in accounts) on Leerlingen; the others have nothing to say now.
+  const missingN = [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((x) => !x.instagram).length;
+  const problemsN = lib.parseAccounts(accountsSheet).filter((a) => a.issue || a.instagramIssue || a.groupIssue || (a.tracked && !a.name)).length;
+  if (g[0].attn.join() !== `${missingN} zonder Instagram,${problemsN} problemen` || g[1].attn.length || g[2].attn.length || g[3].attn.length) fail(`beheer: attention on the headers ${JSON.stringify(g.map((x) => x.attn))}, expected ${missingN} zonder Instagram, ${problemsN} problemen on Leerlingen only`);
+  // A failed run, a refusal for the budget, a month over the cap: Ophalen en budget says so (a refusal for a double tap is nothing to worry about).
+  const run = (over) => ({ timestamp: "2026-10-07T16:30:00Z", run_type: "ig_profiles", window: "2026-10-07/18u", dry_run: false, expected_records: 5, actual_records: 0, errors: 0, status: "ok", snapshot_ids: "", notes: "", ...over });
+  const attnWith = async (entries, label) => {
+    runLog.unshift(...entries);
+    const ap = await open({ width: 1280, height: 900 }, "#beheer");
+    await ap.waitForSelector("#acc-body tr", { state: "attached" });
+    const got = await groupsOf(ap);
+    runLog.splice(0, entries.length);
+    await ap.close();
+    return got;
+  };
+  let a = await attnWith([run({ status: "failed", errors: 5, notes: "boom" })]);
+  if (a[1].attn.join() !== "laatste run mislukt" || a[1].open) fail(`beheer: a failed run should show on the closed Ophalen header (${JSON.stringify(a[1])})`);
+  a = await attnWith([run({ status: "ok", timestamp: "2026-10-07T16:40:00Z" }), run({ status: "failed", errors: 5 })]);
+  if (a[1].attn.length) fail(`beheer: a failed run that a later run made good still shows (${a[1].attn.join()})`);
+  a = await attnWith([run({ status: "partial", errors: 1 })]);
+  if (a[1].attn.join() !== "laatste run gedeeltelijk") fail(`beheer: partial run (${a[1].attn.join()})`);
+  a = await attnWith([run({ status: "refused", notes: "REFUSED: would exceed the monthly cap" })]);
+  if (a[1].attn.join() !== "run geweigerd: budget") fail(`beheer: refused for the budget (${a[1].attn.join()})`);
+  a = await attnWith([run({ status: "refused", notes: "REFUSED: last profiles run was 5 min ago (minimum 30 min between runs)" })]);
+  if (a[1].attn.length) fail(`beheer: a refused double tap should not ask for attention (${a[1].attn.join()})`);
+  a = await attnWith([run({ status: "ok", dry_run: true, notes: "dry" }), run({ status: "failed", dry_run: true })]);
+  if (a[1].attn.length) fail("beheer: dry-runs should not count");
+  a = await attnWith([run({ run_type: "profiles", window: "big", expected_records: 1, actual_records: CFG.budget.monthlyCap - 300 })]);
+  if (!/^(budget op|verwacht boven de limiet)$/.test(a[1].attn.join())) fail(`beheer: a month over the cap (${a[1].attn.join()})`);
+  // Links into a group open it ("Handles invullen" goes to the block with the handles); what a teacher opens is remembered in that browser.
+  {
+    const lp = await open({ width: 1280, height: 900 }, "#beheer/instagram");
+    await lp.waitForSelector("#acc-body tr", { state: "attached" });
+    const open4 = async () => (await groupsOf(lp)).map((x) => x.open).join();
+    if ((await open4()) !== "true,false,false,false" || !(await lp.isVisible("#ig-card"))) fail(`beheer/instagram: ${await open4()}, the handles block is not in view`);
+    if (!(await lp.evaluate(() => { const r = document.getElementById("ig-card").getBoundingClientRect(); return r.top < innerHeight && r.bottom > 0; }))) fail("beheer/instagram: the handles block is not scrolled into view");
+    await lp.click("#bh-g-ophalen > summary");
+    await lp.reload();
+    await lp.waitForSelector("#acc-body tr", { state: "attached" });
+    if ((await open4()) !== "true,true,false,false") fail(`beheer: after a reload the groups are ${await open4()} (the opened group is remembered, a link opens its own)`);
+    await lp.evaluate(() => { location.hash = "beheer/campagne"; });
+    if ((await open4()) !== "true,true,true,false") fail(`beheer/campagne: ${await open4()}`);
+    await lp.focus("#bh-g-log > summary");
+    await lp.keyboard.press("Enter");
+    if (!(await lp.$eval("#bh-g-log", (d) => d.open))) fail("beheer: a group does not open from the keyboard");
+    if (lp.errors.length) fail(`beheer groups: browser errors: ${lp.errors.join(" | ")}`);
+    await lp.close();
+  }
+  console.log("beheer: 3 groups + folded log, closed at first; attention on closed headers (handles, problems, failed run, budget)");
+}
+await openGroups(page);
 const budgetText = await page.textContent("#bh-budget");
 if (!budgetText.includes(String(CFG.budget.monthlyCap).replace(/\B(?=(\d{3})+(?!\d))/g, "."))) fail("beheer: budget does not show the cap");
 // Two platforms: runs and accounts per platform, one cap; the schedule says how often each is pulled.
@@ -806,7 +1130,7 @@ console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)
   runLog.push({ timestamp: new Date(NOW).toISOString(), run_type: "profiles", window: "big", dry_run: false, expected_records: 1,
     actual_records: CFG.budget.monthlyCap - 300, errors: 0, status: "ok", snapshot_ids: "sd_big", notes: "" });
   await page.reload();
-  await page.waitForSelector("#acc-body tr");
+  await page.waitForSelector("#acc-body tr", { state: "attached" });
   await select("2h", "4h");
   text = await preview();
   if (!/Past niet in het budget: [\d.]+ is meer dan de limiet van 23\.000/.test(text) || !(await page.isDisabled("#freq-save"))) fail(`beheer: a choice that doesn't fit is not refused (${text.slice(-260)})`);
@@ -816,9 +1140,11 @@ console.log(`beheer: schedule "${scheduleText.replace(/\s+/g, " ").slice(0, 120)
   if (!text.includes("kost minder dan het huidige schema") || (await page.isDisabled("#freq-save"))) fail(`beheer: lowering is not allowed over the cap (${text.slice(-260)})`);
   runLog.pop();
   await page.reload();
-  await page.waitForSelector("#acc-body tr");
+  await page.waitForSelector("#acc-body tr", { state: "attached" });
   if (process.env.SHOTS) {
     const ph = await open({ width: 390, height: 844 }, "#beheer");
+    await ph.waitForSelector("#acc-body tr", { state: "attached" });
+    await openGroups(ph);
     await ph.waitForSelector("#freq-form");
     await ph.selectOption("#freq-tiktok", "off");
     await ph.locator("#freq-form").locator("xpath=ancestor::div[contains(@class,'card')]").screenshot({ path: `${process.env.SHOTS}/private-schema-off-390px.png` });
@@ -883,7 +1209,7 @@ if (!issuesText.includes("Rij 14") || !issuesText.includes("onbekend")) fail(`be
   const nowPresets = await page.$$eval("#tag-presets button[data-preset]", (b) => b.map((x) => x.dataset.preset));
   if (nowPresets.join() !== "glu,av,schoolproject") fail(`beheer: the saved school hashtags are not the presets (${nowPresets.join()})`);
   await page.evaluate(() => { location.hash = "beheer"; });
-  await page.waitForSelector("#acc-body tr");
+  await page.waitForSelector("#acc-body tr", { state: "attached" });
 }
 await page.fill('#add-form [name="handle"]', "https://www.tiktok.com/@Nieuw.Account");
 const preview = await page.textContent("#add-preview");
@@ -973,7 +1299,7 @@ await page.click('#acc-body button[data-outlier="test_04"]');
 await page.waitForTimeout(400);
 if (!posted.some((p) => p.url === "/api/outliers" && p.body.handle === "test_04" && p.body.on === true && p.body.platform === "tiktok")) fail("beheer: buiten schaal did not post (TikTok)");
 // Instagram has its own switch: Chris's Instagram account is one already, Pim's is switched on and off again.
-if (!(await page.textContent("#acc-body")).includes("buiten schaal (Instagram)")) fail("beheer: no 'buiten schaal (Instagram)' badge on Chris's row");
+if (!(await page.$$eval("#acc-body .badge", (b) => b.some((x) => x.textContent.trim() === "buiten schaal" && x.querySelector(".plat-instagram"))))) fail("beheer: no 'buiten schaal' badge with the Instagram mark on Chris's row");
 const annaIg = '#acc-body button[data-outlier="pim.only"][data-platform="instagram"]';
 await page.click(annaIg);
 await page.waitForFunction((s) => document.querySelector(s)?.dataset.on === "false", annaIg);
@@ -984,8 +1310,16 @@ await page.click("#bh-refresh");
 await page.waitForFunction(() => document.getElementById("bh-refresh-msg").textContent.includes("min"));
 console.log(`beheer: refresh message "${await page.textContent("#bh-refresh-msg")}"`);
 
-await page.evaluate(() => { location.hash = "export"; });
-await page.waitForSelector("#exp-preview th");
+// Export is a button under Campagne on Beheer (the preview of the first rows is folded).
+await page.evaluate(() => { location.hash = "beheer"; });
+await page.waitForSelector("#exp-preview th", { state: "attached" });
+{
+  if (!(await page.isVisible("#bh-g-campagne #exp-download")) || !/Download CSV/.test(await page.textContent("#exp-download"))) fail("beheer: no export button in the Campagne group");
+  if (await page.$eval("details.exp-more", (d) => d.open) || await page.isVisible("#exp-preview")) fail("beheer: the export preview should be folded");
+  await page.click("details.exp-more > summary");
+  if (!(await page.isVisible("#exp-preview th"))) fail("beheer: the export preview does not unfold");
+  await page.click("details.exp-more > summary");
+}
 const [download] = await Promise.all([page.waitForEvent("download"), page.click("#exp-download")]);
 const csv = readFileSync(await download.path(), "utf8");
 const lines = csv.trim().split(/\r\n/);
@@ -1042,8 +1376,8 @@ await page.close();
   await np.waitForSelector("#ov-body tr[data-handle]");
   await showBoard(np, "tiktok");
   if (await np.$eval("#ov-ig-note", (e) => e.hidden)) fail("overzicht: no note that Instagram has not been fetched yet");
-  if ((await np.textContent("#ov-body")).includes("nog niet opgehaald (Instagram)")) fail("overzicht: every student has a 'nog niet opgehaald (Instagram)' badge before the first Instagram run");
-  if (!(await np.textContent('#ov-body tr[data-handle="test_01"]')).match(/IG @[\w.]+/)) fail("overzicht: Instagram handle missing before the first run");
+  if (await np.$$eval("#ov-body .badge", (b) => b.some((x) => /nog niet opgehaald/.test(x.textContent) && x.querySelector(".plat-instagram")))) fail("overzicht: every student has a 'nog niet opgehaald (Instagram)' badge before the first Instagram run");
+  if (!(await np.textContent('#ov-body tr[data-handle="test_01"]')).match(/@anna\.\w+/) || !(await np.$('#ov-body tr[data-handle="test_01"] .plat-instagram'))) fail("overzicht: Instagram handle missing before the first run");
   await np.evaluate(() => { location.hash = "vandaag"; });
   await np.waitForSelector("#td-todo li");
   if (/Instagram/.test(await np.textContent("#td-checked"))) fail("vandaag: shows an Instagram time before any Instagram run");
@@ -1054,6 +1388,9 @@ await page.close();
 // Finale from Beheer: explanation with cost per hour, start with a deadline, LIVE banner, stop.
 {
   const fp = await open({ width: 1280, height: 900 }, "#beheer");
+  await fp.waitForSelector("#acc-body tr", { state: "attached" });
+  if (!(await fp.$eval("#bh-attn-campagne", (e) => e.hidden))) fail("beheer: Campagne asks for attention outside the reminder period");
+  await openGroups(fp, ["campagne"]);
   await fp.waitForSelector("#finale-start");
   if (await fp.isVisible("#reminder")) fail("reminder banner visible outside the reminder period");
   const card = await fp.textContent("#bh-finale");
@@ -1078,6 +1415,10 @@ await page.close();
   await fp.waitForTimeout(1200);
   const banner = await fp.textContent("#finale-banner");
   if (!/LIVE/.test(banner) || !/\d+:\d{2}:\d{2}/.test(banner)) fail(`finale: no LIVE countdown banner (${banner})`);
+  // A running finale shows on the header of the Campagne group, also when it is closed.
+  await fp.click("#bh-g-campagne > summary");
+  if ((await fp.$eval("#bh-g-campagne", (d) => d.open)) || !/finale loopt/.test(await fp.textContent("#bh-attn-campagne")) || await fp.isHidden("#bh-attn-campagne")) fail("finale: the closed Campagne header does not say the finale is running");
+  await fp.click("#bh-g-campagne > summary");
   if (process.env.SHOTS) await fp.screenshot({ path: `${process.env.SHOTS}/private-finale-live.png`, fullPage: true });
   fp.once("dialog", (d) => d.accept());
   await fp.click("#finale-stop");
@@ -1104,6 +1445,13 @@ await page.close();
   const text = await rp.$eval("#reminder", (e) => (e.hidden ? "" : e.textContent));
   console.log(`reminder 2 days before the end: "${text.slice(0, 70)}…"`);
   if (!/Vergeet niet de finale te starten/.test(text)) fail("reminder banner missing before the campaign end");
+  if (await rp.getAttribute("#reminder a", "href") !== "#beheer/campagne") fail("reminder: the link should open the Campagne group");
+  await rp.click("#reminder a");
+  await rp.waitForSelector("#bh-finale", { state: "visible" });
+  if (!(await rp.$eval("#bh-g-campagne", (d) => d.open))) fail("reminder: the link does not open the Campagne group");
+  await rp.click("#bh-g-campagne > summary");
+  if (!/finale nog starten/.test(await rp.textContent("#bh-attn-campagne")) || await rp.isHidden("#bh-attn-campagne")) fail("reminder: the closed Campagne header does not say the finale still has to start");
+  await rp.evaluate(() => { location.hash = "overzicht"; });
   finaleHasRun = true;
   await rp.reload();
   await rp.waitForSelector("#ov-body tr");
@@ -1111,18 +1459,14 @@ await page.close();
   await ctx.close();
   finaleHasRun = false;
 }
-// Stijgers (per video) and the per-video chart on a student page.
+// The per-video chart on a student page ("snelste stijger"); the Stijgers tab itself is gone from this page (it stays on the public site).
 {
-  const sp = await open({ width: 1280, height: 900 }, "#stijgers");
-  await sp.waitForSelector("#vid-body tr[data-handle]", { timeout: 10000 });
-  const n = await sp.$$eval("#vid-body tr[data-handle]", (r) => r.length);
-  await sp.click('#vid-range button[data-v="2"]');
-  await sp.click("#vid-body tr[data-handle]");
+  const sp = await open({ width: 1280, height: 900 }, "#leerlingen/test_01");
   await sp.waitForSelector("#st-videos:not([hidden])", { timeout: 10000 });
   const note = await sp.textContent("#st-videos-note");
-  console.log(`stijgers: ${n} videos; student page: "${note.slice(0, 50)}…"`);
-  if (!n) fail("stijgers: no videos");
-  if (sp.errors.length) fail(`stijgers: browser errors: ${sp.errors.join(" | ")}`);
+  console.log(`student page: video chart "${note.slice(0, 50)}…"`);
+  if (!/Snelste stijger/.test(note)) fail(`student page: no fastest riser note (${note})`);
+  if (sp.errors.length) fail(`student page chart: browser errors: ${sp.errors.join(" | ")}`);
   await sp.close();
 }
 
@@ -1374,7 +1718,8 @@ for (const [w, h] of [[1920, 1080], [1280, 720]]) {
 {
   const igMissing = () => [...lib.groupAccounts(lib.parseAccounts(accountsSheet)).values()].filter((g) => !g.instagram);
   const bp = await open({ width: 1280, height: 900 }, "#beheer");
-  await bp.waitForSelector("#acc-body tr");
+  await bp.waitForSelector("#acc-body tr", { state: "attached" });
+  await openGroups(bp);
   if (await bp.$eval("#ig-card", (c) => c.hidden) || !igMissing().length) fail("beheer: 'Leerlingen zonder Instagram' hidden while students lack a handle");
   // Everybody but one has a handle: the last one is filled in through the form, which then makes the block disappear.
   const [last, ...rest] = igMissing();

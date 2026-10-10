@@ -13,11 +13,6 @@ import sys
 from . import config, model
 
 
-def _camel(key: str) -> str:
-    head, *rest = key.split("_")
-    return head + "".join(p.capitalize() for p in rest)
-
-
 def build(cfg: config.Config) -> dict:
     camp = cfg.campaign
     hhmm = lambda t: t.strftime("%H:%M")  # noqa: E731
@@ -56,8 +51,6 @@ def build(cfg: config.Config) -> dict:
         "refreshNumOfPosts": cfg.refresh_num_of_posts,
         "forceMinMinutes": cfg.force_min_minutes,
         "todayCheck": {"cooldownMinutes": cfg.today_cooldown_minutes},
-        # snake_case keys from config.yaml -> camelCase, e.g. min_views -> minViews
-        "signals": {_camel(k): v for k, v in cfg.signals.items()},
         "fixedGids": dict(model.FIXED_SHEET_IDS),
         "workflows": {"force": "force-refresh.yml", "collect": "collect.yml"},
     }

@@ -23,16 +23,47 @@ const IG_TYPE_NL = { photo: "foto", reel: "reel", carousel: "carrousel" };
 const tiktok = (h, id) => `https://www.tiktok.com/@${encodeURIComponent(h)}${id ? `/video/${encodeURIComponent(id)}` : ""}`;
 const $ = (id) => document.getElementById(id);
 
+// Browser storage for small per-browser choices. It can be missing or throw (private window, blocked site data): then the
+// choice just isn't remembered and the page works as usual.
+const store = {
+  get(key) { try { return JSON.parse(window.localStorage.getItem(key)); } catch { return null; } },
+  set(key, value) { try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* not remembered */ } },
+};
+const CAL_KEY = "campagne.leerlingen";   // Leerlingen: platform switch and both toggles
+const BEHEER_KEY = "campagne.beheer";    // Beheer: which groups are open
+const CAL_PLATFORMS = ["all", "instagram", "tiktok"];
+const savedCal = store.get(CAL_KEY) || {};
+
+// Small one-colour marks (they follow the text colour, so they work in light and dark). A mark never stands alone: the platform
+// marks carry an accessible name and a tooltip, the warning marks sit next to the label of the warning.
+const ICONS = {
+  instagram: `<rect x="3" y="3" width="18" height="18" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.3" cy="6.7" r="1" fill="currentColor" stroke="none"/>`,
+  tiktok: `<path d="M14 3v10.5a3.5 3.5 0 1 1-3.5-3.5"/><path d="M14 3c.3 2.4 2 4 4.5 4.3"/>`,
+  lock: `<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>`,
+  notfound: `<circle cx="11" cy="11" r="6"/><path d="M16 16l4.5 4.5"/><path d="M8.7 8.7l4.6 4.6M13.3 8.7l-4.6 4.6"/>`,
+  nohandle: `<circle cx="12" cy="12" r="3.5"/><path d="M15.5 8.5v4a2.5 2.5 0 0 0 5 0V12a8.5 8.5 0 1 0-3.4 6.8"/><path d="M4 4l16 16"/>`,
+  missing: `<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M10 9.5l5 2.5-5 2.5z"/><path d="M4 20L20 4"/>`,
+};
+const icon = (name) => `<svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
+const WARN_ICON = { private: "lock", notfound: "notfound", nohandle: "nohandle", missing: "missing" };
+// The mark of a platform, with its name for screen readers and as tooltip.
+const platformMark = (p) => `<span class="plat plat-${p}" role="img" aria-label="${PLATFORM_NL[p]}" title="${PLATFORM_NL[p]}">${icon(p)}</span>`;
+
 const state = {
   raw: null, view: "overzicht", detail: null,
   sort: { key: "rank", dir: 1 }, search: "", onlyWarn: false,
   board: "instagram",    // Overzicht: which platform's standings (Instagram first, TikTok)
   tagSort: "posts", tagQuery: "", tagMissing: false, shDraft: null, accSearch: "", format: "nl",
-  videoRange: 24, postHistory: null, finaleCardKey: null,
+  postHistory: null, finaleCardKey: null,
   warnOpen: null,        // Overzicht: handle whose warning details are shown
   open: new Set(),       // students with two accounts whose per-account rows are shown (Overzicht, Leerlingen)
   account: null,         // student page: one account of a student with two ("" or null = both together)
-  hideOutliers: null,    // Stijgers/Hashtags "zonder buiten schaal"; null = on when any account is marked
+  cal: {                 // Leerlingen calendar: platform switch (Alles = the official count) and the two toggles; remembered per browser
+    platform: CAL_PLATFORMS.includes(savedCal.platform) ? savedCal.platform : "all",
+    hideFree: savedCal.hideFree === true, whole: savedCal.whole === true,
+  },
+  moved: "",             // notice after an old link (a tab that is gone) was sent somewhere else
+  scrollTo: null,        // id of the part of Beheer a link points at, scrolled to when the page is drawn
   taskEdit: null,        // Beheer: dagopdracht being edited (row)
   todayRun: null,        // Vandaag: { startedAt, count } while a "Controleer nu" run is on its way
   addFor: null,          // Beheer: account row with the "+ account" form open
@@ -185,34 +216,40 @@ function build(raw) {
   // Instagram standings: followers gained since each account's baseline (equal gains share a place).
   const igPlaces = lib.rankInstagram(students.filter((s) => s.ig).map((s) => ({ key: s.handle, gained: s.ig.gained, followers: s.ig.followers })));
   for (const s of students) s.igRank = igPlaces.get(s.handle) ?? null;
-  // Every account handle leads to its student (Stijgers, Hashtags and Opvallend work per account), and so does
+  // Every account handle leads to its student (the video chart and Hashtags work per account), and so does
   // "instagram:<handle>" (the Instagram account's own row).
   const byHandle = new Map(students.flatMap((s) => [...s.handles.map((h) => [h, s]), ...(s.ig ? [[s.ig.key, s]] : []), [s.handle, s]]));
   return { cfg, now, latest, latestIg, igFetched: igInfo.size > 0, final, students, posts, tasks, outliers, igOutliers, settings: raw.settings || { schoolHashtags: [], schoolHashtagsDefault: [] }, series: history,
     taskByDay: new Map(tasks.map((t) => [t.date, t])), byHandle };
 }
 
-// "@a + @b" for a student with two TikTok accounts; "· IG @c" adds the Instagram account.
-const handlesText = (s) => [s.handles.map((h) => "@" + h).join(" + "), s.ig ? `IG @${s.ig.handle}` : ""].filter(Boolean).join(" · ");
+// "@a + @b" for a student with two TikTok accounts; "· Instagram @c" adds the Instagram account. Plain text, for tooltips and labels.
+const handlesText = (s) => [s.handles.map((h) => "@" + h).join(" + "), s.ig ? `Instagram @${s.ig.handle}` : ""].filter(Boolean).join(" · ");
+// The same with the platform marks in front of the handles (what the pages show).
+const handlesHtml = (s) => [s.handles.length ? platformMark("tiktok") + s.handles.map((h) => "@" + esc(h)).join(" + ") : "",
+  s.ig ? platformMark("instagram") + "@" + esc(s.ig.handle) : ""].filter(Boolean).join(" · ");
 
 // Warnings per student. `detail` (HTML) is what a click on the badge shows: which video, since when.
 function warnings(s, cfg, now, igFetched = true) {
   const out = [];
   // Status per account; with two accounts (or TikTok and Instagram) the badge says which one.
   for (const a of s.accounts) {
+    // `text` is the plain wording (export, tooltips); `label` + `platform` is what the badge shows: the platform as a mark, not as text.
     const which = s.multi ? ` (@${a.handle})` : s.ig ? " (TikTok)" : "";
+    const label = s.multi ? ` (@${a.handle})` : "";
+    const platform = s.ig ? "tiktok" : undefined;
     const status = String(a.info?.last_status ?? "");
     const sinceTs = lib.parseTs(a.info?.status_since);
     const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend (vóór deze versie niet bijgehouden)";
     if (a.isPrivate) {
-      out.push({ cls: "bad", kind: "private", text: "privé" + which,
-        detail: `${s.multi ? `@${esc(a.handle)} staat` : "Staat"} op privé ${since}. Nieuwe weergaven tellen pas weer mee als het account openbaar is.` });
+      out.push({ cls: "bad", kind: "private", text: "privé" + which, label: "privé" + label, platform,
+        detail: `${s.multi ? `${platformMark("tiktok")}@${esc(a.handle)} staat` : "Staat"} op privé ${since}. Nieuwe weergaven tellen pas weer mee als het account openbaar is.` });
     }
     if (status.startsWith("fout")) {
-      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden" + which, title: status,
+      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden" + which, label: "niet gevonden" + label, platform, title: status,
         detail: `${s.multi ? `@${esc(a.handle)}: n` : "N"}iet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
     }
-    if (!a.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald" + which, detail: "Wordt opgehaald bij de volgende profielrun." });
+    if (!a.info) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald" + which, label: "nog niet opgehaald" + label, platform, detail: "Wordt opgehaald bij de volgende profielrun." });
   }
   if (s.ig) {
     const a = s.ig;
@@ -220,15 +257,15 @@ function warnings(s, cfg, now, igFetched = true) {
     const sinceTs = lib.parseTs(a.info?.status_since);
     const since = sinceTs ? `sinds ${stampFmt.format(sinceTs)}` : "sinds onbekend";
     if (a.isPrivate) {
-      out.push({ cls: "bad", kind: "private", text: "privé (Instagram)",
-        detail: `Instagram @${esc(a.handle)} staat op privé ${since}. Posts van een privé-account zijn niet te zien; zodra het account openbaar is, worden de nieuwste posts alsnog opgehaald.` });
+      out.push({ cls: "bad", kind: "private", text: "privé (Instagram)", label: "privé", platform: "instagram",
+        detail: `${platformMark("instagram")}@${esc(a.handle)} staat op privé ${since}. Posts van een privé-account zijn niet te zien; zodra het account openbaar is, worden de nieuwste posts alsnog opgehaald.` });
     }
     if (status.startsWith("fout")) {
-      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden (Instagram)", title: status,
-        detail: `Instagram @${esc(a.handle)} niet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
+      out.push({ cls: "bad", kind: "notfound", text: "niet gevonden (Instagram)", label: "niet gevonden", platform: "instagram", title: status,
+        detail: `${platformMark("instagram")}@${esc(a.handle)} niet gevonden ${since}. Melding: <code>${esc(status.replace(/^fout:\s*/, ""))}</code>. Klopt de handle nog?` });
     }
     // Before the very first Instagram run every student would get this badge; Overzicht shows one note instead.
-    if (!a.info && igFetched) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald (Instagram)", detail: "Wordt opgehaald bij de volgende Instagram-run." });
+    if (!a.info && igFetched) out.push({ cls: "info", kind: "new", text: "nog niet opgehaald (Instagram)", label: "nog niet opgehaald", platform: "instagram", detail: "Wordt opgehaald bij de volgende Instagram-run." });
   }
   const anyInfo = s.accounts.some((a) => a.info) || Boolean(s.ig?.info);
   const today = lib.localDay(now);
@@ -244,7 +281,7 @@ function warnings(s, cfg, now, igFetched = true) {
   if (anyInfo && !s.noHandle && today <= cfg.campaign.end && s.stats.quietDays !== null && s.stats.quietDays >= WARN_DAYS) {
     out.push({ cls: "warn", kind: "quiet", text: s.stats.lastDay ? `${s.stats.quietDays} dagen geen post` : "nog geen post",
       title: s.ig ? "Weekenden en vakantiedagen tellen niet mee; TikTok en Instagram tellen allebei" : "Weekenden en vakantiedagen tellen niet mee",
-      detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}${s.ig ? ` op ${PLATFORM_NL[s.stats.lastPlatform]}` : ""}. Weekenden en vakantiedagen tellen niet mee. Een post op TikTok of Instagram telt.`
+      detail: s.stats.lastDay ? `Laatste post: ${stampFmt.format(s.stats.last)}${s.ig ? ` ${platformMark(s.stats.lastPlatform)}` : ""}. Weekenden en vakantiedagen tellen niet mee. Een post op TikTok of Instagram telt.`
         : "Nog geen enkele campagnepost gezien." });
   }
   if (s.stats.missing) {
@@ -254,7 +291,7 @@ function warnings(s, cfg, now, igFetched = true) {
       .sort((a, b) => String(a.missing_since).localeCompare(String(b.missing_since)));
     const recentFrom = now - MISSING_RECENT_DAYS * DAY_MS;
     const recent = gone.filter((p) => (lib.parseTs(p.missing_since) ?? 0) >= recentFrom);
-    const warning = (list, extra = "") => ({ cls: "warn", kind: "missing", text: `${list.length} video${list.length > 1 ? "'s" : ""} verdwenen`,
+    const warning = (list, extra = "") => ({ cls: "warn", kind: "missing", text: `${list.length} video${list.length > 1 ? "'s" : ""} verdwenen`, platform: s.ig ? "tiktok" : undefined,
       title: "Stond eerder in het profiel maar nu niet meer: verwijderd of verborgen?",
       detail: `Stond eerder in het profiel maar nu niet meer (verwijderd of verborgen?). De laatst bekende cijfers tellen mee.${extra}<ul>${list.map((p) => {
         const c = lib.parseTs(p.created_at), m = lib.parseTs(p.missing_since);
@@ -279,15 +316,18 @@ const byName = (a, b) => (!a.name - !b.name) || (a.name || "").localeCompare(b.n
 const nameCell = (s) => (s.name ? esc(s.name) : `<mark class="unknown">onbekend</mark>`);
 // The warnings Overzicht shows: like s.warnings, but "video verdwenen" only for videos of the last few days.
 const overviewWarnings = (s) => s.warnings.flatMap((w) => (w.kind !== "missing" ? [w] : w.recent ? [w.recent] : []));
-const badges = (list) => list.map((w) => `<span class="badge ${w.cls}"${w.title ? ` title="${esc(w.title)}"` : ""}>${esc(w.text)}</span>`).join("");
+// What a warning badge shows: the mark of its kind (private, not found, no Instagram handle, video gone), the mark of the platform
+// when it is about one, and the words. `text` stays the plain wording (export); the marks never stand without the words.
+const warnInner = (w) => `${WARN_ICON[w.kind] ? icon(WARN_ICON[w.kind]) : ""}${w.platform ? platformMark(w.platform) : ""}<span>${esc(w.label ?? w.text)}</span>`;
+const badges = (list) => list.map((w) => `<span class="badge ${w.cls}"${w.title ? ` title="${esc(w.title)}"` : ""}>${warnInner(w)}</span>`).join("");
 // Clickable badges (Overzicht): a click shows the details under the row.
 const warnButtons = (s) => overviewWarnings(s).map((w) => `<button type="button" class="badge ${w.cls}" data-warn="${esc(s.handle)}"
-  aria-expanded="${state.warnOpen === s.handle}" title="${esc(w.title || "Klik voor details")}">${esc(w.text)}</button>`).join("");
+  aria-expanded="${state.warnOpen === s.handle}" title="${esc(w.title || "Klik voor details")}">${warnInner(w)}</button>`).join("");
 const warnDetails = (s, list = s.warnings) => `<ul class="warn-list">${list.filter((w) => w.detail)
-  .map((w) => `<li><span class="badge ${w.cls}">${esc(w.text)}</span> ${w.detail}</li>`).join("")}</ul>`;
+  .map((w) => `<li><span class="badge ${w.cls}">${warnInner(w)}</span> ${w.detail}</li>`).join("")}</ul>`;
 const shortDay = (d) => shortDate.format(Date.parse(d + "T00:00:00Z"));
 const studentLink = (s, extra = "") => `<a class="chip" href="#leerlingen/${encodeURIComponent(s.handle)}">${s.name ? esc(s.name) : "onbekend"}
-  <span class="chip-handle">${esc(handlesText(s))}</span>${extra}</a>`;
+  <span class="chip-handle">${handlesHtml(s)}</span>${extra}</a>`;
 
 // ---------- Overzicht ----------
 
@@ -343,7 +383,7 @@ function renderOverview(m) {
       : tile("Weergaven", fmt(all.reduce((n, s) => n + s.views, 0)),
         all.length ? `mediaan per leerling: <strong>${fmt(Math.round(lib.median(all.map((s) => s.views))))}</strong>` : ""))
     + tile("Posts", fmt(all.reduce((n, s) => n + s.stats.posts, 0)),
-      all.some((s) => s.ig) ? `TikTok ${fmt(all.reduce((n, s) => n + s.stats.tiktokPosts, 0))} · Instagram ${fmt(all.reduce((n, s) => n + s.stats.instagramPosts, 0))}` : "")
+      all.some((s) => s.ig) ? `${platformMark("tiktok")} ${fmt(all.reduce((n, s) => n + s.stats.tiktokPosts, 0))} · ${platformMark("instagram")} ${fmt(all.reduce((n, s) => n + s.stats.instagramPosts, 0))}` : "")
     + tile("Met waarschuwing", fmt(withWarn), withWarn ? "zie kolom Let op" : "alles in orde");
 
   // The platform switch and the column headers (they differ per platform).
@@ -379,8 +419,8 @@ function renderOverview(m) {
   $("ov-body").innerHTML = (ig ? rows.map((s) => `
     <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.igRank ?? "–"}</td>
-      <td>${nameCell(s)}${s.ig && s.ig.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${s.ig ? "@" + esc(s.ig.handle) : "geen Instagram-handle"}</span><span class="phone-only">${warnButtons(s)}</span></td>
-      <td class="handle wide-only">${s.ig ? "@" + esc(s.ig.handle) : `<span class="badge info" title="Zonder Instagram-handle is niet te zien wat deze leerling op Instagram post">geen handle</span>`}</td>
+      <td>${nameCell(s)}${s.ig && s.ig.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${s.ig ? platformMark("instagram") + "@" + esc(s.ig.handle) : `${icon("nohandle")}geen Instagram-handle`}</span><span class="phone-only">${warnButtons(s)}</span></td>
+      <td class="handle wide-only">${s.ig ? platformMark("instagram") + "@" + esc(s.ig.handle) : `<span class="badge info" title="Zonder Instagram-handle is niet te zien wat deze leerling op Instagram post">${icon("nohandle")}<span>geen handle</span></span>`}</td>
       <td class="num strong">${s.ig && s.ig.gained != null ? signed(s.ig.gained) : "–"}${igLate(s.ig)}</td>
       <td class="num">${fmt(s.ig ? s.ig.followers : null)}</td>
       <td class="num opt">${s.ig ? fmt(s.stats.instagramPosts) : "–"}</td>
@@ -389,8 +429,8 @@ function renderOverview(m) {
     </tr>${detail(s)}`) : rows.map((s) => `
     <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
       <td class="num strong">${s.rank}</td>
-      <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${esc(handlesText(s))}</span>${accToggle(s, "phone-only")}<span class="phone-only">${warnButtons(s)}</span></td>
-      <td class="handle wide-only">${esc(handlesText(s))}${accToggle(s)}</td>
+      <td>${nameCell(s)}${s.isOutlier ? ` <span class="badge info" title="Buiten de schaal van de grafieken; plaats en cijfers tellen gewoon">buiten schaal</span>` : ""}<span class="phone-only meta">${handlesHtml(s)}</span>${accToggle(s, "phone-only")}<span class="phone-only">${warnButtons(s)}</span></td>
+      <td class="handle wide-only">${handlesHtml(s)}${accToggle(s)}</td>
       <td class="num strong">${fmt(s.views)}</td>
       <td class="num opt">${signed(s.gain)}</td>
       <td class="num opt">${fmt(s.followers)}</td>
@@ -401,8 +441,8 @@ function renderOverview(m) {
     </tr>${state.open.has(s.handle) ? s.parts.map((a) => `
     <tr class="link sub-row" tabindex="0" data-handle="${esc(a.key)}">
       <td></td>
-      <td><span class="sub-mark">↳</span> <span class="meta">${partLabel(s, a)}</span><span class="phone-only meta">@${esc(a.handle)}</span></td>
-      <td class="handle wide-only">@${esc(a.handle)}</td>
+      <td><span class="sub-mark">↳</span> <span class="meta">${partLabel(s, a)}</span><span class="phone-only meta">${platformMark(a.platform || "tiktok")}@${esc(a.handle)}</span></td>
+      <td class="handle wide-only">${platformMark(a.platform || "tiktok")}@${esc(a.handle)}</td>
       <td class="num">${a.platform === "instagram" ? "–" : fmt(a.views)}</td>
       <td class="num opt">${a.platform === "instagram" ? "–" : signed(a.gain)}</td>
       <td class="num opt">${a.platform === "instagram" ? "–" : fmt(a.followers)}</td>
@@ -424,8 +464,8 @@ const accToggle = (s, cls = "") => (s.split ? `<button type="button" class="acc-
 // What a per-account row calls the account.
 const partLabel = (s, a) => (a.platform === "instagram" ? "Instagram" : s.multi ? (a.handle === s.handle ? "eerste account" : "tweede account") : "TikTok");
 // Status of one account (per-account rows).
-const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">privé</span>` : "",
-  String(a.info?.last_status ?? "").startsWith("fout") ? `<span class="badge bad" title="${esc(a.info.last_status)}">niet gevonden</span>` : "",
+const accountBadges = (a) => [a.isPrivate ? `<span class="badge bad">${icon("lock")}<span>privé</span></span>` : "",
+  String(a.info?.last_status ?? "").startsWith("fout") ? `<span class="badge bad" title="${esc(a.info.last_status)}">${icon("notfound")}<span>niet gevonden</span></span>` : "",
   !a.info ? `<span class="badge info">nog niet opgehaald</span>` : ""].join("");
 
 // Vandaag (Amsterdam) for every tracked student: posts today, required (1 or the dagopdracht), done.
@@ -444,11 +484,13 @@ function renderActions(m) {
   const groups = [];
   const today = todayOf(m);
   if (today.inCampaign && (!today.offDay || today.task)) {
-    const todo = m.students.filter((s) => { const r = today.byHandle.get(s.handle); return r && !r.done && !r.private && !r.noHandle; }).sort(byName);
+    const todo = m.students.filter((s) => { const r = today.byHandle.get(s.handle); return r && !r.done && !r.private && !r.noHandle; });
+    // Only the number and a link: the names are on Vandaag.
     if (todo.length) {
+      const n = todo.length, who = `${n} leerling${n === 1 ? "" : "en"}`;
       groups.push({ title: today.task ? `Dagopdracht vandaag nog niet gehaald (minimaal ${today.task.min})` : "Nog niet gepost vandaag",
-        more: `<a href="#vandaag">Naar Vandaag →</a>`,
-        items: todo.map((s) => studentLink(s, today.task ? ` <span class="chip-n">${today.byHandle.get(s.handle).count}/${today.task.min}</span>` : "")) });
+        items: [],
+        line: `<strong>${who}</strong> ${n === 1 ? "heeft" : "hebben"} ${today.task ? `de dagopdracht vandaag nog niet gehaald` : "vandaag nog niet gepost"}. <a href="#vandaag">Naar Vandaag →</a>` });
     }
   }
   const pick = (kind) => m.students.filter((s) => s.warnings.some((w) => w.kind === kind)).sort(byName);
@@ -468,8 +510,8 @@ function renderActions(m) {
       ` <span class="chip-n">${s.stats.tasks.filter((t) => t.status === "missed").map((t) => `${shortDay(t.date)}: ${t.count}/${t.min}`).join(", ")}</span>`)) });
   }
   box.innerHTML = groups.length
-    ? `<h2>Actie nodig</h2>${groups.map((g) => `<div class="action-group"><h3>${esc(g.title)} <span class="meta">(${g.items.length})</span>${g.more ? ` <span class="meta">${g.more}</span>` : ""}</h3>
-        <div class="chips">${g.items.join("")}</div></div>`).join("")}`
+    ? `<h2>Actie nodig</h2>${groups.map((g) => `<div class="action-group${g.line ? " action-count" : ""}"><h3>${esc(g.title)}${g.line ? "" : ` <span class="meta">(${g.items.length})</span>`}${g.more ? ` <span class="meta">${g.more}</span>` : ""}</h3>
+        ${g.line ? `<p class="action-line">${g.line}</p>` : `<div class="chips">${g.items.join("")}</div>`}</div>`).join("")}`
     : `<h2>Actie nodig</h2><p class="meta">Niets: iedereen is bij. 🎉</p>`;
 }
 
@@ -497,11 +539,11 @@ function dayCellText(s, day, today, always = false) {
 
 // Title text of a calendar cell: date, number of posts (with the platforms when the student has Instagram too),
 // a dagopdracht and, on a free day, why it is free.
-function dayTitle(cfg, day, n, task = null, on = null, stats = null) {
+function dayTitle(cfg, day, n, task = null, on = null, stats = null, unknownWhy = "geen Instagram-handle") {
   const free = stats ? stats.offName(day) : lib.offDayName(cfg, day);
   const split = on && n ? ` (${[on.tiktok && `${on.tiktok} op TikTok`, on.instagram && `${on.instagram} op Instagram`].filter(Boolean).join(", ")})` : "";
   return `${dayLabel(day)}: ${n} post${n === 1 ? "" : "s"}${split}${free ? ` (vrij: ${free})` : ""}`
-    + (!n && stats?.isUnknown(day) ? " · geen Instagram-handle: niet te controleren" : "")
+    + (!n && stats?.isUnknown(day) ? ` · ${unknownWhy}: niet te controleren` : "")
     + (task ? ` · dagopdracht: minimaal ${task.min}${task.label ? ` (${task.label})` : ""}` : "");
 }
 
@@ -516,51 +558,101 @@ function offDaysText(cfg) {
   return parts.join(", ");
 }
 
+// Calendar numbers of a student for the platform switch. Alles is the official count (both platforms, dagopdrachten judged).
+// One platform: only the posts there, and no dagopdrachten (those are judged on Alles only). A student without an account on
+// that platform can't be judged there: `none`, shown as "niet te controleren" instead of a row of missed days.
+function calStats(s, m, platform) {
+  if (platform === "all") return { stats: s.stats, none: false };
+  const cfg = m.cfg;
+  const igFrom = cfg.instagram?.startDate || null;
+  if (platform === "instagram") {
+    return s.ig ? { stats: lib.studentStats(s.ig.posts, cfg, m.now, [], { from: igFrom }), none: false }
+      : { stats: lib.studentStats([], cfg, m.now, [], { from: igFrom, unknownFrom: igFrom ?? cfg.campaign.start }), none: true };
+  }
+  return s.accounts.length ? { stats: lib.studentStats(s.posts, cfg, m.now, []), none: false }
+    : { stats: lib.studentStats([], cfg, m.now, [], { unknownFrom: cfg.campaign.start }), none: true };
+}
+
+const CAL_PLATFORM_LABEL = { all: "Alles", instagram: "Instagram", tiktok: "TikTok" };
+const mondayOf = (d) => lib.addDays(d, -((new Date(d + "T00:00:00Z").getUTCDay() + 6) % 7));
+
 function renderStudents(m) {
   if (state.detail) return renderStudent(m, state.detail);
-  const days = lib.campaignDays(m.cfg);
+  const { platform: plat, hideFree, whole } = state.cal;
+  const single = plat !== "all";
+  const campaign = lib.campaignDays(m.cfg);
   const today = lib.localDay(m.now);
-  const list = [...m.students].sort(byName);
-  const head = days.map((d, i) => {
+  // Days up to today (the whole campaign when asked, or while it has not started), without the free days when asked.
+  const upTo = whole || today < campaign[0] ? campaign : campaign.filter((d) => d <= today);
+  const isFree = (d) => lib.isOffDay(m.cfg, d);
+  const days = hideFree ? upTo.filter((d) => !isFree(d)) : upTo;
+  const hiddenFree = upTo.length - days.length;
+  const list = [...m.students].sort(byName).map((s) => ({ s, ...calStats(s, m, plat) }));
+  let prevWeek = null;
+  const head = days.map((d) => {
     const date = new Date(d + "T00:00:00Z");
-    const monday = date.getUTCDay() === 1;
-    return `<th class="${monday && i ? "wk" : ""}" title="${dayLabel(d)}">${date.getUTCDate()}</th>`;
+    const week = mondayOf(d);
+    const wk = prevWeek !== null && week !== prevWeek;
+    prevWeek = week;
+    return `<th class="${wk ? "wk" : ""}" title="${dayLabel(d)}">${date.getUTCDate()}</th>`;
   }).join("");
+  // The columns that follow the switch say so (mark of the platform + tooltip).
+  const follows = single ? ` ${platformMark(plat)}` : "";
+  const onWhat = single ? ` op ${PLATFORM_NL[plat]}` : "";
+  const noneWhy = plat === "tiktok" ? "geen TikTok-account" : "geen Instagram-handle";
+  const calRow = (s, st, none) => `
+          <tr class="link" tabindex="0" data-handle="${esc(s.handle)}">
+            <td class="name" title="${esc(handlesText(s))}">${nameCell(s)}${single ? "" : accToggle(s)}${none
+              // no account on this platform: the reason instead of the handles (the name column is narrow and cuts off what does not fit)
+              ? ` <span class="badge ${plat === "instagram" ? "warn" : "info"}" title="Niet te controleren op ${PLATFORM_NL[plat]}">${plat === "instagram" ? icon("nohandle") : ""}<span>${noneWhy}</span></span>`
+              : ` <span class="meta">${handlesHtml(s)}</span>`}</td>
+            ${days.map((d) => cell({ stats: st }, d, !single && s.ig ? st.byDay.get(d) : null, st.perDay.get(d) || 0, st, none)).join("")}
+            <td class="num">${none ? "–" : `<strong>${st.streak}</strong>`}</td>
+            <td class="num">${none ? "–" : st.missedDays}</td>
+            ${!single && m.tasks.length ? `<td class="num">${st.tasksMissed}</td>` : ""}
+            <td class="num">${none ? "–" : st.posts}</td>
+          </tr>`;
+  const cell = (x, d, on, n, st, none = false) => `<td class="day ${dayCellClass(x, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, single ? null : m.taskByDay.get(d), on, st, noneWhy))}">${dayCellText(x, d, today)}</td>`;
+  // A student with two accounts (Alles only): one row (a post on either account counts), plus a row per account when opened.
+  const subRow = (s, a) => `
+          <tr class="link sub-row" tabindex="0" data-handle="${esc(a.key)}">
+            <td class="name"><span class="sub-mark">↳</span> <span class="meta">${platformMark(a.platform || "tiktok")}@${esc(a.handle)}</span></td>
+            ${days.map((d) => cell(a, d, null, a.stats.perDay.get(d) || 0, a.stats)).join("")}
+            <td class="num">${a.stats.streak}</td>
+            <td class="num">${a.stats.missedDays}</td>
+            ${m.tasks.length ? `<td class="num">${a.stats.tasksMissed}</td>` : ""}
+            <td class="num">${a.stats.posts}</td>
+          </tr>`;
+  const unverified = list.some((r) => r.stats.unknownDays);
   $("ll-content").innerHTML = `
+    <div class="controls ll-controls">
+      <div class="seg" role="group" aria-label="Platform" id="ll-platform">${CAL_PLATFORMS.map((k) =>
+        `<button type="button" data-plat="${k}" aria-pressed="${plat === k}">${CAL_PLATFORM_LABEL[k]}</button>`).join("")}</div>
+      <label class="check"><input type="checkbox" id="ll-hidefree"${hideFree ? " checked" : ""}> Verberg vrije dagen</label>
+      <label class="check"><input type="checkbox" id="ll-whole"${whole ? " checked" : ""}> Toon hele campagne</label>
+    </div>
+    ${single ? `<p class="hint ll-note" id="ll-plat-note">Reeks, Gemist, Posts en de vakjes tellen nu alleen posts${onWhat}. <strong>Alles</strong> is de officiële telling (TikTok en Instagram samen).${
+      m.tasks.length ? " Dagopdrachten worden alleen bij Alles beoordeeld." : ""}</p>` : ""}
+    ${hideFree ? `<p class="hint ll-note" id="ll-free-note">${hiddenFree} vrije dag${hiddenFree === 1 ? "" : "en"} verborgen (weekenden en vakanties). Een post op een vrije dag telt wel mee voor de reeks.</p>` : ""}
     <div class="legend-row">
       <span><span class="sw p1"></span>1 post</span><span><span class="sw p2"></span>2</span><span><span class="sw p3"></span>3+</span>
-      <span><span class="sw miss"></span>gemist</span>${list.some((s) => s.stats.unknownDays) ? `<span><span class="sw unverified"></span>niet te controleren (geen Instagram-handle)</span>` : ""}<span><span class="sw off"></span>vrij</span><span><span class="sw future"></span>nog niet</span>
-      <span>Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</span>
-      ${m.tasks.length ? `<span><span class="sw task-miss"></span>dagopdracht niet gehaald (posts/minimum)</span>` : ""}
+      <span><span class="sw miss"></span>gemist</span>${unverified ? `<span><span class="sw unverified"></span>niet te controleren (${noneWhy})</span>` : ""}${hideFree ? "" : `<span><span class="sw off"></span>vrij</span>`}<span><span class="sw future"></span>nog niet</span>
+      ${single ? "" : `<span>Een post op TikTok of Instagram telt. Stories worden niet meegeteld.</span>`}
+      ${!single && m.tasks.length ? `<span><span class="sw task-miss"></span>dagopdracht niet gehaald (posts/minimum)</span>` : ""}
       <span>Dagen volgens Nederlandse tijd. Vandaag telt nog niet als gemist.</span>
       ${offDaysText(m.cfg) ? `<span>Vrij (posten mag, hoeft niet; telt wel mee voor de reeks, overslaan breekt de reeks niet): ${offDaysText(m.cfg)}.</span>` : ""}
     </div>
     <div class="table-wrap">
       <table class="heat">
-        <thead><tr><th class="name">Leerling</th>${head}<th class="num" title="Huidige reeks dagen achter elkaar">Reeks</th><th class="num">Gemist</th>
-          ${m.tasks.length ? `<th class="num" title="Dagopdrachten niet gehaald">Opdr. niet gehaald</th>` : ""}<th class="num">Posts</th></tr></thead>
-        <tbody>${list.map((s) => {
-          // A student with two accounts: one row (a post on either account counts), plus a row per account when opened.
-          const row = (x, sub) => `
-          <tr class="link${sub ? " sub-row" : ""}" tabindex="0" data-handle="${esc(sub ? x.key : x.handle)}">
-            <td class="name">${sub ? `<span class="sub-mark">↳</span> <span class="meta">${x.platform === "instagram" ? "Instagram " : ""}@${esc(x.handle)}</span>`
-              : `${nameCell(s)}${accToggle(s)} <span class="meta" title="${esc(handlesText(s))}">${esc(handlesText(s))}</span>`}</td>
-            ${days.map((d) => {
-              const n = x.stats.perDay.get(d) || 0;
-              return `<td class="day ${dayCellClass(x, d, today, m.cfg)}" title="${esc(dayTitle(m.cfg, d, n, m.taskByDay.get(d), !sub && x.ig ? x.stats.byDay.get(d) : null, x.stats))}">${dayCellText(x, d, today)}</td>`;
-            }).join("")}
-            <td class="num">${sub ? x.stats.streak : `<strong>${x.stats.streak}</strong>`}</td>
-            <td class="num">${x.stats.missedDays}</td>
-            ${m.tasks.length ? `<td class="num">${x.stats.tasksMissed}</td>` : ""}
-            <td class="num">${x.stats.posts}</td>
-          </tr>`;
-          return row(s, false) + (state.open.has(s.handle) ? s.parts.map((a) => row(a, true)).join("") : "");
-        }).join("")}
+        <thead><tr><th class="name">Leerling</th>${head}<th class="num" title="Huidige reeks dagen achter elkaar${onWhat}">Reeks${follows}</th><th class="num" title="Gemiste dagen${onWhat}">Gemist${follows}</th>
+          ${!single && m.tasks.length ? `<th class="num" title="Dagopdrachten niet gehaald">Opdr. niet gehaald</th>` : ""}<th class="num" title="Posts${onWhat}">Posts${follows}</th></tr></thead>
+        <tbody>${list.map(({ s, stats, none }) => calRow(s, stats, none)
+          + (!single && state.open.has(s.handle) ? s.parts.map((a) => subRow(s, a)).join("") : "")).join("")}
         </tbody>
       </table>
     </div>
-    <p class="hint">Klik op een leerling voor de details. Weekgrenzen (maandag) hebben een lijntje.
-      Meer dan één account (twee op TikTok, of TikTok en Instagram): een dag is blauw en telt voor de reeks als op één van de accounts gepost is; met <em>▸ 2 accounts</em> zie je ze apart.</p>`;
+    <p class="hint">Klik op een leerling voor de details. Weekgrenzen (maandag) hebben een lijntje.${whole ? "" : " De kalender loopt tot en met vandaag; met <em>Toon hele campagne</em> zie je alle dagen."}
+      Meer dan één account (twee op TikTok, of TikTok en Instagram): een dag is blauw en telt voor de reeks als op één van de accounts gepost is; met <em>▸ 2 accounts</em> zie je ze apart (bij Alles).</p>`;
 }
 
 function renderStudent(m, handle) {
@@ -579,7 +671,7 @@ function renderStudent(m, handle) {
   const onIg = v.platform === "instagram";                      // the page shows the Instagram account alone
   const showTT = !onIg && (v !== s || s.accounts.length > 0);   // TikTok numbers exist for what is shown
   const showIg = Boolean(ig) && (onIg || v === s);
-  const tt = (label) => (ig ? `${label} (TikTok)` : label);
+  const tt = (label) => (ig ? `${label} ${platformMark("tiktok")}` : label);
   const today = lib.localDay(m.now);
   const tile = (label, value, sub = "") => `<div class="tile"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`;
   // Week calendar (Mon-Sun) over the campaign.
@@ -592,15 +684,15 @@ function renderStudent(m, handle) {
   const newest = (a, b) => (lib.parseTs(b.created_at) || 0) - (lib.parseTs(a.created_at) || 0);
   const posts = showTT ? [...v.posts].sort(newest) : [];
   const igList = showIg ? [...ig.posts].sort(newest) : [];
-  const postsLine = `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}${v === s && ig && s.accounts.length ? ` · TikTok ${st.tiktokPosts}, Instagram ${st.instagramPosts}` : ""}`;
+  const postsLine = `op ${st.daysPosted} dag${st.daysPosted === 1 ? "" : "en"}${v === s && ig && s.accounts.length ? ` · ${platformMark("tiktok")} ${st.tiktokPosts}, ${platformMark("instagram")} ${st.instagramPosts}` : ""}`;
   const igSince = ig && ig.baseline && ig.gained != null ? `${signed(ig.gained)} sinds ${shortDay(lib.localDay(ig.baseline.t))}` : "";
   const partName = (a) => (a.platform === "instagram" ? `Instagram @${esc(a.handle)}` : `${ig ? "TikTok " : ""}@${esc(a.handle)}`);
   box.innerHTML = `
     <a class="back" href="#leerlingen">← Alle leerlingen</a>
     <div class="detail-head">
       <h2>${nameCell(s)}</h2>
-      ${s.handles.map((h) => `<a href="${tiktok(h)}" target="_blank" rel="noopener">@${esc(h)} op TikTok ↗</a>`).join("")}
-      ${s.instagram ? `<a href="${instagram(s.instagram)}" target="_blank" rel="noopener">@${esc(s.instagram)} op Instagram ↗</a>` : ""}
+      ${s.handles.map((h) => `<a href="${tiktok(h)}" target="_blank" rel="noopener">${platformMark("tiktok")}@${esc(h)} ↗</a>`).join("")}
+      ${s.instagram ? `<a href="${instagram(s.instagram)}" target="_blank" rel="noopener">${platformMark("instagram")}@${esc(s.instagram)} ↗</a>` : ""}
       ${badges(s.warnings)}
     </div>
     ${s.split ? `<div class="controls"><label class="acc-select">Cijfers van <select id="st-account">
@@ -620,7 +712,7 @@ function renderStudent(m, handle) {
       ${showTT ? tile("Mediaan per video", fmt(st.medianViews), "de gewone video; één virale video telt nauwelijks mee") : ""}
       ${showTT ? tile("Engagement", st.engagement == null ? "–" : pct.format(st.engagement), "(likes + reacties + gedeeld) / weergaven") : ""}
       ${showTT ? tile(tt("Volgers"), fmt(v.followers), v === s && s.multi ? "beide accounts opgeteld" : "") : ""}
-      ${showIg ? tile("Volgers (Instagram)", fmt(ig.followers), igSince) : ""}
+      ${showIg ? tile(`Volgers ${platformMark("instagram")}`, fmt(ig.followers), igSince) : ""}
       ${showTT ? tile("Beste video", st.best ? `<a href="${tiktok(st.best.handle || s.handle, st.best.id)}" target="_blank" rel="noopener">${fmt(st.best.views)} ↗</a>` : "–",
         st.best ? `geplaatst ${stampFmt.format(st.best.created)}${s.multi ? ` op @${esc(st.best.handle)}` : ""}` : "") : ""}
     </div>
@@ -636,7 +728,7 @@ function renderStudent(m, handle) {
         <h3 style="margin-top:0">Hashtags</h3>
         <div class="chips">${st.tags.map(([t, n]) => `<span class="chip">#${esc(t)}<span class="chip-n">${n}×</span></span>`).join("") || `<span class="meta">Nog geen hashtags.</span>`}</div>
         ${showTT ? `<h3>Totaal</h3>
-        <p class="meta">${fmt(st.likes)} likes · ${fmt(st.comments)} reacties · ${fmt(st.shares)} keer gedeeld${ig ? " (TikTok)" : ""}</p>` : ""}
+        <p class="meta">${fmt(st.likes)} likes · ${fmt(st.comments)} reacties · ${fmt(st.shares)} keer gedeeld${ig ? ` ${platformMark("tiktok")}` : ""}</p>` : ""}
       </div>
     </div>
     <div id="st-videos" class="card" hidden>
@@ -644,7 +736,7 @@ function renderStudent(m, handle) {
       <p class="hint" id="st-videos-note"></p>
       <div class="chart-box"><canvas id="st-videos-chart" aria-label="Weergaven per video over tijd"></canvas></div>
     </div>
-    ${showTT ? `<h3>${ig ? "TikTok-posts" : "Posts"} in de campagne (${posts.length})</h3>
+    ${showTT ? `<h3>${ig ? `${platformMark("tiktok")} ` : ""}Posts in de campagne (${posts.length})</h3>
     <div class="table-wrap">
       <table class="board small">
         <thead><tr><th>Geplaatst</th><th class="num">Weergaven</th><th class="num">Likes</th><th class="num opt">Reacties</th><th class="num opt">Gedeeld</th><th class="num opt">Engagement</th><th>Hashtags</th><th></th></tr></thead>
@@ -668,7 +760,7 @@ function renderStudent(m, handle) {
         }).join("") || `<tr><td colspan="8">Nog geen posts gezien.</td></tr>`}</tbody>
       </table>
     </div>` : ""}
-    ${showIg ? `<h3>Instagram-posts in de campagne (${igList.length})</h3>
+    ${showIg ? `<h3>${platformMark("instagram")} Posts in de campagne (${igList.length})</h3>
     <div class="table-wrap">
       <table class="board small" id="st-ig-posts">
         <thead><tr><th>Geplaatst</th><th>Soort</th><th>Hashtags</th><th></th></tr></thead>
@@ -687,15 +779,6 @@ function renderStudent(m, handle) {
 }
 
 // ---------- Hashtags ----------
-
-// "Zonder buiten schaal" (Stijgers, Hashtags): on by default as soon as an account is marked.
-const hidingOutliers = (m) => m.outliers.size > 0 && (state.hideOutliers ?? true);
-function outlierToggle(m, id) {
-  const wrap = $(`${id}-wrap`);
-  wrap.hidden = !m.outliers.size;
-  $(id).checked = hidingOutliers(m);
-  wrap.title = `Buiten schaal: ${[...m.outliers].map((h) => "@" + h).join(", ")}`;
-}
 
 // The students as the Hashtags tab sees them: their Instagram posts, and why nothing can be seen when that is so.
 function tagStudents(m) {
@@ -724,7 +807,7 @@ function renderHashtags(m) {
   $("tag-missing").checked = state.tagMissing;
   $("tag-presets").innerHTML = school.length
     ? `<span class="meta">Schoolhashtags:</span> ${school.map((t) => `<button type="button" class="chip preset" data-preset="${esc(t)}" aria-pressed="${t === tag}">#${esc(t)}</button>`).join("")}`
-    : `<span class="meta">Geen schoolhashtags ingesteld. Voeg ze toe op <a href="#beheer">Beheer</a>.</span>`;
+    : `<span class="meta">Geen schoolhashtags ingesteld. Voeg ze toe op <a href="#beheer/campagne">Beheer</a>.</span>`;
   $("tag-note").textContent = `Alleen Instagram, en alleen posts vanaf ${dayLabel(start)}. Alleen hashtags in de beschrijving (caption) van een post zijn te zien, niet hashtags in reacties.`;
 
   const table = lib.tagTable(rows, start);
@@ -818,8 +901,8 @@ function renderAdmin(m) {
       : a.active ? `<span class="badge good">actief</span>` : `<span class="badge info">inactief</span>`)
       + (extra ? ` <span class="badge info" title="Telt samen met het eerste account">tweede account van @${esc(a.group)}</span>` : "")
       + (a.groupIssue ? ` <span class="badge warn" title="${esc(a.groupIssue)}">telt apart</span>` : "")
-      + (out ? ` <span class="badge info">buiten schaal (TikTok)</span>` : "")
-      + (igOut ? ` <span class="badge info">buiten schaal (Instagram)</span>` : "");
+      + (out ? ` <span class="badge info">${platformMark("tiktok")}<span>buiten schaal</span></span>` : "")
+      + (igOut ? ` <span class="badge info">${platformMark("instagram")}<span>buiten schaal</span></span>` : "");
     // "+ account": a second account for this student (only on a tracked first account).
     const add = a.tracked && !extra && !a.main ? `<button type="button" class="btn small" data-add-for="${esc(a.handle)}"
       title="Tweede TikTok-account van deze leerling toevoegen; de weergaven tellen samen">+ account</button>` : "";
@@ -892,6 +975,53 @@ function renderAdmin(m) {
     const t = lib.parseTs(a.timestamp);
     return `<tr><td>${t ? stampFmt.format(t) : esc(a.timestamp)}</td><td>${esc(a.email)}</td><td>${esc(a.action)}</td><td>${esc(a.details)}</td></tr>`;
   }).join("") || `<tr><td colspan="4">Nog geen activiteit.</td></tr>`;
+  renderExport(m);
+  renderGroupAttention(m);
+}
+
+// A group that asks for attention says so on its header, also when it is closed: missing handles or problems in the sheet,
+// a run that failed (or was refused for the budget) or a budget that is used up, a finale to start or a finale that is running.
+function renderGroupAttention(m) {
+  const raw = state.raw;
+  const set = (group, items) => {
+    const el = $(`bh-attn-${group}`);
+    items = items.filter(Boolean);
+    el.hidden = !items.length;
+    el.innerHTML = items.map((i) => `<span class="badge ${i.cls}">${esc(i.text)}</span>`).join("");
+  };
+  const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  const missing = m.students.filter((s) => !s.instagram).length;
+  const problems = raw.accounts.filter((a) => a.issue || a.instagramIssue || a.groupIssue || (a.tracked && !a.name)).length;
+  set("leerlingen", [
+    missing && { cls: "warn", text: `${missing} zonder Instagram` },
+    problems && { cls: "bad", text: count(problems, "probleem", "problemen") },
+  ]);
+  // The newest run of each type tells what is wrong now (an older failure that a later run made good doesn't count).
+  const newest = new Map();
+  for (const r of raw.runLog) if (!lib.truthy(r.dry_run) && !newest.has(r.run_type)) newest.set(r.run_type, r);
+  const latest = [...newest.values()];
+  const failed = latest.filter((r) => r.status === "failed").length;
+  const partial = latest.filter((r) => r.status === "partial").length;
+  const noBudget = latest.filter((r) => r.status === "refused" && /monthly cap/i.test(String(r.notes || ""))).length;
+  const b = raw.budget;
+  set("ophalen", [
+    failed && { cls: "bad", text: failed === 1 ? "laatste run mislukt" : `${failed} laatste runs mislukt` },
+    partial && { cls: "warn", text: partial === 1 ? "laatste run gedeeltelijk" : `${partial} laatste runs gedeeltelijk` },
+    noBudget && { cls: "bad", text: "run geweigerd: budget" },
+    b.used >= b.cap ? { cls: "bad", text: "budget op" } : b.projected > b.cap && { cls: "warn", text: "verwacht boven de limiet" },
+  ]);
+  const f = raw.finale;
+  set("campagne", [
+    finaleReminder(m) && { cls: "warn", text: "finale nog starten" },
+    f && Date.now() < f.end && { cls: "info", text: "finale loopt" },
+  ]);
+}
+
+// The reminder to start the finale: in the last days before the end, as long as no finale has run.
+function finaleReminder(m) {
+  const end = m.cfg.campaign.end;
+  const today = lib.localDay(Date.now());
+  return !state.raw.finaleHasRun && today <= end && today >= lib.addDays(end, -m.cfg.finale.remindDaysBeforeEnd);
 }
 
 // ---------- Schoolhashtags (Beheer) ----------
@@ -968,7 +1098,7 @@ function renderInstagramMissing(m) {
     const row = s.instagramRow;
     const draft = state.igDraft.has(row) ? state.igDraft.get(row) : s.igRaw || "";
     return `<li><form class="add-form" data-ig-quick="${row}" data-was="${esc(s.igCurrent || "")}" autocomplete="off">
-      <span class="ig-who">${nameCell(s)} <span class="meta">${esc(handlesText(s))}</span></span>
+      <span class="ig-who">${nameCell(s)} <span class="meta">${handlesHtml(s)}</span></span>
       <input name="instagram" value="${esc(draft)}" placeholder="@naam of instagram.com/naam" aria-label="Instagram-handle van ${esc(s.name || "onbekend")}">
       <button type="submit" class="btn small primary">Opslaan</button>
       ${s.instagramIssue ? `<span class="badge bad" title="${esc(s.instagramIssue)}">${esc(s.instagramIssue)}</span>` : ""}
@@ -1191,14 +1321,12 @@ function renderBanners(m) {
   }
   banner.hidden = !f;
   const end = m.cfg.campaign.end;
-  const today = lib.localDay(Date.now());
-  const remind = !state.raw.finaleHasRun && today <= end
-    && today >= lib.addDays(end, -m.cfg.finale.remindDaysBeforeEnd);
+  const remind = finaleReminder(m);
   const r = $("reminder");
   r.hidden = !remind;
   if (remind) {
     r.innerHTML = `⏰ De campagne eindigt op ${longDate.format(Date.parse(end + "T00:00:00Z"))}. `
-      + `Vergeet niet de finale te starten voor de laatste les. <a href="#beheer">Naar Beheer →</a>`;
+      + `Vergeet niet de finale te starten voor de laatste les. <a href="#beheer/campagne">Naar Beheer →</a>`;
   }
   const title = $("ov-final");
   title.hidden = !m.final;
@@ -1216,7 +1344,7 @@ function tickFinale() {
 }
 setInterval(tickFinale, 1000);
 
-// ---------- Stijgers (per video) ----------
+// ---------- Per video (leerlingpagina: snelste stijger, grafiek) ----------
 
 async function loadPostHistory() {
   if (state.postHistory && Date.now() - state.postHistory.fetched < 5 * 60 * 1000) return state.postHistory;
@@ -1244,35 +1372,6 @@ function videoGain(post, pts, hours, ref) {
   for (let i = pts.length - 1; i >= 0; i--) if (pts[i].t <= from + 15 * 60 * 1000) { base = pts[i]; break; }
   if (!base) base = pts[0];
   return base ? Math.max(0, current - base.views) : 0;
-}
-
-function renderRisers(m) {
-  for (const b of $("vid-range").querySelectorAll("button")) b.setAttribute("aria-pressed", String(Number(b.dataset.v) === state.videoRange));
-  const body = $("vid-body");
-  if (!state.postHistory) {
-    outlierToggle(m, "vid-out");
-    body.innerHTML = `<tr><td colspan="6">Geschiedenis per video laden…</td></tr>`;
-    loadPostHistory().then(() => state.view === "stijgers" && renderRisers(m))
-      .catch((err) => { body.innerHTML = `<tr><td colspan="6">Kon niet laden: ${esc(err.message)}</td></tr>`; });
-    return;
-  }
-  outlierToggle(m, "vid-out");
-  const ref = m.latest || Date.now();
-  const list = [];
-  for (const [h, posts] of m.posts) {
-    if (!m.byHandle.has(h) || (hidingOutliers(m) && m.byHandle.get(h).isOutlier)) continue;
-    for (const p of posts) list.push({ s: m.byHandle.get(h), p, gain: videoGain(p, state.postHistory.byVideo.get(String(p.video_id)), state.videoRange, ref) });
-  }
-  const rows = list.filter((x) => x.gain > 0).sort((a, b) => b.gain - a.gain).slice(0, 30);
-  $("vid-meta").textContent = `Weergaven erbij in de laatste ${state.videoRange} uur tot ${m.latest ? stampFmt.format(m.latest) : "nu"}`;
-  body.innerHTML = rows.map((x, i) => {
-    const t = lib.parseTs(x.p.created_at);
-    return `<tr class="link" tabindex="0" data-handle="${esc(x.p.handle)}">
-      <td class="num">${i + 1}</td><td>${nameCell(x.s)} <span class="meta">@${esc(x.p.handle)}</span></td>
-      <td class="num strong">${signed(x.gain)}</td><td class="num opt">${fmt(lib.toNum(x.p.views))}</td>
-      <td class="opt">${t ? stampFmt.format(t) : "–"}</td>
-      <td><a href="${tiktok(x.p.handle, x.p.video_id)}" target="_blank" rel="noopener">open ↗</a></td></tr>`;
-  }).join("") || `<tr><td colspan="6">Geen video's met nieuwe weergaven in deze periode.</td></tr>`;
 }
 
 let videoChart = null;
@@ -1333,7 +1432,7 @@ function renderToday(m) {
     return list[0] || null;
   };
   // Where the latest post of today was made: the platform when the student has both, the account when they have two.
-  const where = (s, p) => (p.platform === "instagram" ? " op Instagram" : s.ig ? ` op TikTok${s.multi ? " @" + esc(p.handle) : ""}` : s.multi ? ` op @${esc(p.handle)}` : "");
+  const where = (s, p) => (p.platform === "instagram" ? ` ${platformMark("instagram")}` : s.ig || s.multi ? ` ${platformMark("tiktok")}${s.multi ? "@" + esc(p.handle) : ""}` : "");
   const href = (p) => (p.platform === "instagram" ? instagramPost(p) : tiktok(p.handle, p.video_id));
   const sorted = [...m.students].sort(byName);
   const groups = lib.todayGroups(st);
@@ -1345,7 +1444,7 @@ function renderToday(m) {
   };
   const item = (s) => {
     const last = post(s);
-    return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span>
+    return `<li>${mark(s)} <a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${handlesHtml(s)}</span>
       ${last ? `<span class="meta">· ${hourFmt.format(last.t)}${where(s, last.p)}</span> <a href="${esc(href(last.p))}" target="_blank" rel="noopener">open ↗</a>` : ""}</li>`;
   };
   $("td-title").textContent = `Vandaag, ${day}`;
@@ -1363,12 +1462,12 @@ function renderToday(m) {
   $("td-priv-n").textContent = priv.length;
   $("td-todo").innerHTML = todo.map(item).join("") || `<li class="meta">Iedereen is klaar.</li>`;
   $("td-done").innerHTML = done.map(item).join("") || `<li class="meta">Nog niemand.</li>`;
-  $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}</span></li>`).join("")
+  $("td-priv").innerHTML = priv.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${handlesHtml(s)}</span></li>`).join("")
     || `<li class="meta">Geen.</li>`;
   $("td-priv-card").hidden = !priv.length;
   // No Instagram handle and nothing on TikTok today: can't tell, so not "nog niet gepost".
   $("td-nohandle-n").textContent = noHandle.length;
-  $("td-nohandle").innerHTML = noHandle.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${esc(handlesText(s))}${
+  $("td-nohandle").innerHTML = noHandle.map((s) => `<li><a href="#leerlingen/${encodeURIComponent(s.handle)}">${nameCell(s)}</a> <span class="meta">${handlesHtml(s)}${
     s.stats.last ? ` · laatste TikTok-post ${esc(dayLabel(s.stats.lastDay))}` : ""}</span></li>`).join("");
   $("td-nohandle-card").hidden = !noHandle.length || !st.inCampaign;
   // "Controleer nu": the cost before starting, the cooldown, and the run on its way.
@@ -1418,49 +1517,6 @@ function todayMsg(text, ok = true) {
   const msg = $("td-msg");
   msg.className = "status " + (ok ? "ok" : "err");
   msg.textContent = text;
-}
-
-// ---------- Opvallend ----------
-
-const SIGNAL_NAMES = { likes: "Likes per weergave", step: "Groei in één sprong", silent: "Geen reacties of shares", followers: "Volgers-sprong" };
-
-function renderSignals(m) {
-  const body = $("sig-body");
-  const s = m.cfg.signals;
-  if (!s) { body.innerHTML = `<tr><td colspan="4">Geen instellingen (signals in config.yaml).</td></tr>`; return; }
-  if (!state.postHistory) {
-    body.innerHTML = `<tr><td colspan="4">Geschiedenis per video laden…</td></tr>`;
-    loadPostHistory().then(() => state.view === "opvallend" && renderSignals(m))
-      .catch((err) => { body.innerHTML = `<tr><td colspan="4">Kon niet laden: ${esc(err.message)}</td></tr>`; });
-    return;
-  }
-  const posts = [...m.posts].filter(([h]) => m.byHandle.has(h)).flatMap(([, list]) => list);
-  const flags = lib.signals(s, posts, state.postHistory.byVideo, m.series);
-  const order = Object.keys(SIGNAL_NAMES);
-  flags.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || (b.views || b.followers || 0) - (a.views || a.followers || 0));
-  const p1 = new Intl.NumberFormat("nl-NL", { style: "percent", maximumFractionDigits: 2 });
-  const numbers = (f) => ({
-    likes: () => `${p1.format(f.ratio)} likes per weergave (${fmt(f.likes)} likes, ${fmt(f.views)} weergaven); klas: ${p1.format(f.median)}. ${f.high ? "Veel hoger" : "Veel lager"} dan normaal.`,
-    step: () => `${pct.format(f.share)} van de weergaven in één stap: ${fmt(f.from.views)} → ${fmt(f.to.views)} tussen ${stampFmt.format(f.from.t)} en ${hourFmt.format(f.to.t)}; daarna in ${s.flatHours} uur nog maar ${signed(f.after)}.`,
-    silent: () => `${fmt(f.views)} weergaven en ${fmt(f.likes)} likes, maar 0 reacties en 0 keer gedeeld.`,
-    followers: () => `${signed(f.followers)} volgers tussen ${stampFmt.format(f.from)} en ${hourFmt.format(f.to)}, met maar ${signed(f.views)} weergaven erbij `
-      + `(${fmt(Math.round(f.per))} weergaven per nieuwe volger${f.median ? `; klas: ${fmt(Math.round(f.median))}` : ""}).`,
-  })[f.kind]();
-  $("sig-meta").textContent = `${flags.length} ding${flags.length === 1 ? "" : "en"} om naar te kijken`;
-  body.innerHTML = flags.map((f) => {
-    const st = m.byHandle.get(f.handle);
-    return `<tr>
-      <td><strong>${SIGNAL_NAMES[f.kind]}</strong></td>
-      <td><a href="#leerlingen/${encodeURIComponent(f.handle)}">${st ? nameCell(st) : ""}</a> <span class="meta">@${esc(f.handle)}</span></td>
-      <td>${numbers(f)}</td>
-      <td>${f.video ? `<a href="${tiktok(f.handle, f.video)}" target="_blank" rel="noopener">video ↗</a>` : `<a href="${tiktok(f.handle)}" target="_blank" rel="noopener">profiel ↗</a>`}</td>
-    </tr>`;
-  }).join("") || `<tr><td colspan="4">Niets opvallends gevonden.</td></tr>`;
-  $("sig-rules").innerHTML = `Drempels (in <code>config.yaml</code>, onder <code>signals</code>): alleen video's vanaf ${fmt(s.minViews)} weergaven;
-    likes per weergave ${s.likeRatioFactor}× lager of hoger dan de mediaan van de klas; sprong = ${pct.format(s.stepShare)}+ van de weergaven binnen
-    ${String(s.stepMaxHours).replace(".", ",")} uur en daarna ${s.flatHours} uur bijna niets (&lt; ${pct.format(s.flatShare)} van die sprong);
-    ${fmt(s.zeroEngagementMinViews)}+ weergaven zonder reacties en shares; ${s.followerJumpMin}+ volgers tussen twee runs met ${s.followerJumpFactor}× minder
-    weergaven per nieuwe volger dan de klas.`;
 }
 
 // ---------- Export ----------
@@ -1524,28 +1580,59 @@ function render() {
   if (state.view === "leerlingen") renderStudents(model);
   if (state.view === "hashtags") renderHashtags(model);
   if (state.view === "beheer") renderAdmin(model);
-  if (state.view === "export") renderExport(model);
-  if (state.view === "stijgers") renderRisers(model);
   if (state.view === "vandaag") renderToday(model);
-  if (state.view === "opvallend") renderSignals(model);
   if (state.view === "leerlingen" && state.detail && model.byHandle.has(state.detail)) {
     renderStudentVideos(model, model.byHandle.get(state.detail));
   }
   renderBanners(model);
+  $("moved").textContent = state.moved;
+  $("moved").hidden = !state.moved;
+  // A link into a part of Beheer lands there once the page is drawn (the data may only just have arrived).
+  if (state.scrollTo && state.view === "beheer") {
+    const target = $(state.scrollTo);
+    state.scrollTo = null;
+    target.scrollIntoView({ block: "start" });
+  }
 }
 
+// The tabs that are gone: where an old link lands (a view, or a Beheer group), and what is said about it.
+const VIEWS = ["overzicht", "vandaag", "leerlingen", "hashtags", "beheer"];
+const MOVED = {
+  stijgers: { to: "overzicht", text: "Stijgers staat niet meer op deze pagina (wel op de openbare site). Je bent naar Overzicht gebracht." },
+  opvallend: { to: "overzicht", text: "Opvallend bestaat niet meer. Je bent naar Overzicht gebracht." },
+  presentatie: { to: "overzicht", text: "Presentatie is nu de knop ▶ Presentatie bovenaan de pagina." },
+  export: { to: "beheer/export", text: "Export staat nu op Beheer, onder Campagne." },
+};
+// Beheer groups, and the links into them ("#beheer/instagram" is the place where the Instagram handles are filled in).
+const BEHEER_GROUPS = { leerlingen: "bh-g-leerlingen", ophalen: "bh-g-ophalen", campagne: "bh-g-campagne", log: "bh-g-log" };
+const BEHEER_LINKS = { instagram: ["leerlingen", "ig-card"], export: ["campagne", "bh-export"], ...Object.fromEntries(Object.keys(BEHEER_GROUPS).map((g) => [g, [g, null]])) };
+
 function route() {
-  const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
+  let hash = decodeURIComponent(location.hash.replace(/^#/, ""));
+  state.moved = "";
+  const gone = MOVED[hash.split("/")[0]];
+  if (gone) {
+    // Old link to a tab that is gone: go on to where it lives now, with a short notice (the address is replaced, no extra history entry).
+    state.moved = gone.text;
+    hash = gone.to;
+    history.replaceState(null, "", "#" + hash);
+  }
   const [view, arg] = hash.split("/");
   const prev = state.view;
-  state.view = ["overzicht", "vandaag", "leerlingen", "hashtags", "stijgers", "opvallend", "presentatie", "beheer", "export"].includes(view) ? view : "overzicht";
+  state.view = VIEWS.includes(view) ? view : "overzicht";
   state.detail = state.view === "leerlingen" && arg ? arg : null;
   state.account = null; // student page: back to "beide accounts samen" (or the account in the link)
   if (state.detail) window.scrollTo(0, 0);
+  // "#beheer/instagram" (the links to "Handle invullen") opens the group with the handles and lands on that section;
+  // "#beheer/campagne" and the like open the group.
+  state.scrollTo = null;
+  const link = state.view === "beheer" ? BEHEER_LINKS[arg] : null;
+  if (link) {
+    $(BEHEER_GROUPS[link[0]]).open = true;
+    state.scrollTo = link[1];
+  }
   render();
   if (state.view === "beheer" && prev !== "beheer") loadRuns();
-  // "#beheer/instagram" (the links to "Handle invullen") lands on the section where the handles are filled in.
-  if (state.view === "beheer" && arg === "instagram") $("ig-card").scrollIntoView({ block: "start" });
 }
 
 async function load() {
@@ -1593,10 +1680,41 @@ for (const id of ["ov-body", "ll-content"]) {
   });
 }
 $("ll-content").addEventListener("change", (ev) => {
-  if (ev.target.id !== "st-account") return;
-  state.account = ev.target.value; // "" = both accounts (chosen), null = not chosen yet
-  render();
+  if (ev.target.id === "st-account") {
+    state.account = ev.target.value; // "" = both accounts (chosen), null = not chosen yet
+    render();
+  } else if (ev.target.id === "ll-hidefree" || ev.target.id === "ll-whole") {
+    state.cal[ev.target.id === "ll-whole" ? "whole" : "hideFree"] = ev.target.checked;
+    calChanged(`#${ev.target.id}`);
+  }
 });
+// The notice about an old link goes away at the next click on a tab.
+document.querySelector(".tabs").addEventListener("click", () => { if (state.moved) { state.moved = ""; render(); } });
+// Leerlingen: the platform switch (Alles / Instagram / TikTok).
+$("ll-content").addEventListener("click", (ev) => {
+  const b = ev.target.closest("#ll-platform button[data-plat]");
+  if (!b || b.dataset.plat === state.cal.platform) return;
+  state.cal.platform = b.dataset.plat;
+  calChanged(`#ll-platform button[data-plat="${b.dataset.plat}"]`);
+});
+// A change of the switch or a toggle: remember it for this browser, draw again and keep the keyboard where it was.
+function calChanged(focus) {
+  store.set(CAL_KEY, { platform: state.cal.platform, hideFree: state.cal.hideFree, whole: state.cal.whole });
+  renderStudents(model);
+  $("ll-content").querySelector(focus)?.focus();
+}
+
+// Beheer groups: closed at first; which ones are open is remembered per browser (a link into a group opens it, without remembering).
+{
+  const groups = () => [...document.querySelectorAll("details.bh-group")];
+  const saved = store.get(BEHEER_KEY) || {};
+  for (const d of groups()) if (saved[d.dataset.group] === true) d.open = true;
+  $("view-beheer").addEventListener("click", (ev) => {
+    const d = ev.target.closest("summary")?.parentElement;
+    if (!d || !d.matches("details.bh-group")) return;
+    setTimeout(() => store.set(BEHEER_KEY, Object.fromEntries(groups().map((x) => [x.dataset.group, x.open]))), 0);
+  });
+}
 
 // A warning badge in Overzicht opens its details under the row (instead of opening the student).
 $("ov-body").addEventListener("click", (ev) => {
@@ -1605,7 +1723,6 @@ $("ov-body").addEventListener("click", (ev) => {
   state.warnOpen = state.warnOpen === b.dataset.warn ? null : b.dataset.warn;
   renderOverview(model);
 });
-$("vid-out").addEventListener("change", (e) => { state.hideOutliers = e.target.checked; render(); });
 $("td-check").addEventListener("click", async () => {
   const st = todayOf(model);
   const targets = lib.todayTargets(st, model.cfg.frequency);
@@ -1650,7 +1767,6 @@ $("task-body").addEventListener("click", (ev) => {
 for (const [id, attr, go] of [
   ["ov-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["ll-content", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
-  ["vid-body", "data-handle", (h) => { location.hash = "leerlingen/" + encodeURIComponent(h); }],
   ["tags-body", "data-tag", (t) => { searchTag(t); }],
 ]) {
   $(id).addEventListener("click", (ev) => openRow(ev, attr, go));
@@ -1659,7 +1775,6 @@ for (const [id, attr, go] of [
 $("ov-search").addEventListener("input", (e) => { state.search = e.target.value; renderOverview(model); });
 $("ov-warn").addEventListener("change", (e) => { state.onlyWarn = e.target.checked; renderOverview(model); });
 $("acc-search").addEventListener("input", (e) => { state.accSearch = e.target.value; renderAdmin(model); });
-$("vid-range").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { state.videoRange = Number(b.dataset.v); renderRisers(model); } });
 // Hashtags: fill the search box (a preset, a "bedoel je" suggestion or a row of the table) and show the result.
 function searchTag(tag) {
   state.tagQuery = tag;

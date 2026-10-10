@@ -64,7 +64,12 @@ h2 { font-size: 1.1rem; margin: 0 0 10px; }
 h3 { font-size: 0.95rem; margin: 16px 0 6px; }
 .tag-private { font-size: 0.7em; vertical-align: middle; padding: 2px 8px; border-radius: 999px; background: var(--text); color: var(--surface); }
 .meta { margin: 2px 0 10px; color: var(--text-2); font-size: 0.9rem; }
+.nav-row { display: flex; flex-wrap: wrap; align-items: end; gap: 4px 16px; }
 .tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+/* The presentation: a button in the header (not a tab), with a small link to the dark version next to it. */
+.present-actions { display: inline-flex; align-items: center; gap: 4px 10px; margin-bottom: 6px; }
+.present-btn { min-height: 34px; padding: 3px 14px; }
+.present-dark { font-size: 0.82rem; color: var(--text-2); }
 .tabs a { padding: 9px 13px; text-decoration: none; color: var(--text-2); font-weight: 600; border-bottom: 3px solid transparent; }
 .tabs a[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); }
 
@@ -136,6 +141,15 @@ mark.unknown, .unknown { background: var(--warn-bg); color: var(--text); border:
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .badge.warn { color: #e3b341; } }
 .badge.info { color: var(--text-2); }
 .badge.good { color: var(--good); }
+
+/* Marks: one colour (they follow the text colour, so light and dark both work). A platform mark carries its own name
+   (aria-label + tooltip); a warning mark always has its words next to it. */
+.ico { width: 1.05em; height: 1.05em; vertical-align: -0.18em; fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.plat { display: inline-block; margin-right: 3px; color: var(--text-2); line-height: 1; }
+.badge .ico, .badge .plat { margin-right: 3px; }
+.badge .plat { color: inherit; }
+.tile .label .plat, h3 .plat { margin-left: 2px; }
 
 /* Calendar heatmap: students x campaign days */
 .heat { border-collapse: separate; border-spacing: 3px; font-size: 0.85rem; }
@@ -224,6 +238,8 @@ details summary { cursor: pointer; color: var(--accent); }
 .banner[hidden] { display: none; }
 .banner.reminder { display: flex; background: var(--warn-bg); border-color: #d4a72c; font-weight: 600; }
 .banner.reminder[hidden] { display: none; }
+.banner.moved { display: flex; }
+.banner.moved[hidden] { display: none; }
 .live { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--bad); color: #fff;
   font-size: 0.75rem; font-weight: 800; letter-spacing: 0.06em; }
 .live::before { content: "● "; }
@@ -238,6 +254,7 @@ details summary { cursor: pointer; color: var(--accent); }
 .actions h2 { margin-bottom: 6px; }
 .action-group h3 { margin: 10px 0 6px; }
 .action-group .chip { padding: 2px 10px; }
+.action-line { margin: 2px 0 8px; }
 button.badge { background: none; font: inherit; font-size: 0.75rem; font-weight: 700; cursor: pointer; line-height: 1.45; }
 button.badge:hover, button.badge[aria-expanded="true"] { background: var(--surface-2); }
 .board tr.warn-detail td { background: var(--surface-2); }
@@ -277,3 +294,26 @@ button.badge:hover, button.badge[aria-expanded="true"] { background: var(--surfa
 .freq-grid { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: center; margin: 4px 0 8px; }
 .freq-grid select { max-width: 100%; }
 #freq-preview p.status:empty { display: none; }
+
+/* Leerlingen: platform switch and the two toggles, with a short note under them */
+.ll-controls { margin-bottom: 6px; }
+.ll-note { margin: 2px 0 6px; }
+.heat th .plat { margin: 0 0 0 2px; vertical-align: middle; }
+
+/* Beheer: three groups that fold open and closed, then the activity log. A group that needs attention says so on its header. */
+.bh-intro { margin: 0 0 10px; }
+.bh-group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; margin-bottom: 12px; }
+.bh-group > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; padding: 13px 16px; cursor: pointer; list-style: none; color: var(--text); }
+.bh-group > summary::-webkit-details-marker { display: none; }
+.bh-group > summary::before { content: "▸"; color: var(--text-2); width: 1em; flex: none; }
+.bh-group[open] > summary::before { content: "▾"; }
+.bh-group[open] > summary { border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.bh-group > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 12px; }
+.bh-title { font-size: 1.1rem; font-weight: 800; }
+.bh-sub { color: var(--muted); font-size: 0.87rem; }
+.bh-attn { display: inline-flex; flex-wrap: wrap; gap: 2px 4px; margin-left: auto; }
+.bh-attn[hidden] { display: none; }
+.bh-body { padding: 0 16px 2px; }
+.bh-body .card { border-radius: 10px; }
+.bh-log .bh-title { font-size: 1rem; font-weight: 700; }
+.exp-more { margin-top: 4px; }

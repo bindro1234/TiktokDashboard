@@ -133,20 +133,6 @@ today_check:
   # (keeping the month's remaining profile runs reserved) and waits this long between checks.
   cooldown_minutes: 10
 
-signals:
-  # Opvallend tab (private site only): videos and accounts worth a look. Never says "bot";
-  # every flag shows the numbers behind it. Computed in the browser from posts_latest,
-  # post_history and history; nothing is written anywhere.
-  min_views: 1000                  # smaller videos are never flagged
-  like_ratio_factor: 3             # likes per view 3x below or above the class median
-  step_share: 0.6                  # 60%+ of a video's views arrived in one step...
-  step_max_hours: 2.5              # ...of at most this long (one or two runs apart)...
-  flat_hours: 6                    # ...and in the 6 hours after it...
-  flat_share: 0.1                  # ...it grew by less than 10% of that step
-  zero_engagement_min_views: 5000  # this many views and not a single comment or share
-  follower_jump_min: 100           # followers gained between two runs...
-  follower_jump_factor: 5          # ...with 5x fewer new views per new follower than the class median
-
 force_refresh:
   # "Nu verversen" workflow: an extra profiles run on demand. Refused (and logged)
   # when the last real profiles run was less than this many minutes ago.
