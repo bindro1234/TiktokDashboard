@@ -16,23 +16,26 @@
         <p class="meta"><span id="updated">Gegevens laden…</span> · <span id="me"></span></p>
         <p class="banner" id="finale-banner" role="status" hidden></p>
       </div>
-      <nav class="tabs" aria-label="Onderdelen">
-        <a href="#overzicht" data-view="overzicht">Overzicht</a>
-        <a href="#vandaag" data-view="vandaag">Vandaag</a>
-        <a href="#leerlingen" data-view="leerlingen">Leerlingen</a>
-        <a href="#hashtags" data-view="hashtags">Hashtags</a>
-        <a href="#stijgers" data-view="stijgers">Stijgers</a>
-        <a href="#opvallend" data-view="opvallend">Opvallend</a>
-        <a href="#presentatie" data-view="presentatie">Presentatie</a>
-        <a href="#beheer" data-view="beheer">Beheer</a>
-        <a href="#export" data-view="export">Export</a>
-      </nav>
+      <div class="nav-row">
+        <nav class="tabs" aria-label="Onderdelen">
+          <a href="#overzicht" data-view="overzicht">Overzicht</a>
+          <a href="#vandaag" data-view="vandaag">Vandaag</a>
+          <a href="#leerlingen" data-view="leerlingen">Leerlingen</a>
+          <a href="#hashtags" data-view="hashtags">Hashtags</a>
+          <a href="#beheer" data-view="beheer">Beheer</a>
+        </nav>
+        <span class="present-actions">
+          <a class="btn primary present-btn" href="present/index.html?present" target="_blank" rel="noopener" title="Presentatie voor de beamer, met voornamen (opent in een nieuw tabblad; alleen achter de inlog)">▶ Presentatie</a>
+          <a class="present-dark" href="present/index.html?present&amp;donker" target="_blank" rel="noopener" title="Dezelfde presentatie in een donker thema">donker</a>
+        </span>
+      </div>
     </div>
   </header>
 
   <main>
     <p class="notice" id="error" hidden></p>
     <p class="banner reminder" id="reminder" role="status" hidden></p>
+    <p class="banner moved" id="moved" role="status" hidden></p>
 
     <section id="view-overzicht" class="view" hidden>
       <h2 class="final-title" id="ov-final" hidden></h2>
@@ -104,111 +107,12 @@
       <p class="hint">Klik op een hashtag om hem hierboven te zoeken.</p>
     </section>
 
-    <section id="view-stijgers" class="view" hidden>
-      <h2 style="margin-top:0">Snelste stijgers (per video)</h2>
-      <div class="controls">
-        <div class="seg" role="group" aria-label="Periode" id="vid-range">
-          <button type="button" data-v="2">2 uur</button>
-          <button type="button" data-v="6">6 uur</button>
-          <button type="button" data-v="24">24 uur</button>
-        </div>
-        <label class="check" id="vid-out-wrap" hidden><input type="checkbox" id="vid-out"> Zonder buiten schaal</label>
-        <span class="meta" id="vid-meta"></span>
-      </div>
-      <div class="table-wrap">
-        <table class="board">
-          <thead><tr><th class="num">#</th><th>Leerling</th><th class="num">Weergaven erbij</th><th class="num opt">Totaal</th><th class="opt">Geplaatst</th><th></th></tr></thead>
-          <tbody id="vid-body"></tbody>
-        </table>
-      </div>
-      <p class="hint">Video's met de meeste nieuwe weergaven. Klik op een rij voor de leerling.</p>
-    </section>
-
-    <section id="view-opvallend" class="view" hidden>
-      <h2 style="margin-top:0">Opvallend <span class="meta" id="sig-meta"></span></h2>
-      <p>Dingen om even naar te kijken: cijfers die veel afwijken van de rest van de klas. <strong>Geen oordeel</strong>: ook een echte video kan zo'n patroon hebben (bijv. door een virale share). Bekijk de video en beslis zelf.</p>
-      <div class="table-wrap">
-        <table class="board small">
-          <thead><tr><th>Wat</th><th>Leerling</th><th>Cijfers</th><th></th></tr></thead>
-          <tbody id="sig-body"></tbody>
-        </table>
-      </div>
-      <p class="hint" id="sig-rules"></p>
-    </section>
-
-    <section id="view-presentatie" class="view" hidden>
-      <div class="card">
-        <h2>Presentatie met namen</h2>
-        <p>Dezelfde presentatie als op de openbare site (podium, stand, grafiek, stijgers), maar met de <strong>voornaam</strong> van de leerling erbij. Alleen hier te openen, achter de inlog.</p>
-        <p class="buttons">
-          <a class="btn primary" href="present/index.html?present" target="_blank" rel="noopener">▶ Start (licht)</a>
-          <a class="btn" href="present/index.html?present&amp;donker" target="_blank" rel="noopener">▶ Start (donker)</a>
-        </p>
-        <p class="hint">Doorklikken met de pijltjes, spatiebalk of de bolletjes; volledig scherm met het knopje rechtsboven. Zonder namen: de knop <em>Presentatie</em> op de openbare site.</p>
-      </div>
-    </section>
-
     <section id="view-beheer" class="view" hidden>
-      <div class="card finale-card" id="bh-finale"></div>
-      <div class="grid2">
-        <div class="card">
-          <h2>Nu verversen</h2>
-          <p>Haalt nu alle actieve profielen op, TikTok en Instagram (1 record per account; een platform dat op <em>Uit</em> staat wordt overgeslagen). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun van dat platform.</p>
-          <p><button type="button" class="btn primary" id="bh-refresh">↻ Nu verversen</button></p>
-          <p class="meta" id="bh-refresh-note"></p>
-          <p class="status" id="bh-refresh-msg" role="status"></p>
-          <p class="meta">Laatste profielrun: <strong id="bh-last"></strong></p>
-          <h3>Laatste GitHub-runs</h3>
-          <ul class="runs" id="bh-runs"><li class="meta">Laden…</li></ul>
-        </div>
-        <div class="card">
-          <h2>Budget deze maand</h2>
-          <div id="bh-budget"></div>
-          <h3>Schema</h3>
-          <form id="freq-form" autocomplete="off">
-            <div class="freq-grid">
-              <label for="freq-tiktok">TikTok</label><select id="freq-tiktok" name="tiktok"></select>
-              <label for="freq-instagram">Instagram</label><select id="freq-instagram" name="instagram"></select>
-            </div>
-            <div id="freq-preview" aria-live="polite"></div>
-            <p class="buttons"><button type="submit" class="btn primary" id="freq-save">Opslaan</button> <span class="status" id="freq-msg" role="status"></span></p>
-          </form>
-          <div id="bh-schedule"></div>
-          <p class="hint">De limiet staat in <code>config.yaml</code>. De frequentie per platform kies je hier en geldt meteen, ook voor de reservetimer en de planning; wat in <code>config.yaml</code> staat is de startwaarde tot je iets opslaat. Elke wijziging komt in het activiteitenlog.</p>
-        </div>
-      </div>
+      <p class="hint bh-intro">Drie groepen; klik op een kop om hem open of dicht te klappen. Staat er iets bij een kop, dan vraagt die groep aandacht.</p>
 
-      <div class="card">
-        <h2>Dagopdrachten</h2>
-        <p>Een dag waarop elke leerling <strong>minimaal een aantal posts</strong> moet plaatsen (2 of meer). In de kalender staat dan bijv. <strong>3/5</strong>, met een oranje rand als het niet gehaald is; op Overzicht komt een waarschuwing. Een dagopdracht breekt de reeks niet en telt niet als gemist zolang er die dag minstens één post is. Vandaag telt pas als niet gehaald als de dag voorbij is.</p>
-        <div class="table-wrap">
-          <table class="board small">
-            <thead><tr><th>Dag</th><th class="num">Minimaal</th><th>Omschrijving</th><th>Resultaat</th><th></th></tr></thead>
-            <tbody id="task-body"></tbody>
-          </table>
-        </div>
-        <form id="task-form" class="add-form" autocomplete="off" style="margin-top:12px">
-          <label>Dag <select name="date"></select></label>
-          <label>Minimaal posts <input name="min" type="number" min="2" max="20" step="1" value="2" required style="min-width:80px;width:90px"></label>
-          <label>Omschrijving (optioneel) <input name="label" maxlength="60" placeholder="bijv. Halloween-week"></label>
-          <button type="submit" class="btn primary">Toevoegen</button>
-          <button type="button" class="btn" id="task-cancel" hidden>Annuleren</button>
-        </form>
-        <p class="status" id="task-msg" role="status"></p>
-      </div>
-
-      <div class="card">
-        <h2>Schoolhashtags</h2>
-        <p>De knoppen bovenaan het tabblad <strong>Hashtags</strong>. Zonder <code>#</code>, gescheiden door spaties of komma's. Een wijziging werkt direct (geen deploy) en komt in het activiteitenlog.</p>
-        <form id="sh-form" class="add-form" autocomplete="off">
-          <label>Schoolhashtags <input name="tags" id="sh-input" placeholder="glu grafischlyceumutrecht av" autocapitalize="off" spellcheck="false"></label>
-          <button type="submit" class="btn primary">Opslaan</button>
-          <button type="button" class="btn" id="sh-default">Standaardlijst</button>
-        </form>
-        <div class="chips" id="sh-preview" aria-label="Zo staan ze straks op het tabblad Hashtags"></div>
-        <p class="status" id="sh-msg" role="status"></p>
-      </div>
-
+      <details class="bh-group" id="bh-g-leerlingen" data-group="leerlingen">
+        <summary><span class="bh-title">Leerlingen</span><span class="bh-sub">toevoegen, Instagram-handles, alle leerlingen, problemen</span><span class="bh-attn" id="bh-attn-leerlingen" hidden></span></summary>
+        <div class="bh-body">
       <div class="card">
         <h2>Leerling toevoegen</h2>
         <form id="add-form" class="add-form" autocomplete="off">
@@ -248,6 +152,39 @@
         <h2>Problemen in <code>accounts</code></h2>
         <ul class="issues" id="acc-issues"></ul>
       </div>
+        </div>
+      </details>
+
+      <details class="bh-group" id="bh-g-ophalen" data-group="ophalen">
+        <summary><span class="bh-title">Ophalen en budget</span><span class="bh-sub">nu verversen, frequentie, budget, laatste runs</span><span class="bh-attn" id="bh-attn-ophalen" hidden></span></summary>
+        <div class="bh-body">
+      <div class="grid2">
+        <div class="card">
+          <h2>Nu verversen</h2>
+          <p>Haalt nu alle actieve profielen op, TikTok en Instagram (1 record per account; een platform dat op <em>Uit</em> staat wordt overgeslagen). Kan pas <strong id="bh-cool-min"></strong> min na de vorige profielrun van dat platform.</p>
+          <p><button type="button" class="btn primary" id="bh-refresh">↻ Nu verversen</button></p>
+          <p class="meta" id="bh-refresh-note"></p>
+          <p class="status" id="bh-refresh-msg" role="status"></p>
+          <p class="meta">Laatste profielrun: <strong id="bh-last"></strong></p>
+          <h3>Laatste GitHub-runs</h3>
+          <ul class="runs" id="bh-runs"><li class="meta">Laden…</li></ul>
+        </div>
+        <div class="card">
+          <h2>Budget deze maand</h2>
+          <div id="bh-budget"></div>
+          <h3>Schema</h3>
+          <form id="freq-form" autocomplete="off">
+            <div class="freq-grid">
+              <label for="freq-tiktok">TikTok</label><select id="freq-tiktok" name="tiktok"></select>
+              <label for="freq-instagram">Instagram</label><select id="freq-instagram" name="instagram"></select>
+            </div>
+            <div id="freq-preview" aria-live="polite"></div>
+            <p class="buttons"><button type="submit" class="btn primary" id="freq-save">Opslaan</button> <span class="status" id="freq-msg" role="status"></span></p>
+          </form>
+          <div id="bh-schedule"></div>
+          <p class="hint">De limiet staat in <code>config.yaml</code>. De frequentie per platform kies je hier en geldt meteen, ook voor de reservetimer en de planning; wat in <code>config.yaml</code> staat is de startwaarde tot je iets opslaat. Elke wijziging komt in het activiteitenlog.</p>
+        </div>
+      </div>
 
       <div class="card">
         <h2>Laatste runs</h2>
@@ -258,20 +195,46 @@
           </table>
         </div>
       </div>
+        </div>
+      </details>
+
+      <details class="bh-group" id="bh-g-campagne" data-group="campagne">
+        <summary><span class="bh-title">Campagne</span><span class="bh-sub">finale, dagopdrachten, schoolhashtags, export</span><span class="bh-attn" id="bh-attn-campagne" hidden></span></summary>
+        <div class="bh-body">
+      <div class="card finale-card" id="bh-finale"></div>
 
       <div class="card">
-        <h2>Activiteit</h2>
+        <h2>Dagopdrachten</h2>
+        <p>Een dag waarop elke leerling <strong>minimaal een aantal posts</strong> moet plaatsen (2 of meer). In de kalender staat dan bijv. <strong>3/5</strong>, met een oranje rand als het niet gehaald is; op Overzicht komt een waarschuwing. Een dagopdracht breekt de reeks niet en telt niet als gemist zolang er die dag minstens één post is. Vandaag telt pas als niet gehaald als de dag voorbij is.</p>
         <div class="table-wrap">
           <table class="board small">
-            <thead><tr><th>Tijd</th><th>Wie</th><th>Wat</th><th>Details</th></tr></thead>
-            <tbody id="act-body"></tbody>
+            <thead><tr><th>Dag</th><th class="num">Minimaal</th><th>Omschrijving</th><th>Resultaat</th><th></th></tr></thead>
+            <tbody id="task-body"></tbody>
           </table>
         </div>
+        <form id="task-form" class="add-form" autocomplete="off" style="margin-top:12px">
+          <label>Dag <select name="date"></select></label>
+          <label>Minimaal posts <input name="min" type="number" min="2" max="20" step="1" value="2" required style="min-width:80px;width:90px"></label>
+          <label>Omschrijving (optioneel) <input name="label" maxlength="60" placeholder="bijv. Halloween-week"></label>
+          <button type="submit" class="btn primary">Toevoegen</button>
+          <button type="button" class="btn" id="task-cancel" hidden>Annuleren</button>
+        </form>
+        <p class="status" id="task-msg" role="status"></p>
       </div>
-    </section>
 
-    <section id="view-export" class="view" hidden>
       <div class="card">
+        <h2>Schoolhashtags</h2>
+        <p>De knoppen bovenaan het tabblad <strong>Hashtags</strong>. Zonder <code>#</code>, gescheiden door spaties of komma's. Een wijziging werkt direct (geen deploy) en komt in het activiteitenlog.</p>
+        <form id="sh-form" class="add-form" autocomplete="off">
+          <label>Schoolhashtags <input name="tags" id="sh-input" placeholder="glu grafischlyceumutrecht av" autocapitalize="off" spellcheck="false"></label>
+          <button type="submit" class="btn primary">Opslaan</button>
+          <button type="button" class="btn" id="sh-default">Standaardlijst</button>
+        </form>
+        <div class="chips" id="sh-preview" aria-label="Zo staan ze straks op het tabblad Hashtags"></div>
+        <p class="status" id="sh-msg" role="status"></p>
+      </div>
+
+      <div class="card" id="bh-export">
         <h2>Cijfers exporteren (CSV)</h2>
         <p>Eén rij per actieve leerling met de cijfers voor de beoordeling: weergaven, posts, gemiste dagen, reeksen, engagement, beste video en meer.</p>
         <div class="controls">
@@ -282,8 +245,27 @@
           <button type="button" class="btn primary" id="exp-download">⬇ Download CSV</button>
         </div>
         <p class="hint" id="exp-hint"></p>
-        <div class="table-wrap"><table class="board small" id="exp-preview"></table></div>
+        <details class="exp-more"><summary>Voorbeeld van de eerste rijen</summary>
+          <div class="table-wrap"><table class="board small" id="exp-preview"></table></div>
+        </details>
       </div>
+        </div>
+      </details>
+
+      <details class="bh-group bh-log" id="bh-g-log" data-group="log">
+        <summary><span class="bh-title">Activiteitenlog</span><span class="bh-sub">wie heeft wat gewijzigd</span></summary>
+        <div class="bh-body">
+      <div class="card">
+        <h2>Activiteit</h2>
+        <div class="table-wrap">
+          <table class="board small">
+            <thead><tr><th>Tijd</th><th>Wie</th><th>Wat</th><th>Details</th></tr></thead>
+            <tbody id="act-body"></tbody>
+          </table>
+        </div>
+      </div>
+        </div>
+      </details>
     </section>
   </main>
 

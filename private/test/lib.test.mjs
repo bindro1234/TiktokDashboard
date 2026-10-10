@@ -608,41 +608,6 @@ test("parseOutliers and median", () => {
   assert.equal(lib.median([]), null);
 });
 
-test("signals: likes per view, step growth, silent videos and follower jumps, relative to the class", () => {
-  const S = CFG.signals;
-  const v = (id, handle, views, likes, comments = 5, shares = 1) => ({ video_id: id, handle, views, likes, comments, shares });
-  const posts = [
-    v("1", "a", 2000, 200), v("2", "b", 3000, 300), v("3", "c", 4000, 400), v("4", "d", 5000, 500), // ratio 0.10
-    v("5", "e", 6000, 6),          // 0.001: far below
-    v("6", "f", 1500, 900),        // 0.6: far above
-    v("7", "g", 500, 1),           // too small to judge
-    v("8", "h", 8000, 800, 0, 0),  // many views, no comments or shares
-    v("9", "i", 10000, 1000),      // step: 1,000 -> 9,500 in 2 h, then flat
-  ];
-  const h = 3600e3, t0 = Date.parse("2026-10-05T08:00:00Z");
-  const byVideo = new Map([["9", [{ t: t0, views: 1000 }, { t: t0 + 2 * h, views: 9500 }, { t: t0 + 4 * h, views: 9700 },
-    { t: t0 + 8 * h, views: 9900 }, { t: t0 + 14 * h, views: 10000 }]],
-    // Natural growth: spread over many runs, never one big step.
-    ["1", [{ t: t0, views: 200 }, { t: t0 + 2 * h, views: 700 }, { t: t0 + 4 * h, views: 1300 }, { t: t0 + 6 * h, views: 2000 }]]]);
-  const series = new Map([
-    ["a", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 24 * h, views: 2000, followers: 30 }]],  // 100 views per follower
-    ["b", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 24 * h, views: 3000, followers: 40 }]],
-    ["c", [{ t: t0, views: 0, followers: 10 }, { t: t0 + 2 * h, views: 50, followers: 400 }]],    // +390 followers, 50 views
-  ]);
-  const flags = lib.signals(S, posts, byVideo, series);
-  const kinds = (k) => flags.filter((f) => f.kind === k).map((f) => f.video || f.handle).sort();
-  assert.deepEqual(kinds("likes"), ["5", "6"]);
-  assert.equal(flags.find((f) => f.video === "6").high, true);
-  assert.deepEqual(kinds("step"), ["9"]);
-  assert.ok(flags.find((f) => f.kind === "step").share > 0.8);
-  assert.deepEqual(kinds("silent"), ["8"]);
-  assert.deepEqual(kinds("followers"), ["c"]);
-  assert.equal(flags.find((f) => f.kind === "followers").followers, 390);
-  assert.ok(!flags.some((f) => f.video === "7"), "small videos are never flagged");
-});
-
-// ---------- students with two accounts ----------
-
 test("parseAccounts/groupAccounts: a second account joins its student via main_account", () => {
   const rows = [
     { _row: 2, student_name: "Anna", tiktok_handle: "@anna", active: "ja", main_account: "" },

@@ -511,9 +511,7 @@ class OffDayTests(unittest.TestCase):
         out = worker_config.build(config.load())
         self.assertEqual(out["fixedGids"], model.FIXED_SHEET_IDS)
         self.assertEqual(out["todayCheck"], {"cooldownMinutes": 10})
-        self.assertEqual(out["signals"]["minViews"], CFG.signals["min_views"])
-        self.assertEqual(set(out["signals"]), {"minViews", "likeRatioFactor", "stepShare", "stepMaxHours", "flatHours",
-                                               "flatShare", "zeroEngagementMinViews", "followerJumpMin", "followerJumpFactor"})
+        self.assertNotIn("signals", out)   # the Opvallend tab (and its thresholds) is gone
 
     def test_worker_config_and_validation(self):
         from collector import worker_config

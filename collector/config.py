@@ -101,14 +101,6 @@ def _off_days(raw: dict | None) -> OffDays:
     return OffDays(weekends=bool(raw.get("weekends", False)), periods=tuple(periods))
 
 
-# Opvallend tab thresholds (config.yaml signals); only used by the private site.
-SIGNAL_DEFAULTS = {
-    "min_views": 1000, "like_ratio_factor": 3, "step_share": 0.6, "step_max_hours": 2.5,
-    "flat_hours": 6, "flat_share": 0.1, "zero_engagement_min_views": 5000,
-    "follower_jump_min": 100, "follower_jump_factor": 5,
-}
-
-
 @dataclass(frozen=True)
 class FinaleSettings:
     """Manual finale (started on the private site): runs every `every_minutes` until the deadline,
@@ -141,7 +133,6 @@ class Config:
     finale: FinaleSettings = FinaleSettings()
     off_days: OffDays = OffDays()
     today_cooldown_minutes: int = 10
-    signals: dict = field(default_factory=dict)
     instagram_dataset: str = ""
     instagram_start: dt.date | None = None   # first day an Instagram post counts
     frequency: dict = field(default_factory=dict)        # platform -> step ("off", "12h", ...)
@@ -279,7 +270,6 @@ def load(path: pathlib.Path | str = ROOT / "config.yaml") -> Config:
         ),
         off_days=_off_days(camp.get("off_days")),
         today_cooldown_minutes=int((raw.get("today_check") or {}).get("cooldown_minutes", 10)),
-        signals={**SIGNAL_DEFAULTS, **(raw.get("signals") or {})},
         instagram_dataset=str(raw["brightdata"].get("instagram_profiles_dataset", "")),
         instagram_start=_date((raw.get("instagram") or {}).get("start_date")),
         frequency=frequency,

@@ -233,7 +233,7 @@ class Api {
       config: {
         campaign: CONFIG.campaign, budget: CONFIG.budget, schedule: cfg.schedule,
         refreshNumOfPosts: CONFIG.refreshNumOfPosts, forceMinMinutes: CONFIG.forceMinMinutes,
-        finale: CONFIG.finale, offDays: CONFIG.offDays, todayCheck: CONFIG.todayCheck, signals: CONFIG.signals,
+        finale: CONFIG.finale, offDays: CONFIG.offDays, todayCheck: CONFIG.todayCheck,
         // What applies now (the choice saved on Beheer, else the start value), the start value, and the steps (to
         // work out the cost of a choice on the page before it is saved).
         frequency: cfg.frequency, frequencyDefault: CONFIG.frequency, frequencySteps: CONFIG.frequencySteps,
